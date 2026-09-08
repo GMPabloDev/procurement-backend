@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using ProcureToPay.Api.ExceptionHandling;
+using ProcureToPay.Api.Identity;
 using ProcureToPay.Application;
 using ProcureToPay.Infrastructure;
 using Scalar.AspNetCore;
@@ -20,6 +21,7 @@ builder.Services
         options.DefaultApiVersion = new ApiVersion(1, 0);
         options.AssumeDefaultVersionWhenUnspecified = true;
         options.ReportApiVersions = true;
+        options.ApiVersionReader = new QueryStringApiVersionReader();
     })
     .AddMvc()
     .AddApiExplorer(options =>
@@ -54,6 +56,22 @@ builder.Services
         options.Authority = authority;
         options.Audience = audience;
         options.RequireHttpsMetadata = requireHttpsMetadata;
+        options.Events = new JwtBearerEvents
+        {
+            OnChallenge = async context =>
+            {
+                context.HandleResponse();
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                context.Response.ContentType = "application/problem+json";
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    type = "/problems/authentication-required",
+                    title = "Authentication required",
+                    status = StatusCodes.Status401Unauthorized,
+                    traceId = context.HttpContext.TraceIdentifier
+                }, context.HttpContext.RequestAborted);
+            }
+        };
     });
 builder.Services.AddAuthorization();
 
@@ -99,6 +117,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseAuthentication();
+app.UseMiddleware<CurrentUserProvisioningMiddleware>();
 
 app.UseAuthorization();
 

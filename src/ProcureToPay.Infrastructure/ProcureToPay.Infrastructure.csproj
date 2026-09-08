@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ProcureToPay.Application\ProcureToPay.Application.csproj" />
+    <ProjectReference Include="..\ProcureToPay.Domain\ProcureToPay.Domain.csproj" />
   </ItemGroup>
 
   <ItemGroup>
