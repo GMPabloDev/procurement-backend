@@ -104,6 +104,32 @@ public sealed class OrganizationBootstrapper(
             AssignedBy = SystemActorId,
             Version = 1
         });
+        var bootstrapSubchanges = new object[]
+        {
+            new { targetType = "Organization", targetId = organization.Id,
+                previousVersion = (int?)null, newVersion = organization.Version,
+                before = (object?)null,
+                after = new { organization.Code, organization.Name, organization.BaseCurrency,
+                    organization.TimeZoneId, organization.FiscalYearStartMonth, organization.Version } },
+            new { targetType = "LegalEntity", targetId = legalEntity.Id,
+                previousVersion = (int?)null, newVersion = legalEntity.Version,
+                before = (object?)null,
+                after = new { legalEntity.Code, legalEntity.Name, legalEntity.Version } },
+            new { targetType = "Department", targetId = department.Id,
+                previousVersion = (int?)null, newVersion = department.Version,
+                before = (object?)null,
+                after = new { department.Code, department.Name, department.Version } },
+            new { targetType = "UserProfile", targetId = admin.Id,
+                previousVersion = (int?)null, newVersion = admin.Version,
+                before = (object?)null,
+                after = new { admin.Issuer, admin.Subject, admin.Status, admin.DepartmentId,
+                    admin.JobTitle, admin.Version } },
+            new { targetType = "RoleAssignment", targetId = adminAssignmentId,
+                previousVersion = (int?)null, newVersion = 1,
+                before = (object?)null,
+                after = new { userProfileId = admin.Id, role = (int)SystemRole.Admin,
+                    scope = GlobalScopeJson, status = (int)AssignmentStatus.Active, version = 1 } }
+        };
         dbContext.AdministrativeAuditRecords.Add(CreateAudit(
             now,
             "BOOTSTRAP_COMPLETED",
@@ -111,7 +137,7 @@ public sealed class OrganizationBootstrapper(
             organization.Id,
             options.Reason,
             GlobalScopeJson,
-            $"{{\"subchanges\":[{{\"targetType\":\"Organization\",\"targetId\":\"{organization.Id}\",\"previousVersion\":null,\"newVersion\":{organization.Version}}},{{\"targetType\":\"LegalEntity\",\"targetId\":\"{legalEntity.Id}\",\"previousVersion\":null,\"newVersion\":{legalEntity.Version}}},{{\"targetType\":\"Department\",\"targetId\":\"{department.Id}\",\"previousVersion\":null,\"newVersion\":{department.Version}}},{{\"targetType\":\"UserProfile\",\"targetId\":\"{admin.Id}\",\"previousVersion\":null,\"newVersion\":{admin.Version}}},{{\"targetType\":\"RoleAssignment\",\"targetId\":\"{adminAssignmentId}\",\"previousVersion\":null,\"newVersion\":1}}]}}"));
+            JsonSerializer.Serialize(new { subchanges = bootstrapSubchanges })));
         dbContext.BootstrapStates.Add(new BootstrapStateRecord
         {
             ConfigurationFingerprint = fingerprint,
@@ -207,7 +233,21 @@ public sealed class OrganizationBootstrapper(
             new
             {
                 targetType = "UserProfile", targetId = admin.Id,
-                previousVersion = previousAdminVersion, newVersion = admin.Version
+                previousVersion = previousAdminVersion, newVersion = admin.Version,
+                before = existing is null ? null : new
+                {
+                    status = (UserProfileStatus)existing.Status,
+                    departmentId = existing.DepartmentId,
+                    jobTitle = existing.JobTitle,
+                    version = previousAdminVersion
+                },
+                after = new
+                {
+                    status = (UserProfileStatus)admin.Status,
+                    departmentId = admin.DepartmentId,
+                    jobTitle = admin.JobTitle,
+                    version = admin.Version
+                }
             }
         };
         if (adminAssignmentCreated)
@@ -215,7 +255,16 @@ public sealed class OrganizationBootstrapper(
             recoverySubchanges.Add(new
             {
                 targetType = "RoleAssignment", targetId = assignmentForAudit.Id,
-                previousVersion = (int?)null, newVersion = assignmentForAudit.Version
+                previousVersion = (int?)null, newVersion = assignmentForAudit.Version,
+                before = (object?)null,
+                after = new
+                {
+                    userProfileId = assignmentForAudit.UserProfileId,
+                    role = (SystemRole)assignmentForAudit.Role,
+                    scope = assignmentForAudit.ScopeJson,
+                    status = (AssignmentStatus)assignmentForAudit.Status,
+                    version = assignmentForAudit.Version
+                }
             });
         }
         dbContext.AdministrativeAuditRecords.Add(CreateAudit(
@@ -321,7 +370,7 @@ public sealed class OrganizationBootstrapper(
 
     private static string ComputeFingerprint(OrganizationBootstrapOptions options)
     {
-        var payload = JsonSerializer.Serialize(options);
+        var payload = JsonSerializer.Serialize(options with { Reason = string.Empty });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
     }
 

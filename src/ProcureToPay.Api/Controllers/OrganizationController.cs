@@ -88,11 +88,6 @@ public sealed class OrganizationController(
         var timeZoneId = Required(request.TimeZoneId, nameof(request.TimeZoneId));
         try
         {
-            if (timeZoneId.Contains('\\') || timeZoneId.Contains(' ') ||
-                (!timeZoneId.Contains('/') && !string.Equals(timeZoneId, "UTC", StringComparison.OrdinalIgnoreCase)))
-            {
-                throw new TimeZoneNotFoundException();
-            }
             _ = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
         }
         catch (TimeZoneNotFoundException)
@@ -326,6 +321,27 @@ public sealed class OrganizationController(
             .Where(item => item.Type == (int)type && item.Code == code && item.IsActive)
             .OrderByDescending(item => item.LevelVersion)
             .FirstOrDefaultAsync(cancellationToken);
+        if (previousLevel is not null && request.ExpectedPreviousVersion != previousLevel.LevelVersion)
+        {
+            throw new DomainConflictException("The authority level version is stale.");
+        }
+        if (previousLevel is null && request.ExpectedPreviousVersion != 0)
+        {
+            throw new DomainConflictException("The authority level version is stale.");
+        }
+
+        var rankAlreadyActive = await dbContext.AuthorityLevels.AnyAsync(
+            item => item.Type == (int)type && item.Rank == rank && item.IsActive,
+            cancellationToken);
+        if (rankAlreadyActive && previousLevel is null)
+        {
+            throw new DomainConflictException("The authority rank is already active for this authority type.");
+        }
+        if (rankAlreadyActive && previousLevel is not null && previousLevel.Rank != rank)
+        {
+            throw new DomainConflictException("The authority rank is already active for this authority type.");
+        }
+
         var version = (await dbContext.AuthorityLevels
             .Where(level => level.Type == (int)type && level.Code == code)
             .Select(level => (int?)level.LevelVersion)
@@ -582,15 +598,37 @@ public sealed class OrganizationController(
         }
         user.Status = (int)UserProfileStatus.Inactive;
         user.Version++;
-        var subchanges = assignments.Select(item => new
+        var subchanges = assignments.Select(item => (object)new
             {
                 targetType = "RoleAssignment", targetId = item.Id,
-                previousVersion = item.Version - 1, newVersion = item.Version
+                previousVersion = item.Version - 1, newVersion = item.Version,
+                before = new
+                {
+                    status = OrganizationContractCodes.Status(AssignmentStatus.Active),
+                    scope = item.ScopeJson, version = item.Version - 1
+                },
+                after = new
+                {
+                    status = OrganizationContractCodes.Status(AssignmentStatus.Revoked),
+                    scope = item.ScopeJson, version = item.Version
+                }
             })
-            .Concat(grants.Select(item => new
+            .Concat(grants.Select(item => (object)new
             {
                 targetType = "AuthorityGrant", targetId = item.Id,
-                previousVersion = item.Version - 1, newVersion = item.Version
+                previousVersion = item.Version - 1, newVersion = item.Version,
+                before = new
+                {
+                    status = OrganizationContractCodes.Status(GrantStatus.Active),
+                    scope = item.ScopeJson, maxAmountBase = item.MaxAmountBase,
+                    baseCurrency = item.BaseCurrency, version = item.Version - 1
+                },
+                after = new
+                {
+                    status = OrganizationContractCodes.Status(GrantStatus.Revoked),
+                    scope = item.ScopeJson, maxAmountBase = item.MaxAmountBase,
+                    baseCurrency = item.BaseCurrency, version = item.Version
+                }
             }))
             .ToArray();
         var affectedScope = MergeAffectedScopes(
@@ -1181,7 +1219,8 @@ public sealed record AssignRoleRequest(
     IReadOnlyCollection<ScopeInput>? Scopes,
     int ExpectedUserVersion = 0);
 public sealed record AuthorityLevelResponse(Guid Id, string Type, string Code, int Rank, int Version);
-public sealed record CreateAuthorityLevelRequest(string? Type, string? Code, int Rank, string? Reason);
+public sealed record CreateAuthorityLevelRequest(
+    string? Type, string? Code, int Rank, string? Reason, int ExpectedPreviousVersion = 0);
 public sealed record ScopeInput(string? Dimension, string? Reference);
 public sealed record GrantAuthorityRequest(Guid AuthorityLevelId, decimal? MaxAmountBase, string? BaseCurrency,
     IReadOnlyCollection<ScopeInput>? Scopes, DateTimeOffset? ValidFrom, DateTimeOffset? ValidTo, string? Reason,

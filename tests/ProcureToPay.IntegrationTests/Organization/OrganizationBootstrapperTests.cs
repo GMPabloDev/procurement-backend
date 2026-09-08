@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -33,13 +34,18 @@ public sealed class OrganizationBootstrapperTests
         var configuration = CreateOptions("admin-1", "Initial bootstrap");
 
         Assert.True(await bootstrapper.InitializeAsync(configuration, cancellationToken));
-        Assert.False(await bootstrapper.InitializeAsync(configuration, cancellationToken));
+        Assert.False(await bootstrapper.InitializeAsync(
+            configuration with { Reason = "A different operational reason" }, cancellationToken));
         Assert.Equal(1, await context.Organizations.CountAsync(cancellationToken));
         Assert.Equal(1, await context.LegalEntities.CountAsync(cancellationToken));
         Assert.Equal(1, await context.Departments.CountAsync(cancellationToken));
         Assert.Equal(1, await context.UserProfiles.CountAsync(cancellationToken));
         Assert.Equal(1, await context.RoleAssignments.CountAsync(cancellationToken));
         Assert.Equal(1, await context.AdministrativeAuditRecords.CountAsync(cancellationToken));
+        var bootstrapAudit = await context.AdministrativeAuditRecords.SingleAsync(cancellationToken);
+        Assert.Equal("SYSTEM", bootstrapAudit.ActorType);
+        Assert.Contains("\"after\"", bootstrapAudit.AfterJson, StringComparison.Ordinal);
+        Assert.Contains("RoleAssignment", bootstrapAudit.AfterJson, StringComparison.Ordinal);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             bootstrapper.InitializeAsync(configuration with { OrganizationName = "Different" }, cancellationToken));
@@ -56,6 +62,37 @@ public sealed class OrganizationBootstrapperTests
         Assert.Equal(2, await context.RoleAssignments.CountAsync(cancellationToken));
         Assert.Equal(2, await context.AdministrativeAuditRecords.CountAsync(cancellationToken));
         Assert.Equal(0, await context.AuthorityGrants.CountAsync(cancellationToken));
+        var recoveryAudit = await context.AdministrativeAuditRecords
+            .OrderByDescending(item => item.OccurredAt)
+            .FirstAsync(cancellationToken);
+        Assert.Contains("\"before\"", recoveryAudit.AfterJson, StringComparison.Ordinal);
+        Assert.Contains("\"after\"", recoveryAudit.AfterJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Published_api_cli_executes_bootstrap_and_recovery_without_http_routes()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var sqlServer = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-latest")
+            .WithPassword("ProcureToPay_test_2026!")
+            .Build();
+        await sqlServer.StartAsync(cancellationToken);
+        var connectionString = sqlServer.GetConnectionString();
+
+        var options = new DbContextOptionsBuilder<ProcureToPayDbContext>()
+            .UseSqlServer(connectionString)
+            .Options;
+        await using var context = new ProcureToPayDbContext(options);
+        await context.Database.MigrateAsync(cancellationToken);
+        await RunOrganizationOperationAsync(connectionString, "--organization-bootstrap", "admin-cli-1", cancellationToken);
+
+        Assert.Equal(1, await context.Organizations.CountAsync(cancellationToken));
+        Assert.Equal(1, await context.RoleAssignments.CountAsync(cancellationToken));
+
+        await RunOrganizationOperationAsync(connectionString, "--organization-recover-admin", "admin-cli-2", cancellationToken);
+        Assert.Equal(2, await context.UserProfiles.CountAsync(cancellationToken));
+        Assert.Equal(2, await context.RoleAssignments.CountAsync(cancellationToken));
+        Assert.Equal(2, await context.AdministrativeAuditRecords.CountAsync(cancellationToken));
     }
 
     [Fact]
@@ -131,7 +168,51 @@ public sealed class OrganizationBootstrapperTests
     // pi-lens-ignore: lsp:CS0246
     }
 
-    // pi-lens-ignore: lsp:CS0246
+    private static async Task RunOrganizationOperationAsync(
+        string connectionString,
+        string operation,
+        string subject,
+        CancellationToken cancellationToken)
+    {
+        var apiAssembly = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory, "../../../../../src/ProcureToPay.Api/bin/Debug/net10.0/ProcureToPay.Api.dll"));
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "dotnet",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            }
+        };
+        process.StartInfo.ArgumentList.Add(apiAssembly);
+        process.StartInfo.ArgumentList.Add(operation);
+        process.StartInfo.Environment["ConnectionStrings__SqlServer"] = connectionString;
+        process.StartInfo.Environment["Authentication__JwtBearer__Authority"] = "https://issuer.invalid";
+        process.StartInfo.Environment["Authentication__JwtBearer__Audience"] = "procure-to-pay-tests";
+        process.StartInfo.Environment["AWS__Region"] = "us-east-1";
+        process.StartInfo.Environment["Storage__S3__BucketName"] = "procure-to-pay-tests";
+        process.StartInfo.Environment["Organization__Code"] = "ACME";
+        process.StartInfo.Environment["Organization__Name"] = "Acme Corporation";
+        process.StartInfo.Environment["Organization__BaseCurrency"] = "PEN";
+        process.StartInfo.Environment["Organization__TimeZoneId"] = "America/Lima";
+        process.StartInfo.Environment["Organization__FiscalYearStartMonth"] = "1";
+        process.StartInfo.Environment["Organization__LegalEntityCode"] = "ACME-PE";
+        process.StartInfo.Environment["Organization__LegalEntityName"] = "Acme Peru S.A.C.";
+        process.StartInfo.Environment["Organization__InitialDepartmentCode"] = "IT";
+        process.StartInfo.Environment["Organization__InitialDepartmentName"] = "Software / IT";
+        process.StartInfo.Environment["Organization__AdminIssuer"] = "https://keycloak.test/realms/procure-to-pay";
+        process.StartInfo.Environment["Organization__AdminSubject"] = subject;
+        process.StartInfo.Environment["Organization__Reason"] = $"CLI operation {operation}";
+        Assert.True(process.Start());
+        await process.WaitForExitAsync(cancellationToken);
+        var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var error = await process.StandardError.ReadToEndAsync(cancellationToken);
+        Assert.True(process.ExitCode == 0, $"CLI failed: {output}\n{error}");
+    }
+
     private static OrganizationBootstrapOptions CreateOptions(string subject, string reason) => new(
         "ACME",
         "Acme Corporation",

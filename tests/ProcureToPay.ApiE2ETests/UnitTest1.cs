@@ -1,9 +1,11 @@
 using System.Net;
+using System.IdentityModel.Tokens.Jwt;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
-using System.Text.Encodings.Web;
+using System.Text;
 using System.Text.Json;
-using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -13,7 +15,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Organization;
@@ -40,6 +42,17 @@ public sealed class UnitTest1
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         var problem = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         Assert.Contains("/problems/authentication-required", problem, StringComparison.Ordinal);
+
+        using var invalidTokenClient = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            BaseAddress = new Uri("https://localhost")
+        });
+        invalidTokenClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "not-a-jwt");
+        using var invalidToken = await invalidTokenClient.GetAsync(
+            "/api/v1/organization", TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Unauthorized, invalidToken.StatusCode);
     }
 
     [Fact]
@@ -81,22 +94,65 @@ public sealed class UnitTest1
             Id = Guid.NewGuid(), UserProfileId = auditor.Id, Role = (int)SystemRole.Auditor,
             ScopeJson = "[{\"dimension\":\"DEPARTMENT\",\"reference\":\"IT\"}]",
             Status = (int)AssignmentStatus.Active, AssignedAt = DateTimeOffset.UtcNow,
-            AssignedBy = Guid.Parse("00000000-0000-0000-0000-000000000001"), Version = 1
+            AssignedBy = Guid.NewGuid(), Version = 1
+        });
+        context.RoleAssignments.Add(new RoleAssignmentRecord
+        {
+            Id = Guid.NewGuid(), UserProfileId = auditor.Id, Role = (int)SystemRole.ItReviewer,
+            ScopeJson = "[{\"dimension\":\"DEPARTMENT\",\"reference\":\"IT\"}]",
+            Status = (int)AssignmentStatus.Active, AssignedAt = DateTimeOffset.UtcNow,
+            AssignedBy = Guid.NewGuid(), Version = 1
         });
         await context.SaveChangesAsync(cancellationToken);
 
         await using var factory = new TestApiFactory(connectionString);
         using var pendingClient = factory.CreateClient();
-        pendingClient.DefaultRequestHeaders.Add("X-Test-Subject", "pending-1");
+        pendingClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", TestApiFactory.CreateToken("pending-1"));
         using var pendingState = await pendingClient.GetAsync("/api/v1/me", cancellationToken);
         Assert.Equal(HttpStatusCode.OK, pendingState.StatusCode);
+        var pendingProfile = await pendingState.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        var pendingProfileIdText = pendingProfile.GetProperty("id").GetString();
+        Assert.True(Guid.TryParse(pendingProfileIdText, out var pendingProfileId), pendingProfile.ToString());
         using var pendingBusiness = await pendingClient.GetAsync("/api/v1/organization", cancellationToken);
         Assert.Equal(HttpStatusCode.Forbidden, pendingBusiness.StatusCode);
 
         using var adminClient = factory.CreateClient();
-        adminClient.DefaultRequestHeaders.Add("X-Test-Subject", "admin-1");
+        adminClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", TestApiFactory.CreateToken("admin-1"));
         using var organization = await adminClient.GetAsync("/api/v1/organization", cancellationToken);
         Assert.Equal(HttpStatusCode.OK, organization.StatusCode);
+        using var setup = await adminClient.PatchAsJsonAsync(
+            $"/api/v1/users/{pendingProfileId}/setup",
+            new { departmentId = department.Id, jobTitle = "Requester", reason = "setup", expectedVersion = 1 },
+            cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, setup.StatusCode);
+        using var activate = await adminClient.PostAsJsonAsync(
+            $"/api/v1/users/{pendingProfileId}/activate",
+            new { reason = "activate", expectedVersion = 2 }, cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, activate.StatusCode);
+        using var assign = await adminClient.PostAsJsonAsync(
+            $"/api/v1/users/{pendingProfileId}/roles",
+            new
+            {
+                role = "REQUESTER",
+                scopes = new[] { new { dimension = "ORGANIZATION", reference = (string?)null } },
+                reason = "assign",
+                expectedUserVersion = 3
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.NoContent, assign.StatusCode);
+        using var deactivate = await adminClient.PostAsJsonAsync(
+            $"/api/v1/users/{pendingProfileId}/deactivate",
+            new { reason = "deactivate", expectedVersion = 3 }, cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, deactivate.StatusCode);
+        using var revokedBusiness = await pendingClient.GetAsync("/api/v1/organization", cancellationToken);
+        Assert.Equal(HttpStatusCode.Forbidden, revokedBusiness.StatusCode);
+        using var deactivationAuditResponse = await adminClient.GetAsync("/api/v1/audit", cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, deactivationAuditResponse.StatusCode);
+        var deactivationAudit = await deactivationAuditResponse.Content.ReadFromJsonAsync<JsonElement[]>(cancellationToken);
+        Assert.Contains(deactivationAudit!, item =>
+            item.GetProperty("action").GetString() == "USER_DEACTIVATED" &&
+            item.GetProperty("afterJson").GetString()!.Contains("\"before\"", StringComparison.Ordinal));
         using var health = await adminClient.GetAsync("/health/bootstrap", cancellationToken);
         Assert.Equal(HttpStatusCode.OK, health.StatusCode);
 
@@ -117,13 +173,37 @@ public sealed class UnitTest1
         using var staleOrganization = await adminClient.PutAsJsonAsync("/api/v1/organization",
             new { name = "Stale", timeZoneId = "America/Lima", expectedVersion = 999, reason = "stale" }, cancellationToken);
         Assert.Equal(HttpStatusCode.Conflict, staleOrganization.StatusCode);
+        using var validTimeZone = await adminClient.PutAsJsonAsync("/api/v1/organization",
+            new { name = "Acme CET", timeZoneId = "CET", expectedVersion = 1, reason = "timezone" }, cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, validTimeZone.StatusCode);
 
         using var invalidAuthority = await adminClient.PostAsJsonAsync("/api/v1/authority-levels",
             new { type = "NOT_A_REAL_TYPE", code = "BAD", rank = 1, reason = "invalid" }, cancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, invalidAuthority.StatusCode);
 
+        using var firstLevel = await adminClient.PostAsJsonAsync("/api/v1/authority-levels",
+            new { type = "FINANCIAL", code = "FINANCE_L1", rank = 1, reason = "create" }, cancellationToken);
+        Assert.Equal(HttpStatusCode.Created, firstLevel.StatusCode);
+        var firstLevelBody = await firstLevel.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        Assert.Equal(1, firstLevelBody.GetProperty("version").GetInt32());
+
+        using var duplicateRank = await adminClient.PostAsJsonAsync("/api/v1/authority-levels",
+            new { type = "FINANCIAL", code = "FINANCE_OTHER", rank = 1, reason = "duplicate" }, cancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, duplicateRank.StatusCode);
+
+        using var staleLevel = await adminClient.PostAsJsonAsync("/api/v1/authority-levels",
+            new { type = "FINANCIAL", code = "FINANCE_L1", rank = 2, expectedPreviousVersion = 99, reason = "stale" }, cancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, staleLevel.StatusCode);
+
+        using var secondLevel = await adminClient.PostAsJsonAsync("/api/v1/authority-levels",
+            new { type = "FINANCIAL", code = "FINANCE_L1", rank = 2, expectedPreviousVersion = 1, reason = "version" }, cancellationToken);
+        Assert.Equal(HttpStatusCode.Created, secondLevel.StatusCode);
+        var secondLevelBody = await secondLevel.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        Assert.Equal(2, secondLevelBody.GetProperty("version").GetInt32());
+
         using var auditorClient = factory.CreateClient();
-        auditorClient.DefaultRequestHeaders.Add("X-Test-Subject", "auditor-1");
+        auditorClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", TestApiFactory.CreateToken("auditor-1"));
         using var usersResponse = await auditorClient.GetAsync("/api/v1/users", cancellationToken);
         Assert.Equal(HttpStatusCode.OK, usersResponse.StatusCode);
         var users = await usersResponse.Content.ReadFromJsonAsync<JsonElement[]>(cancellationToken);
@@ -133,6 +213,18 @@ public sealed class UnitTest1
         using var mutation = await auditorClient.PostAsJsonAsync("/api/v1/departments",
             new { code = "HR", name = "Human Resources", reason = "not allowed" }, cancellationToken);
         Assert.Equal(HttpStatusCode.Forbidden, mutation.StatusCode);
+        using var validEligibility = await auditorClient.PostAsJsonAsync("/api/v1/eligibility",
+            new
+            {
+                requiredRole = "IT_REVIEWER",
+                requiredScopes = new[] { new { dimension = "DEPARTMENT", reference = "IT" } }
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, validEligibility.StatusCode);
+        var eligibility = await validEligibility.Content.ReadFromJsonAsync<JsonElement[]>(cancellationToken);
+        Assert.NotNull(eligibility);
+        Assert.NotEmpty(eligibility!);
+        Assert.True(eligibility![0].GetProperty("evidence").GetProperty("roleAssignmentVersion").GetInt32() >= 1);
+
         using var outOfScopeEligibility = await auditorClient.PostAsJsonAsync("/api/v1/eligibility",
             new
             {
@@ -149,6 +241,22 @@ public sealed class UnitTest1
 
     private sealed class TestApiFactory(string connectionString) : WebApplicationFactory<Program>
     {
+        private static readonly SymmetricSecurityKey SigningKey = new(
+            Encoding.UTF8.GetBytes("procure-to-pay-e2e-signing-key-2026-32-bytes!"));
+
+        internal static string CreateToken(
+            string subject,
+            string issuer = "https://keycloak.test/realms/procure-to-pay")
+        {
+            var token = new JwtSecurityToken(
+                issuer,
+                audience: "procure-to-pay-tests",
+                claims: [new Claim(JwtRegisteredClaimNames.Sub, subject)],
+                expires: DateTime.UtcNow.AddMinutes(5),
+                signingCredentials: new SigningCredentials(SigningKey, SecurityAlgorithms.HmacSha256));
+            return new JwtSecurityTokenHandler().WriteToken(token);
+        }
+
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Testing");
@@ -170,47 +278,22 @@ public sealed class UnitTest1
             {
                 services.AddAuthentication(options =>
                 {
-                    options.DefaultAuthenticateScheme = "Test";
-                    options.DefaultChallengeScheme = "Test";
-                }).AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>("Test", _ => { });
+                    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+                    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+                });
+                services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
+                {
+                    options.RequireHttpsMetadata = false;
+                    options.MapInboundClaims = false;
+                    options.TokenValidationParameters.IssuerSigningKey = SigningKey;
+                    options.TokenValidationParameters.ValidIssuer = "https://keycloak.test/realms/procure-to-pay";
+                    options.TokenValidationParameters.ValidAudience = "procure-to-pay-tests";
+                    options.TokenValidationParameters.ValidateIssuerSigningKey = true;
+                    options.TokenValidationParameters.ValidateIssuer = true;
+                    options.TokenValidationParameters.ValidateAudience = true;
+                });
             });
         }
     }
 
-    private sealed class TestAuthenticationHandler(
-        IOptionsMonitor<AuthenticationSchemeOptions> options,
-        ILoggerFactory logger,
-        UrlEncoder encoder) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
-    {
-        protected override Task<AuthenticateResult> HandleAuthenticateAsync()
-        {
-            var subject = Request.Headers["X-Test-Subject"].FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(subject))
-            {
-                return Task.FromResult(AuthenticateResult.NoResult());
-            }
-            var claims = new[]
-            {
-                new Claim("iss", "https://keycloak.test/realms/procure-to-pay"),
-                new Claim("sub", subject),
-                new Claim(ClaimTypes.Email, $"{subject}@acme.test"),
-                new Claim(ClaimTypes.Name, subject)
-            };
-            var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, Scheme.Name));
-            return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, Scheme.Name)));
-        }
-
-        protected override async Task HandleChallengeAsync(AuthenticationProperties properties)
-        {
-            Response.StatusCode = (int)HttpStatusCode.Unauthorized;
-            Response.ContentType = "application/problem+json";
-            await Response.WriteAsJsonAsync(new
-            {
-                type = "/problems/authentication-required",
-                title = "Authentication required",
-                status = (int)HttpStatusCode.Unauthorized,
-                traceId = Context.TraceIdentifier
-            });
-        }
-    }
 }

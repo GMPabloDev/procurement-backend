@@ -131,6 +131,17 @@ public sealed class OrganizationAuthorizationTests
     }
 
     [Fact]
+    public void Currency_catalog_tracks_current_codes_and_rejects_retired_codes()
+    {
+        Assert.True(CurrencyCatalog.IsIso4217("PEN"));
+        Assert.True(CurrencyCatalog.IsIso4217("ZWG"));
+        Assert.True(CurrencyCatalog.IsIso4217("XCG"));
+        Assert.False(CurrencyCatalog.IsIso4217("CUC"));
+        Assert.False(CurrencyCatalog.IsIso4217("SLL"));
+        Assert.False(CurrencyCatalog.IsIso4217("ZWL"));
+    }
+
+    [Fact]
     public void Admin_assignment_requires_organization_scope()
     {
         Assert.Throws<DomainValidationException>(() => RoleAssignment.Create(
