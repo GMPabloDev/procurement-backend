@@ -1,11 +1,12 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Infrastructure.Persistence;
 
 namespace ProcureToPay.Infrastructure.Persistence.Organization;
 
-public sealed class OrganizationEligibilityService(ProcureToPayDbContext dbContext)
+public sealed class OrganizationEligibilityService(ProcureToPayDbContext dbContext) : IOrganizationEligibilityService
 {
     public async Task<IReadOnlyList<EligibleCandidate>> ResolveAsync(
         EligibilityRequest request,
@@ -26,15 +27,14 @@ public sealed class OrganizationEligibilityService(ProcureToPayDbContext dbConte
 
     private static UserProfile ToDomain(UserProfileRecord record)
     {
-        var user = new UserProfile(record.Id, record.Issuer, record.Subject, record.Email, record.DisplayName);
-        user.CompleteSetup(record.DepartmentId ?? Guid.NewGuid(), record.JobTitle ?? "Configured user");
-        user.Activate(true);
-        return user;
+        return UserProfile.Restore(record.Id, record.Issuer, record.Subject, record.Email, record.DisplayName,
+            record.DepartmentId, record.JobTitle, (UserProfileStatus)record.Status, record.Version);
     }
 
-    private static RoleAssignment ToDomain(RoleAssignmentRecord record) => RoleAssignment.Create(
+    private static RoleAssignment ToDomain(RoleAssignmentRecord record) => RoleAssignment.Restore(
         record.Id, record.UserProfileId, (SystemRole)record.Role, ParseScope(record.ScopeJson),
-        record.AssignedAt, record.AssignedBy);
+        record.AssignedAt, record.AssignedBy, (AssignmentStatus)record.Status, record.Version,
+        record.RevokedAt, record.RevokedBy);
 
     private static ApprovalAuthorityGrant ToDomain(AuthorityGrantRecord record)
     {
@@ -44,10 +44,16 @@ public sealed class OrganizationEligibilityService(ProcureToPayDbContext dbConte
             record.AuthorityLevel.Code,
             record.AuthorityLevel.Rank,
             record.AuthorityLevel.LevelVersion,
-            record.AuthorityLevel.IsActive);
-        return ApprovalAuthorityGrant.Create(
+            true);
+        var grant = ApprovalAuthorityGrant.Restore(
             record.Id, record.UserProfileId, level, record.MaxAmountBase, record.BaseCurrency,
-            ParseScope(record.ScopeJson), record.ValidFrom, record.ValidTo, record.GrantedAt, record.GrantedBy);
+            ParseScope(record.ScopeJson), record.ValidFrom, record.ValidTo, record.GrantedAt, record.GrantedBy,
+            (GrantStatus)record.Status, record.Version, record.RevokedAt, record.RevokedBy);
+        if (!record.AuthorityLevel.IsActive)
+        {
+            level.Retire();
+        }
+        return grant;
     }
 
     private static AuthorizationScopeSet ParseScope(string json)
@@ -56,8 +62,7 @@ public sealed class OrganizationEligibilityService(ProcureToPayDbContext dbConte
             ?? throw new InvalidOperationException("Stored authorization scope is invalid.");
         return AuthorizationScopeSet.Create(entries.Select(entry =>
         {
-            if (!Enum.TryParse<ScopeDimension>(entry.Dimension, true, out var dimension) ||
-                !Enum.IsDefined(dimension))
+            if (!OrganizationContractCodes.TryScope(entry.Dimension, out var dimension))
             {
                 throw new InvalidOperationException("Stored authorization scope dimension is invalid.");
             }

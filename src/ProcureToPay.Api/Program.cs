@@ -155,7 +155,43 @@ app.MapHealthChecks("/health/bootstrap", new HealthCheckOptions
 
 app.MapControllers();
 
+if (args.Contains("--organization-bootstrap", StringComparer.Ordinal) ||
+    args.Contains("--organization-recover-admin", StringComparer.Ordinal))
+{
+    await using var scope = app.Services.CreateAsyncScope();
+    var options = ReadBootstrapOptions(builder.Configuration);
+    var bootstrapper = scope.ServiceProvider.GetRequiredService<OrganizationBootstrapper>();
+    if (args.Contains("--organization-bootstrap", StringComparer.Ordinal))
+    {
+        _ = await bootstrapper.InitializeAsync(options);
+    }
+    else
+    {
+        _ = await bootstrapper.RecoverAdministratorAsync(options);
+    }
+    return;
+}
+
 app.Run();
+
+static OrganizationBootstrapOptions ReadBootstrapOptions(IConfiguration configuration) => new(
+    RequiredConfiguration(configuration, "Organization:Code"),
+    RequiredConfiguration(configuration, "Organization:Name"),
+    RequiredConfiguration(configuration, "Organization:BaseCurrency"),
+    RequiredConfiguration(configuration, "Organization:TimeZoneId"),
+    int.TryParse(configuration["Organization:FiscalYearStartMonth"], out var month) ? month : 0,
+    RequiredConfiguration(configuration, "Organization:LegalEntityCode"),
+    RequiredConfiguration(configuration, "Organization:LegalEntityName"),
+    RequiredConfiguration(configuration, "Organization:InitialDepartmentCode"),
+    RequiredConfiguration(configuration, "Organization:InitialDepartmentName"),
+    RequiredConfiguration(configuration, "Organization:AdminIssuer"),
+    RequiredConfiguration(configuration, "Organization:AdminSubject"),
+    RequiredConfiguration(configuration, "Organization:Reason"));
+
+static string RequiredConfiguration(IConfiguration configuration, string key) =>
+    string.IsNullOrWhiteSpace(configuration[key])
+        ? throw new InvalidOperationException($"Configuration '{key}' is required for organization operations.")
+        : configuration[key]!;
 
 public partial class Program
 {

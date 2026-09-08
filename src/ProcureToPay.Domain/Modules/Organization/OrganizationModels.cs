@@ -161,8 +161,8 @@ public sealed class AuthorizationScopeSet
 
     public override string ToString() => string.Join(",", _scopes.Select(scope =>
         scope.Dimension == ScopeDimension.Organization
-            ? "ORGANIZATION"
-            : $"{scope.Dimension}:{scope.Reference}"));
+            ? OrganizationContractCodes.Scope(ScopeDimension.Organization)
+            : $"{OrganizationContractCodes.Scope(scope.Dimension)}:{scope.Reference}"));
 }
 
 public sealed class Organization
@@ -375,6 +375,20 @@ public sealed class UserProfile
     public string? JobTitle { get; private set; }
     public UserProfileStatus Status { get; private set; }
     public int Version { get; private set; } = 1;
+
+    public static UserProfile Restore(
+        Guid id, string issuer, string subject, string? email, string? displayName,
+        Guid? departmentId, string? jobTitle, UserProfileStatus status, int version)
+    {
+        var profile = new UserProfile(id, issuer, subject, email, displayName)
+        {
+            DepartmentId = departmentId,
+            JobTitle = jobTitle,
+            Status = status,
+            Version = version
+        };
+        return profile;
+    }
 
     public void RefreshIdentityClaims(string? email, string? displayName)
     {

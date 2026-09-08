@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -62,7 +64,8 @@ public sealed class CurrentUserProvisioningService(
 
             _logger.LogInformation(
                 "organization.user_provisioned_jit issuer={Issuer} subject={Subject} userId={UserId} status={Status}",
-                profile.Issuer, profile.Subject, profile.Id, nameof(UserProfileStatus.PendingSetup));
+                Pseudonym(profile.Issuer), Pseudonym(profile.Subject), profile.Id,
+                nameof(UserProfileStatus.PendingSetup));
             return profile;
         }
 
@@ -75,7 +78,7 @@ public sealed class CurrentUserProvisioningService(
             await dbContext.SaveChangesAsync(cancellationToken);
             _logger.LogInformation(
                 "organization.user_claims_synchronized issuer={Issuer} subject={Subject} userId={UserId} version={Version}",
-                profile.Issuer, profile.Subject, profile.Id, profile.Version);
+                Pseudonym(profile.Issuer), Pseudonym(profile.Subject), profile.Id, profile.Version);
         }
 
         return profile;
@@ -111,6 +114,9 @@ public sealed class CurrentUserProvisioningService(
 
     private static string? Normalize(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string Pseudonym(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..16].ToLowerInvariant();
 
     private const string GlobalScopeJson = "[{\"dimension\":\"Organization\",\"reference\":null}]";
 }

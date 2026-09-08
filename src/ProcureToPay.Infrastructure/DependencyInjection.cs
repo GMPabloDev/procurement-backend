@@ -3,6 +3,7 @@ using Amazon.S3;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Application.Abstractions.Files;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Organization;
@@ -25,6 +26,8 @@ public static class DependencyInjection
         services.AddScoped<OrganizationBootstrapper>();
         services.AddScoped<CurrentUserProvisioningService>();
         services.AddScoped<OrganizationEligibilityService>();
+        services.AddScoped<IOrganizationEligibilityService>(provider =>
+            provider.GetRequiredService<OrganizationEligibilityService>());
 
         services.AddDefaultAWSOptions(configuration.GetAWSOptions());
         services.AddAWSService<IAmazonS3>();

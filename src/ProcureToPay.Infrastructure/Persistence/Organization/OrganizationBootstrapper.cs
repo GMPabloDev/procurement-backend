@@ -179,14 +179,15 @@ public sealed class OrganizationBootstrapper(
             admin.Version++;
         }
 
-        var hasAdminAssignment = await dbContext.RoleAssignments.AnyAsync(
+        var adminAssignment = await dbContext.RoleAssignments.SingleOrDefaultAsync(
             assignment => assignment.UserProfileId == admin.Id &&
                           assignment.Role == (int)SystemRole.Admin &&
                           assignment.Status == (int)AssignmentStatus.Active,
             cancellationToken);
-        if (!hasAdminAssignment)
+        var adminAssignmentCreated = adminAssignment is null;
+        if (adminAssignmentCreated)
         {
-            dbContext.RoleAssignments.Add(new RoleAssignmentRecord
+            adminAssignment = new RoleAssignmentRecord
             {
                 Id = Guid.NewGuid(),
                 UserProfileId = admin.Id,
@@ -196,9 +197,11 @@ public sealed class OrganizationBootstrapper(
                 AssignedAt = now,
                 AssignedBy = SystemActorId,
                 Version = 1
-            });
+            };
+            dbContext.RoleAssignments.Add(adminAssignment);
         }
 
+        var assignmentForAudit = adminAssignment!;
         dbContext.AdministrativeAuditRecords.Add(CreateAudit(
             now,
             "ADMINISTRATOR_RECOVERED",
@@ -206,7 +209,7 @@ public sealed class OrganizationBootstrapper(
             admin.Id,
             options.Reason,
             GlobalScopeJson,
-            $"{{\"subchanges\":[{{\"targetType\":\"UserProfile\",\"targetId\":\"{admin.Id}\",\"previousVersion\":{previousAdminVersion?.ToString() ?? "null"},\"newVersion\":{admin.Version}}},{{\"targetType\":\"RoleAssignment\",\"targetId\":\"{admin.Id}\",\"newVersion\":1,\"created\":{(!hasAdminAssignment).ToString().ToLowerInvariant()}}}]}}",
+            $"{{\"subchanges\":[{{\"targetType\":\"UserProfile\",\"targetId\":\"{admin.Id}\",\"previousVersion\":{previousAdminVersion?.ToString() ?? "null"},\"newVersion\":{admin.Version}}},{{\"targetType\":\"RoleAssignment\",\"targetId\":\"{assignmentForAudit.Id}\",\"previousVersion\":{(adminAssignmentCreated ? "null" : (assignmentForAudit.Version - 1).ToString())},\"newVersion\":{assignmentForAudit.Version},\"created\":{adminAssignmentCreated.ToString().ToLowerInvariant()}}}]}}",
             previousAdminVersion, admin.Version, beforeAdminJson));
 
         await dbContext.SaveChangesAsync(cancellationToken);

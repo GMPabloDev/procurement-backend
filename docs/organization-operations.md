@@ -5,7 +5,10 @@
 1. Configurar `ConnectionStrings:SqlServer` y el bloque `Authentication:JwtBearer` (`Authority`, `Audience` y `RequireHttpsMetadata`).
 2. Aplicar las migraciones EF Core antes de publicar la API:
    `dotnet ef database update --project src/ProcureToPay.Infrastructure --startup-project src/ProcureToPay.Api`.
-3. Ejecutar `OrganizationBootstrapper` desde el proceso operativo restringido, nunca mediante HTTP. El bootstrap es idempotente y rechaza una configuración divergente.
+3. Ejecutar el comando operativo restringido desde el mismo artefacto publicado, nunca mediante HTTP:
+   - Bootstrap inicial: `dotnet ProcureToPay.Api.dll --organization-bootstrap`.
+   - Recuperación break-glass separada: `dotnet ProcureToPay.Api.dll --organization-recover-admin`.
+   Ambos comandos leen exclusivamente la sección `Organization` de configuración, exigen `Reason`, son auditados y nunca imprimen secretos.
 4. Publicar la API solo después de que exista el marcador persistente de bootstrap.
 
 El bootstrap recibe código/nombre de organización, moneda ISO, zona horaria IANA, mes fiscal, Legal Entity, Department inicial y la identidad administrativa inicial. Los secretos no forman parte de los parámetros ni de los registros de auditoría.
@@ -19,8 +22,9 @@ Las rutas administrativas versionadas principales son:
 - `GET /api/v1/me` y `GET /api/v1/organization`.
 - `GET/POST /api/v1/departments`.
 - `GET /api/v1/users`, setup, activate, deactivate y return-to-setup.
-- Asignación/revocación de roles en `/api/v1/users/{id}/roles`.
-- Creación de niveles y grants en `/api/v1/authority-levels` y `/api/v1/users/{id}/grants`.
+- Asignación/revocación de roles en `/api/v1/users/{id}/roles`; la revocación usa el `assignmentId` para soportar scopes no globales.
+- Creación/retiro de niveles y grants en `/api/v1/authority-levels` y `/api/v1/users/{id}/grants`.
+- Consulta de evidencia/auditoría en `/api/v1/audit` y evaluación persistida en `/api/v1/eligibility`.
 
 Solo un perfil activo con `ADMIN` local y scope organizacional puede mutar. Un `AUDITOR` solo puede leer configuración habilitada por su assignment. Los claims de rol del IdP no sustituyen esta comprobación.
 

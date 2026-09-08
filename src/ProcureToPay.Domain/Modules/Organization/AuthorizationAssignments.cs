@@ -54,6 +54,19 @@ public sealed class RoleAssignment
         return new RoleAssignment(id, userId, role, scope, assignedAt, assignedBy);
     }
 
+    public static RoleAssignment Restore(
+        Guid id, Guid userId, SystemRole role, AuthorizationScopeSet scope,
+        DateTimeOffset assignedAt, Guid assignedBy, AssignmentStatus status, int version,
+        DateTimeOffset? revokedAt, Guid? revokedBy)
+    {
+        var assignment = Create(id, userId, role, scope, assignedAt, assignedBy);
+        assignment.Status = status;
+        assignment.Version = version;
+        assignment.RevokedAt = revokedAt;
+        assignment.RevokedBy = revokedBy;
+        return assignment;
+    }
+
     public bool Covers(AuthorizationScopeSet requiredScope) =>
         Status == AssignmentStatus.Active && Scope.Covers(requiredScope);
 
@@ -215,6 +228,21 @@ public sealed class ApprovalAuthorityGrant
             normalizedTo,
             grantedAt,
             grantedBy);
+    }
+
+    public static ApprovalAuthorityGrant Restore(
+        Guid id, Guid userId, AuthorityLevelVersion level, decimal? maxAmountBase,
+        string baseCurrency, AuthorizationScopeSet scope, DateTimeOffset validFrom,
+        DateTimeOffset? validTo, DateTimeOffset grantedAt, Guid grantedBy,
+        GrantStatus status, int version, DateTimeOffset? revokedAt, Guid? revokedBy)
+    {
+        var grant = Create(id, userId, level, maxAmountBase, baseCurrency, scope,
+            validFrom, validTo, grantedAt, grantedBy);
+        grant.Status = status;
+        grant.Version = version;
+        grant.RevokedAt = revokedAt;
+        grant.RevokedBy = revokedBy;
+        return grant;
     }
 
     public bool IsEffectiveAt(DateTimeOffset at) =>
