@@ -118,6 +118,19 @@ public sealed class OrganizationAuthorizationTests
     }
 
     [Fact]
+    public void Contract_codes_are_explicit_and_reject_numeric_aliases()
+    {
+        Assert.True(OrganizationContractCodes.TryRole("DEPARTMENT_APPROVER", out var role));
+        Assert.Equal(SystemRole.DepartmentApprover, role);
+        Assert.False(OrganizationContractCodes.TryRole("2", out _));
+        Assert.True(OrganizationContractCodes.TryAuthority("BUSINESS_NEED", out var authority));
+        Assert.Equal(ApprovalAuthorityType.BusinessNeed, authority);
+        Assert.True(OrganizationContractCodes.TryScope("LEGAL_ENTITY", out var scope));
+        Assert.Equal(ScopeDimension.LegalEntity, scope);
+        Assert.Equal("PENDING_SETUP", OrganizationContractCodes.Status(UserProfileStatus.PendingSetup));
+    }
+
+    [Fact]
     public void Admin_assignment_requires_organization_scope()
     {
         Assert.Throws<DomainValidationException>(() => RoleAssignment.Create(
@@ -127,6 +140,18 @@ public sealed class OrganizationAuthorizationTests
             AuthorizationScopeSet.Create([AuthorizationScope.For(ScopeDimension.Department, "IT")]),
             DateTimeOffset.UtcNow,
             Guid.NewGuid()));
+    }
+
+    [Fact]
+    public void Restored_profiles_preserve_persisted_version_and_state()
+    {
+        var departmentId = Guid.NewGuid();
+        var profile = UserProfile.Restore(Guid.NewGuid(), "https://issuer", "subject", "a@acme.test",
+            "Alice", departmentId, "Analyst", UserProfileStatus.Active, 7);
+
+        Assert.Equal(UserProfileStatus.Active, profile.Status);
+        Assert.Equal(7, profile.Version);
+        Assert.Equal(departmentId, profile.DepartmentId);
     }
 
     [Fact]

@@ -111,7 +111,7 @@ public sealed class OrganizationBootstrapper(
             organization.Id,
             options.Reason,
             GlobalScopeJson,
-            $"{{\"subchanges\":[{{\"targetType\":\"Organization\",\"targetId\":\"{organization.Id}\",\"newVersion\":1}},{{\"targetType\":\"LegalEntity\",\"targetId\":\"{legalEntity.Id}\",\"newVersion\":1}},{{\"targetType\":\"Department\",\"targetId\":\"{department.Id}\",\"newVersion\":1}},{{\"targetType\":\"UserProfile\",\"targetId\":\"{admin.Id}\",\"newVersion\":1}},{{\"targetType\":\"RoleAssignment\",\"targetId\":\"{adminAssignmentId}\",\"newVersion\":1}}]}}"));
+            $"{{\"subchanges\":[{{\"targetType\":\"Organization\",\"targetId\":\"{organization.Id}\",\"previousVersion\":null,\"newVersion\":{organization.Version}}},{{\"targetType\":\"LegalEntity\",\"targetId\":\"{legalEntity.Id}\",\"previousVersion\":null,\"newVersion\":{legalEntity.Version}}},{{\"targetType\":\"Department\",\"targetId\":\"{department.Id}\",\"previousVersion\":null,\"newVersion\":{department.Version}}},{{\"targetType\":\"UserProfile\",\"targetId\":\"{admin.Id}\",\"previousVersion\":null,\"newVersion\":{admin.Version}}},{{\"targetType\":\"RoleAssignment\",\"targetId\":\"{adminAssignmentId}\",\"previousVersion\":null,\"newVersion\":1}}]}}"));
         dbContext.BootstrapStates.Add(new BootstrapStateRecord
         {
             ConfigurationFingerprint = fingerprint,
@@ -202,6 +202,22 @@ public sealed class OrganizationBootstrapper(
         }
 
         var assignmentForAudit = adminAssignment!;
+        var recoverySubchanges = new List<object>
+        {
+            new
+            {
+                targetType = "UserProfile", targetId = admin.Id,
+                previousVersion = previousAdminVersion, newVersion = admin.Version
+            }
+        };
+        if (adminAssignmentCreated)
+        {
+            recoverySubchanges.Add(new
+            {
+                targetType = "RoleAssignment", targetId = assignmentForAudit.Id,
+                previousVersion = (int?)null, newVersion = assignmentForAudit.Version
+            });
+        }
         dbContext.AdministrativeAuditRecords.Add(CreateAudit(
             now,
             "ADMINISTRATOR_RECOVERED",
@@ -209,7 +225,7 @@ public sealed class OrganizationBootstrapper(
             admin.Id,
             options.Reason,
             GlobalScopeJson,
-            $"{{\"subchanges\":[{{\"targetType\":\"UserProfile\",\"targetId\":\"{admin.Id}\",\"previousVersion\":{previousAdminVersion?.ToString() ?? "null"},\"newVersion\":{admin.Version}}},{{\"targetType\":\"RoleAssignment\",\"targetId\":\"{assignmentForAudit.Id}\",\"previousVersion\":{(adminAssignmentCreated ? "null" : (assignmentForAudit.Version - 1).ToString())},\"newVersion\":{assignmentForAudit.Version},\"created\":{adminAssignmentCreated.ToString().ToLowerInvariant()}}}]}}",
+            JsonSerializer.Serialize(new { subchanges = recoverySubchanges }),
             previousAdminVersion, admin.Version, beforeAdminJson));
 
         await dbContext.SaveChangesAsync(cancellationToken);

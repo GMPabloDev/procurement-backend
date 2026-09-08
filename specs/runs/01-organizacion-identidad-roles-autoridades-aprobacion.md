@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-08 05:56 -05
-> **Actualizado:** 2026-09-08 14:45 -05
-> **HEAD verificado:** 0ce1dbff7f66485c67189c38d1b08e7271c733b1
+> **Actualizado:** 2026-09-08 15:20 -05
+> **HEAD verificado:** 163832ecab1faa06c9eb90976490f2be2b2e3ff9
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -154,6 +154,13 @@
 - HEAD: `0ce1dbff7f66485c67189c38d1b08e7271c733b1` en rama aislada.
 - Estado: pendiente de nueva revisión independiente; no se declara integración.
 
+### CP-09 — 2026-09-08 15:20 -05 — Códigos y versiones verificables
+
+- Cambios: versionado de niveles retirable con creación de nueva versión, pruebas de códigos contractuales y restauración de versiones persistidas, más correcciones de auditoría por scope/orden y validación monetaria de elegibilidad.
+- Verificación: `dotnet build ProcureToPay.sln --no-restore` (0 advertencias, 0 errores); pruebas unitarias (17 correctas); validaciones de run/specctl/doctor/diff-check previas correctas.
+- HEAD: `163832ecab1faa06c9eb90976490f2be2b2e3ff9` en rama aislada.
+- Estado: pendiente de nueva revisión independiente; no se declara integración.
+
 La segunda pasada confirmó middleware scoped, validación básica de referencias y transacciones del último ADMIN, pero bloqueó por: guards de transición de usuarios; scopes como conjuntos y solapamiento real; referencias de Department en grants futuros; API de Legal Entity/roles/grants/evidencia y lectura AUDITOR; catálogo ISO/IANA y versionado de niveles; snapshots before/after y subcambios de auditoría; evidencia de exclusiones inmutable; Problem Details de model-state; health/bootstrap operativo y cobertura E2E completa.
 
 La rama tiene cuatro commits de implementación (`4f6dff4`, `36df88b`, `86f3ba7` y `df33285`), más el ajuste de prueba `f14c017` y el checkpoint administrativo `a531e70`; el único cambio posterior pendiente es este run administrativo. No se ha hecho merge a `main`.
@@ -191,8 +198,8 @@ La rama tiene cuatro commits de implementación (`4f6dff4`, `36df88b`, `86f3ba7`
 
 ## Cierre
 
-- HEAD verificado: 0ce1dbff7f66485c67189c38d1b08e7271c733b1.
-- Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285`, `f14c017`, `a531e70` y `0ce1dbf` en rama aislada; integración aún bloqueada por revisión independiente.
+- HEAD verificado: 163832ecab1faa06c9eb90976490f2be2b2e3ff9.
+- Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285`, `f14c017`, `a531e70`, `0ce1dbf` y `163832e` en rama aislada; integración aún bloqueada por revisión independiente.
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.
 - Metadatos de vigencia actualizados: Pendiente.

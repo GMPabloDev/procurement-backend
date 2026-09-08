@@ -58,7 +58,7 @@ public sealed class OrganizationEligibilityService(ProcureToPayDbContext dbConte
 
     private static AuthorizationScopeSet ParseScope(string json)
     {
-        var entries = JsonSerializer.Deserialize<ScopeEntry[]>(json)
+        var entries = JsonSerializer.Deserialize<ScopeEntry[]>(json, ScopeJsonOptions)
             ?? throw new InvalidOperationException("Stored authorization scope is invalid.");
         return AuthorizationScopeSet.Create(entries.Select(entry =>
         {
@@ -74,4 +74,6 @@ public sealed class OrganizationEligibilityService(ProcureToPayDbContext dbConte
     }
 
     private sealed record ScopeEntry(string? Dimension, string? Reference);
+
+    private static readonly JsonSerializerOptions ScopeJsonOptions = new(JsonSerializerDefaults.Web);
 }
