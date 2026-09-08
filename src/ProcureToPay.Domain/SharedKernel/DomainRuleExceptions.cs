@@ -8,10 +8,6 @@ public sealed class DomainConflictException(string message) : DomainException(me
 {
 }
 
-public sealed class DomainRuleException(string message) : DomainException(message)
-{
-}
-
 public sealed class DomainForbiddenException(string message) : DomainException(message)
 {
 }

@@ -534,7 +534,7 @@ public sealed class OrganizationController(
         if (user.Department is null || user.Department.Status != (int)EntityStatus.Active ||
             string.IsNullOrWhiteSpace(user.JobTitle))
         {
-            throw new DomainRuleException("User requires an active Department and Job Title before activation.");
+            throw new DomainException("User requires an active Department and Job Title before activation.");
         }
         var beforeJson = JsonSerializer.Serialize(new { user.Status, user.DepartmentId, user.JobTitle });
         user.Status = (int)UserProfileStatus.Active;
