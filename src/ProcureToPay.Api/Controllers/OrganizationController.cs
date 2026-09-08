@@ -534,7 +534,7 @@ public sealed class OrganizationController(
         if (user.Department is null || user.Department.Status != (int)EntityStatus.Active ||
             string.IsNullOrWhiteSpace(user.JobTitle))
         {
-            throw new DomainValidationException("User requires an active Department and Job Title before activation.");
+            throw new DomainRuleException("User requires an active Department and Job Title before activation.");
         }
         var beforeJson = JsonSerializer.Serialize(new { user.Status, user.DepartmentId, user.JobTitle });
         user.Status = (int)UserProfileStatus.Active;
@@ -1061,7 +1061,7 @@ public sealed class OrganizationController(
                         .Select(item => item.Code)
                         .SingleOrDefaultAsync(cancellationToken),
                     _ => null
-                } ?? throw new DomainNotFoundException("The scoped reference is not active.");
+                } ?? throw new DomainValidationException("The scoped reference is not active.");
                 scopes.Add(AuthorizationScope.For(dimension, reference));
             }
             serialized.Add(new { dimension = OrganizationContractCodes.Scope(dimension), reference });

@@ -121,16 +121,57 @@ public sealed class EligibilityResolverTests
             null,
             at.AddDays(-1),
             Guid.NewGuid());
+        var secondGrant = ApprovalAuthorityGrant.Create(
+            Guid.NewGuid(),
+            user.Id,
+            level,
+            15_000m,
+            "PEN",
+            scope,
+            at.AddDays(-1),
+            null,
+            at.AddDays(-1),
+            Guid.NewGuid());
         var request = EligibilityRequest.Create(
             SystemRole.FinanceApprover,
             scope,
             AuthorityRequirement.Required(ApprovalAuthorityType.Financial, 1, 20_000m, "PEN"),
-            at,
-            [user.Id]);
+            at);
 
-        var candidates = EligibilityResolver.Resolve([user], [assignment], [grant], request);
+        var candidates = EligibilityResolver.Resolve([user], [assignment], [grant, secondGrant], request);
 
         Assert.Empty(candidates);
+
+        var excludedRequest = EligibilityRequest.Create(
+            SystemRole.FinanceApprover,
+            scope,
+            AuthorityRequirement.Required(ApprovalAuthorityType.Financial, 1, 10_000m, "PEN"),
+            at,
+            [user.Id]);
+        Assert.Empty(EligibilityResolver.Resolve([user], [assignment], [grant], excludedRequest));
+    }
+
+    [Fact]
+    public void Future_and_revoked_grants_are_not_eligible()
+    {
+        var user = CreateActiveUser("finance-dates", Guid.NewGuid());
+        var scope = AuthorizationScopeSet.Create([AuthorizationScope.Global()]);
+        var assignment = RoleAssignment.Create(Guid.NewGuid(), user.Id, SystemRole.FinanceApprover,
+            scope, new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), Guid.NewGuid());
+        var level = new AuthorityLevelVersion(Guid.NewGuid(), ApprovalAuthorityType.Financial,
+            "FINANCE_LEVEL_1", 1, 1);
+        var at = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero);
+        var future = ApprovalAuthorityGrant.Create(Guid.NewGuid(), user.Id, level, 20_000m, "PEN",
+            scope, at.AddDays(1), null, at, Guid.NewGuid());
+        var request = EligibilityRequest.Create(SystemRole.FinanceApprover, scope,
+            AuthorityRequirement.Required(ApprovalAuthorityType.Financial, 1, 20_000m, "PEN"), at);
+
+        Assert.Empty(EligibilityResolver.Resolve([user], [assignment], [future], request));
+
+        var revoked = ApprovalAuthorityGrant.Create(Guid.NewGuid(), user.Id, level, 20_000m, "PEN",
+            scope, at.AddDays(-1), null, at.AddDays(-1), Guid.NewGuid());
+        revoked.Revoke(at, Guid.NewGuid());
+        Assert.Empty(EligibilityResolver.Resolve([user], [assignment], [revoked], request));
     }
 
     [Fact]

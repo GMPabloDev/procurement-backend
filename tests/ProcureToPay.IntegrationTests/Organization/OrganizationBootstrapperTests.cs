@@ -67,6 +67,22 @@ public sealed class OrganizationBootstrapperTests
             .FirstAsync(cancellationToken);
         Assert.Contains("\"before\"", recoveryAudit.AfterJson, StringComparison.Ordinal);
         Assert.Contains("\"after\"", recoveryAudit.AfterJson, StringComparison.Ordinal);
+
+        var existingAdmin = await context.UserProfiles.SingleAsync(
+            item => item.Subject == "admin-1", cancellationToken);
+        var existingAdminVersionBeforeRecovery = existingAdmin.Version + 1;
+        existingAdmin.Status = (int)UserProfileStatus.Inactive;
+        existingAdmin.Version = existingAdminVersionBeforeRecovery;
+        await context.SaveChangesAsync(cancellationToken);
+        var restoredExistingId = await bootstrapper.RecoverAdministratorAsync(configuration, cancellationToken);
+        Assert.Equal(existingAdmin.Id, restoredExistingId);
+        var existingRecoveryAudit = await context.AdministrativeAuditRecords
+            .OrderByDescending(item => item.OccurredAt)
+            .FirstAsync(cancellationToken);
+        Assert.Contains($"\"version\":{existingAdminVersionBeforeRecovery}",
+            existingRecoveryAudit.AfterJson, StringComparison.Ordinal);
+        Assert.Contains($"\"version\":{existingAdminVersionBeforeRecovery + 1}",
+            existingRecoveryAudit.AfterJson, StringComparison.Ordinal);
     }
 
     [Fact]

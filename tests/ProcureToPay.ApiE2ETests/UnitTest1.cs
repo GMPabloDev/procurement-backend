@@ -43,16 +43,6 @@ public sealed class UnitTest1
         var problem = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         Assert.Contains("/problems/authentication-required", problem, StringComparison.Ordinal);
 
-        using var invalidTokenClient = factory.CreateClient(new WebApplicationFactoryClientOptions
-        {
-            AllowAutoRedirect = false,
-            BaseAddress = new Uri("https://localhost")
-        });
-        invalidTokenClient.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", "not-a-jwt");
-        using var invalidToken = await invalidTokenClient.GetAsync(
-            "/api/v1/organization", TestContext.Current.CancellationToken);
-        Assert.Equal(HttpStatusCode.Unauthorized, invalidToken.StatusCode);
     }
 
     [Fact]
@@ -117,11 +107,30 @@ public sealed class UnitTest1
         using var pendingBusiness = await pendingClient.GetAsync("/api/v1/organization", cancellationToken);
         Assert.Equal(HttpStatusCode.Forbidden, pendingBusiness.StatusCode);
 
+        using var invalidLifecycleClient = factory.CreateClient();
+        invalidLifecycleClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", TestApiFactory.CreateToken("pending-2"));
+        using var pendingTwoState = await invalidLifecycleClient.GetAsync("/api/v1/me", cancellationToken);
+        var pendingTwo = await pendingTwoState.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        var pendingTwoId = pendingTwo.GetProperty("id").GetGuid();
+
         using var adminClient = factory.CreateClient();
         adminClient.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", TestApiFactory.CreateToken("admin-1"));
         using var organization = await adminClient.GetAsync("/api/v1/organization", cancellationToken);
         Assert.Equal(HttpStatusCode.OK, organization.StatusCode);
+        var bootstrapAdmin = await context.UserProfiles.SingleAsync(
+            item => item.Subject == "admin-1", cancellationToken);
+        using var lastAdminDeactivate = await adminClient.PostAsJsonAsync(
+            $"/api/v1/users/{bootstrapAdmin.Id}/deactivate",
+            new { reason = "must retain administrator", expectedVersion = bootstrapAdmin.Version }, cancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, lastAdminDeactivate.StatusCode);
+        using var invalidLifecycle = await adminClient.PostAsJsonAsync(
+            $"/api/v1/users/{pendingTwoId}/activate",
+            new { reason = "activate before setup", expectedVersion = 1 }, cancellationToken);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, invalidLifecycle.StatusCode);
+        Assert.Contains("/problems/domain-rule-violation",
+            await invalidLifecycle.Content.ReadAsStringAsync(cancellationToken), StringComparison.Ordinal);
         using var setup = await adminClient.PatchAsJsonAsync(
             $"/api/v1/users/{pendingProfileId}/setup",
             new { departmentId = department.Id, jobTitle = "Requester", reason = "setup", expectedVersion = 1 },
@@ -135,12 +144,14 @@ public sealed class UnitTest1
             $"/api/v1/users/{pendingProfileId}/roles",
             new
             {
-                role = "REQUESTER",
-                scopes = new[] { new { dimension = "ORGANIZATION", reference = (string?)null } },
+                role = "AUDITOR",
+                scopes = new[] { new { dimension = "DEPARTMENT", reference = "IT" } },
                 reason = "assign",
                 expectedUserVersion = 3
             }, cancellationToken);
         Assert.Equal(HttpStatusCode.NoContent, assign.StatusCode);
+        using var authorizedBeforeRevoke = await pendingClient.GetAsync("/api/v1/users", cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, authorizedBeforeRevoke.StatusCode);
         using var deactivate = await adminClient.PostAsJsonAsync(
             $"/api/v1/users/{pendingProfileId}/deactivate",
             new { reason = "deactivate", expectedVersion = 3 }, cancellationToken);
@@ -200,6 +211,16 @@ public sealed class UnitTest1
         Assert.Equal(HttpStatusCode.Created, secondLevel.StatusCode);
         var secondLevelBody = await secondLevel.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
         Assert.Equal(2, secondLevelBody.GetProperty("version").GetInt32());
+        using var invalidScope = await adminClient.PostAsJsonAsync(
+            $"/api/v1/users/{auditor.Id}/roles",
+            new
+            {
+                role = "REQUESTER",
+                scopes = new[] { new { dimension = "DEPARTMENT", reference = "DOES_NOT_EXIST" } },
+                reason = "invalid reference",
+                expectedUserVersion = 1
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidScope.StatusCode);
 
         using var auditorClient = factory.CreateClient();
         auditorClient.DefaultRequestHeaders.Authorization =
@@ -232,6 +253,54 @@ public sealed class UnitTest1
                 requiredScopes = new[] { new { dimension = "DEPARTMENT", reference = "FIN" } }
             }, cancellationToken);
         Assert.Equal(HttpStatusCode.Forbidden, outOfScopeEligibility.StatusCode);
+
+        var invalidTokens = new[]
+        {
+            "not-a-jwt",
+            TestApiFactory.CreateToken("invalid-issuer", "https://wrong-issuer"),
+            TestApiFactory.CreateToken("invalid-audience", audience: "wrong-audience"),
+            TestApiFactory.CreateToken("expired", expiresAt: DateTime.UtcNow.AddMinutes(-10))
+        };
+        foreach (var (token, index) in invalidTokens.Select((token, index) => (token, index)))
+        {
+            using var invalidTokenClient = factory.CreateClient();
+            invalidTokenClient.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", token);
+            using var invalidToken = await invalidTokenClient.GetAsync(
+                "/api/v1/organization", cancellationToken);
+            Assert.True(invalidToken.StatusCode == HttpStatusCode.Unauthorized,
+                $"Invalid token index {index} returned {invalidToken.StatusCode}.");
+        }
+
+        var auditorVersion = await context.UserProfiles
+            .AsNoTracking()
+            .Where(item => item.Id == auditor.Id)
+            .Select(item => item.Version)
+            .SingleAsync(cancellationToken);
+        var authorityLevelId = secondLevelBody.GetProperty("id").GetGuid();
+        using var grant = await adminClient.PostAsJsonAsync(
+            $"/api/v1/users/{auditor.Id}/grants",
+            new
+            {
+                authorityLevelId,
+                maxAmountBase = 20_000m,
+                baseCurrency = "PEN",
+                scopes = new[] { new { dimension = "DEPARTMENT", reference = "IT" } },
+                validFrom = DateTimeOffset.UtcNow.AddMinutes(-1),
+                reason = "grant",
+                expectedUserVersion = auditorVersion
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.Created, grant.StatusCode);
+        using var deactivateAuditor = await adminClient.PostAsJsonAsync(
+            $"/api/v1/users/{auditor.Id}/deactivate",
+            new { reason = "revoke all auditor privileges", expectedVersion = auditorVersion }, cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, deactivateAuditor.StatusCode);
+        using var revokedAuditorRequest = await auditorClient.GetAsync("/api/v1/users", cancellationToken);
+        Assert.Equal(HttpStatusCode.Forbidden, revokedAuditorRequest.StatusCode);
+        var revokedGrant = await context.AuthorityGrants
+            .AsNoTracking()
+            .SingleAsync(item => item.UserProfileId == auditor.Id, cancellationToken);
+        Assert.Equal((int)GrantStatus.Revoked, revokedGrant.Status);
     }
 
     private static OrganizationBootstrapOptions CreateOptions(string subject, string reason) => new(
@@ -246,13 +315,15 @@ public sealed class UnitTest1
 
         internal static string CreateToken(
             string subject,
-            string issuer = "https://keycloak.test/realms/procure-to-pay")
+            string issuer = "https://keycloak.test/realms/procure-to-pay",
+            string audience = "procure-to-pay-tests",
+            DateTime? expiresAt = null)
         {
             var token = new JwtSecurityToken(
                 issuer,
-                audience: "procure-to-pay-tests",
+                audience,
                 claims: [new Claim(JwtRegisteredClaimNames.Sub, subject)],
-                expires: DateTime.UtcNow.AddMinutes(5),
+                expires: expiresAt ?? DateTime.UtcNow.AddMinutes(5),
                 signingCredentials: new SigningCredentials(SigningKey, SecurityAlgorithms.HmacSha256));
             return new JwtSecurityTokenHandler().WriteToken(token);
         }
@@ -291,6 +362,7 @@ public sealed class UnitTest1
                     options.TokenValidationParameters.ValidateIssuerSigningKey = true;
                     options.TokenValidationParameters.ValidateIssuer = true;
                     options.TokenValidationParameters.ValidateAudience = true;
+                    options.TokenValidationParameters.ClockSkew = TimeSpan.Zero;
                 });
             });
         }

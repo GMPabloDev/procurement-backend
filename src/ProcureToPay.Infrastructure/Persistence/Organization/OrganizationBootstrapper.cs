@@ -122,7 +122,7 @@ public sealed class OrganizationBootstrapper(
             new { targetType = "UserProfile", targetId = admin.Id,
                 previousVersion = (int?)null, newVersion = admin.Version,
                 before = (object?)null,
-                after = new { admin.Issuer, admin.Subject, admin.Status, admin.DepartmentId,
+                after = new { status = admin.Status, admin.DepartmentId,
                     admin.JobTitle, admin.Version } },
             new { targetType = "RoleAssignment", targetId = adminAssignmentId,
                 previousVersion = (int?)null, newVersion = 1,
@@ -175,8 +175,14 @@ public sealed class OrganizationBootstrapper(
             cancellationToken);
         var now = DateTimeOffset.UtcNow;
         var previousAdminVersion = existing?.Version;
-        var beforeAdminJson = existing is null ? null :
-            $"{{\"status\":\"{((UserProfileStatus)existing.Status)}\",\"departmentId\":\"{existing.DepartmentId}\",\"jobTitle\":\"{existing.JobTitle}\"}}";
+        var beforeAdminSnapshot = existing is null ? (object?)null : new
+        {
+            status = (UserProfileStatus)existing.Status,
+            departmentId = existing.DepartmentId,
+            jobTitle = existing.JobTitle,
+            version = existing.Version
+        };
+        var beforeAdminJson = existing is null ? null : JsonSerializer.Serialize(beforeAdminSnapshot);
 
         UserProfileRecord admin;
         if (existing is null)
@@ -234,13 +240,7 @@ public sealed class OrganizationBootstrapper(
             {
                 targetType = "UserProfile", targetId = admin.Id,
                 previousVersion = previousAdminVersion, newVersion = admin.Version,
-                before = existing is null ? null : new
-                {
-                    status = (UserProfileStatus)existing.Status,
-                    departmentId = existing.DepartmentId,
-                    jobTitle = existing.JobTitle,
-                    version = previousAdminVersion
-                },
+                before = beforeAdminSnapshot,
                 after = new
                 {
                     status = (UserProfileStatus)admin.Status,
