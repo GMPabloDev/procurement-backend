@@ -14,7 +14,7 @@
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-08 05:56 -05
 > **Actualizado:** 2026-09-08 14:05 -05
-> **HEAD verificado:** f14c01726942782a7ebd9cf7fa4249ddd5309c94
+> **HEAD verificado:** a531e70bce8315e21ff7b2754d8b53920118bf4e
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -142,14 +142,14 @@
 
 - Cambios: operaciones de renombrado de Legal Entity, revocación scoped por identificador, retiro/versionado de niveles, lectura filtrada de roles/grants/auditoría con snapshots, operación persistida `POST /api/v1/eligibility`, validación determinista ISO 4217 y UTC, health `/health/bootstrap`, logs estructurados JIT y transacciones serializables en mutaciones de roles/departamentos.
 - Verificación: `dotnet build ProcureToPay.sln --no-restore` (0 advertencias, 0 errores); `dotnet test --solution ProcureToPay.sln --no-restore` (21 correctos); lint de run, `specctl check 01 --approval`, `specctl doctor` y `git diff --check` correctos.
-- HEAD: `f14c01726942782a7ebd9cf7fa4249ddd5309c94` en rama aislada.
+- HEAD: `a531e70bce8315e21ff7b2754d8b53920118bf4e` en rama aislada.
 - Estado: pendiente de nueva revisión independiente; no se declara integración.
 
 ### Segunda revisión — hallazgos vigentes
 
 La segunda pasada confirmó middleware scoped, validación básica de referencias y transacciones del último ADMIN, pero bloqueó por: guards de transición de usuarios; scopes como conjuntos y solapamiento real; referencias de Department en grants futuros; API de Legal Entity/roles/grants/evidencia y lectura AUDITOR; catálogo ISO/IANA y versionado de niveles; snapshots before/after y subcambios de auditoría; evidencia de exclusiones inmutable; Problem Details de model-state; health/bootstrap operativo y cobertura E2E completa.
 
-La rama tiene cuatro commits de implementación (`4f6dff4`, `36df88b`, `86f3ba7` y `df33285`), más el ajuste de prueba `f14c017`; el único cambio posterior pendiente es este run administrativo. No se ha hecho merge a `main`.
+La rama tiene cuatro commits de implementación (`4f6dff4`, `36df88b`, `86f3ba7` y `df33285`), más el ajuste de prueba `f14c017` y el checkpoint administrativo `a531e70`; el único cambio posterior pendiente es este run administrativo. No se ha hecho merge a `main`.
 
 ## Resumen de cambios
 
@@ -184,8 +184,8 @@ La rama tiene cuatro commits de implementación (`4f6dff4`, `36df88b`, `86f3ba7`
 
 ## Cierre
 
-- HEAD verificado: 86f3ba78afab733d405e312375b2f65b1ab7ff6b.
-- Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285` y `f14c017` en rama aislada; integración aún bloqueada por revisión independiente.
+- HEAD verificado: a531e70bce8315e21ff7b2754d8b53920118bf4e.
+- Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285`, `f14c017` y `a531e70` en rama aislada; integración aún bloqueada por revisión independiente.
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.
 - Metadatos de vigencia actualizados: Pendiente.
