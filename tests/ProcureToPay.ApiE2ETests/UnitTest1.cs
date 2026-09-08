@@ -100,6 +100,28 @@ public sealed class UnitTest1
         using var health = await adminClient.GetAsync("/health/bootstrap", cancellationToken);
         Assert.Equal(HttpStatusCode.OK, health.StatusCode);
 
+        using var malformed = await adminClient.PostAsync("/api/v1/departments",
+            new StringContent("{", System.Text.Encoding.UTF8, "application/json"), cancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+        Assert.Contains("/problems/validation",
+            await malformed.Content.ReadAsStringAsync(cancellationToken), StringComparison.Ordinal);
+
+        using var missingRoleRequest = new HttpRequestMessage(HttpMethod.Delete,
+            $"/api/v1/users/{Guid.NewGuid()}/roles/{Guid.NewGuid()}")
+        {
+            Content = JsonContent.Create(new { reason = "missing", expectedVersion = 1 })
+        };
+        using var missingRole = await adminClient.SendAsync(missingRoleRequest, cancellationToken);
+        Assert.Equal(HttpStatusCode.NotFound, missingRole.StatusCode);
+
+        using var staleOrganization = await adminClient.PutAsJsonAsync("/api/v1/organization",
+            new { name = "Stale", timeZoneId = "America/Lima", expectedVersion = 999, reason = "stale" }, cancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, staleOrganization.StatusCode);
+
+        using var invalidAuthority = await adminClient.PostAsJsonAsync("/api/v1/authority-levels",
+            new { type = "NOT_A_REAL_TYPE", code = "BAD", rank = 1, reason = "invalid" }, cancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidAuthority.StatusCode);
+
         using var auditorClient = factory.CreateClient();
         auditorClient.DefaultRequestHeaders.Add("X-Test-Subject", "auditor-1");
         using var usersResponse = await auditorClient.GetAsync("/api/v1/users", cancellationToken);
