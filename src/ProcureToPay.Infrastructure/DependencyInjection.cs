@@ -24,6 +24,7 @@ public static class DependencyInjection
             options.UseSqlServer(connectionString));
         services.AddScoped<OrganizationBootstrapper>();
         services.AddScoped<CurrentUserProvisioningService>();
+        services.AddScoped<OrganizationEligibilityService>();
 
         services.AddDefaultAWSOptions(configuration.GetAWSOptions());
         services.AddAWSService<IAmazonS3>();

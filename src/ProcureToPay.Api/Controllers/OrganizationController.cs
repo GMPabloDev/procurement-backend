@@ -17,8 +17,33 @@ namespace ProcureToPay.Api.Controllers;
 [Route("api/v1")]
 public sealed class OrganizationController(
     ProcureToPayDbContext dbContext,
-    CurrentUserProvisioningService provisioningService) : ControllerBase
+    CurrentUserProvisioningService provisioningService,
+    OrganizationEligibilityService eligibilityService) : ControllerBase
 {
+    [HttpPost("eligibility")]
+    public async Task<ActionResult<IReadOnlyCollection<EligibilityResponse>>> ResolveEligibility(
+        ResolveEligibilityRequest request,
+        CancellationToken cancellationToken)
+    {
+        _ = await RequireReadAccessAsync(cancellationToken);
+        if (!Enum.TryParse<SystemRole>(request.RequiredRole, true, out var requiredRole) ||
+            !Enum.IsDefined(requiredRole))
+        {
+            throw new DomainValidationException("Required role is not recognized.");
+        }
+        var requiredScopeJson = await BuildScopeJsonAsync(request.RequiredScopes, cancellationToken);
+        var requiredScope = ParseScopeSet(requiredScopeJson);
+        var authority = request.Authority is null
+            ? AuthorityRequirement.None
+            : BuildAuthorityRequirement(request.Authority);
+        var eligibilityRequest = EligibilityRequest.Create(requiredRole, requiredScope, authority,
+            request.EvaluatedAt ?? DateTimeOffset.UtcNow, request.ExcludedUserIds);
+        var candidates = await eligibilityService.ResolveAsync(eligibilityRequest, cancellationToken);
+        return Ok(candidates.Select(candidate => new EligibilityResponse(
+            candidate.User.Id, candidate.RoleAssignment.Id, candidate.AuthorityGrant?.Id,
+            candidate.Evidence)).ToArray());
+    }
+
     [HttpGet("me")]
     public async Task<ActionResult<MeResponse>> GetMe(CancellationToken cancellationToken)
     {
@@ -54,6 +79,11 @@ public sealed class OrganizationController(
         var timeZoneId = Required(request.TimeZoneId, nameof(request.TimeZoneId));
         try
         {
+            if (timeZoneId.Contains('\\') || timeZoneId.Contains(' ') ||
+                (!timeZoneId.Contains('/') && !string.Equals(timeZoneId, "UTC", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new TimeZoneNotFoundException();
+            }
             _ = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
         }
         catch (TimeZoneNotFoundException)
@@ -104,6 +134,28 @@ public sealed class OrganizationController(
         return Ok(entities);
     }
 
+    [HttpPatch("legal-entities/{entityId:guid}")]
+    public async Task<ActionResult<LegalEntityResponse>> RenameLegalEntity(
+        Guid entityId,
+        UpdateLegalEntityRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
+        var entity = await dbContext.LegalEntities.SingleOrDefaultAsync(
+            item => item.Id == entityId, cancellationToken)
+            ?? throw new DomainNotFoundException("Legal Entity was not found.");
+        EnsureExpectedVersion(entity.Version, request.ExpectedVersion);
+        var beforeJson = JsonSerializer.Serialize(new { entity.Name });
+        entity.Name = Required(request.Name, nameof(request.Name));
+        entity.Version++;
+        AddAudit(actor, "LEGAL_ENTITY_RENAMED", "LegalEntity", entity.Id, request.Reason,
+            JsonSerializer.Serialize(new { entity.Name }), entity.Version - 1, entity.Version,
+            beforeJson: beforeJson);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return Ok(new LegalEntityResponse(entity.Id, entity.Code, entity.Name,
+            ((EntityStatus)entity.Status).ToString(), entity.Version));
+    }
+
     [HttpPost("legal-entities")]
     public async Task<ActionResult<LegalEntityResponse>> CreateLegalEntity(
         CreateLegalEntityRequest request,
@@ -119,7 +171,7 @@ public sealed class OrganizationController(
         var entity = new LegalEntityRecord
         {
             Id = Guid.NewGuid(), OrganizationId = organization.Id,
-            Code = Required(request.Code, nameof(request.Code)).ToUpperInvariant(),
+            Code = RequiredCode(request.Code, nameof(request.Code)).ToUpperInvariant(),
             Name = Required(request.Name, nameof(request.Name)),
             Status = (int)EntityStatus.Active, Version = 1
         };
@@ -157,7 +209,7 @@ public sealed class OrganizationController(
         var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
         var organization = await dbContext.Organizations.SingleAsync(cancellationToken);
         EnsureExpectedVersion(organization.Version, request.ExpectedOrganizationVersion);
-        var code = Required(request.Code, nameof(request.Code)).ToUpperInvariant();
+        var code = RequiredCode(request.Code, nameof(request.Code)).ToUpperInvariant();
         var name = Required(request.Name, nameof(request.Name));
         var department = new DepartmentRecord
         {
@@ -182,10 +234,13 @@ public sealed class OrganizationController(
         CancellationToken cancellationToken)
     {
         var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken);
         var department = await dbContext.Departments.SingleOrDefaultAsync(
             item => item.Id == departmentId, cancellationToken)
             ?? throw new DomainNotFoundException("Department was not found.");
         EnsureExpectedVersion(department.Version, request.ExpectedVersion);
+        var beforeJson = JsonSerializer.Serialize(new { department.Name, department.Status });
         if (request.Name is not null)
         {
             department.Name = Required(request.Name, nameof(request.Name));
@@ -222,8 +277,9 @@ public sealed class OrganizationController(
         department.Version++;
         AddAudit(actor, "DEPARTMENT_UPDATED", "Department", department.Id, request.Reason,
             JsonSerializer.Serialize(new { department.Name, status = ((EntityStatus)department.Status).ToString() }),
-            department.Version - 1, department.Version);
+            department.Version - 1, department.Version, beforeJson: beforeJson);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(ToResponse(department));
     }
 
@@ -251,7 +307,7 @@ public sealed class OrganizationController(
         {
             throw new DomainValidationException("Authority type is not recognized.");
         }
-        var code = Required(request.Code, nameof(request.Code)).ToUpperInvariant();
+        var code = RequiredCode(request.Code, nameof(request.Code)).ToUpperInvariant();
         var rank = request.Rank > 0 ? request.Rank : throw new DomainValidationException("Rank must be positive.");
         var version = (await dbContext.AuthorityLevels
             .Where(level => level.Type == (int)type && level.Code == code)
@@ -268,6 +324,29 @@ public sealed class OrganizationController(
         await dbContext.SaveChangesAsync(cancellationToken);
         return Created($"/api/v1/authority-levels/{level.Id}",
             new AuthorityLevelResponse(level.Id, type.ToString(), level.Code, level.Rank, level.LevelVersion));
+    }
+
+    [HttpDelete("authority-levels/{levelId:guid}")]
+    public async Task<IActionResult> RetireAuthorityLevel(
+        Guid levelId,
+        [FromBody] AdministrativeReasonRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
+        var level = await dbContext.AuthorityLevels.SingleOrDefaultAsync(
+            item => item.Id == levelId, cancellationToken)
+            ?? throw new DomainNotFoundException("Authority level was not found.");
+        EnsureExpectedVersion(level.LevelVersion, request.ExpectedVersion);
+        if (!level.IsActive)
+        {
+            throw new DomainConflictException("Authority level is already retired.");
+        }
+        level.IsActive = false;
+        AddAudit(actor, "AUTHORITY_LEVEL_RETIRED", "AuthorityLevel", level.Id, request.Reason,
+            JsonSerializer.Serialize(new { level.Code, level.LevelVersion }),
+            level.LevelVersion, level.LevelVersion, beforeJson: JsonSerializer.Serialize(new { IsActive = true }));
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return NoContent();
     }
 
     [HttpGet("users")]
@@ -307,9 +386,10 @@ public sealed class OrganizationController(
         var visible = records
             .Where(record => access.IsGlobal ||
                 ScopeMatchesReadAccess(record.ScopeJson, access))
-            .Select(record => new AuditResponse(record.Id, record.OccurredAt, record.Action,
-                record.TargetType, record.TargetId, record.PreviousVersion, record.NewVersion,
-                record.ScopeJson, record.Reason, record.CorrelationReference))
+            .Select(record => new AuditResponse(record.Id, record.OccurredAt, record.ActorUserId,
+                record.Action, record.TargetType, record.TargetId, record.PreviousVersion,
+                record.NewVersion, record.ScopeJson, record.BeforeJson, record.AfterJson ?? "{}",
+                record.Reason, record.CorrelationReference))
             .ToArray();
         return Ok(visible);
     }
@@ -321,12 +401,15 @@ public sealed class OrganizationController(
     {
         var access = await RequireReadAccessAsync(cancellationToken);
         await EnsureUserVisibleAsync(userId, access, cancellationToken);
-        var roles = await dbContext.RoleAssignments
+        var roleRecords = await dbContext.RoleAssignments
             .Where(item => item.UserProfileId == userId)
             .OrderBy(item => item.Role).ThenBy(item => item.AssignedAt)
+            .ToArrayAsync(cancellationToken);
+        var roles = roleRecords
+            .Where(item => access.IsGlobal || ScopeMatchesReadAccess(item.ScopeJson, access))
             .Select(item => new RoleResponse(item.Id, ((SystemRole)item.Role).ToString(),
                 item.ScopeJson, ((AssignmentStatus)item.Status).ToString(), item.Version))
-            .ToArrayAsync(cancellationToken);
+            .ToArray();
         return Ok(roles);
     }
 
@@ -337,13 +420,16 @@ public sealed class OrganizationController(
     {
         var access = await RequireReadAccessAsync(cancellationToken);
         await EnsureUserVisibleAsync(userId, access, cancellationToken);
-        var grants = await dbContext.AuthorityGrants
+        var grantRecords = await dbContext.AuthorityGrants
             .Where(item => item.UserProfileId == userId)
             .OrderBy(item => item.GrantedAt)
+            .ToArrayAsync(cancellationToken);
+        var grants = grantRecords
+            .Where(item => access.IsGlobal || ScopeMatchesReadAccess(item.ScopeJson, access))
             .Select(item => new GrantResponse(item.Id, item.AuthorityLevelId, item.MaxAmountBase,
                 item.BaseCurrency, item.ScopeJson, item.ValidFrom, item.ValidTo,
                 ((GrantStatus)item.Status).ToString(), item.Version))
-            .ToArrayAsync(cancellationToken);
+            .ToArray();
         return Ok(grants);
     }
 
@@ -401,8 +487,9 @@ public sealed class OrganizationController(
         var beforeJson = JsonSerializer.Serialize(new { user.Status, user.DepartmentId, user.JobTitle });
         user.Status = (int)UserProfileStatus.Active;
         user.Version++;
-        AddAudit(actor, "USER_ACTIVATED", "UserProfile", user.Id, request.Reason, "{}",
-            user.Version - 1, user.Version, beforeJson: beforeJson);
+        AddAudit(actor, "USER_ACTIVATED", "UserProfile", user.Id, request.Reason,
+            JsonSerializer.Serialize(new { user.Status }), user.Version - 1, user.Version,
+            beforeJson: beforeJson);
         await dbContext.SaveChangesAsync(cancellationToken);
         return Ok(ToResponse(user));
     }
@@ -488,8 +575,9 @@ public sealed class OrganizationController(
         }
         user.Status = (int)UserProfileStatus.PendingSetup;
         user.Version++;
-        AddAudit(actor, "USER_RETURNED_TO_SETUP", "UserProfile", user.Id, request.Reason, "{}",
-            user.Version - 1, user.Version);
+        AddAudit(actor, "USER_RETURNED_TO_SETUP", "UserProfile", user.Id, request.Reason,
+            JsonSerializer.Serialize(new { user.Status }), user.Version - 1, user.Version,
+            beforeJson: JsonSerializer.Serialize(new { Status = UserProfileStatus.Inactive }));
         await dbContext.SaveChangesAsync(cancellationToken);
         return Ok(ToResponse(user));
     }
@@ -518,12 +606,14 @@ public sealed class OrganizationController(
         {
             throw new DomainValidationException("Grant amount cannot be negative.");
         }
+        var validFrom = (request.ValidFrom ?? DateTimeOffset.UtcNow).ToUniversalTime();
+        var validTo = request.ValidTo?.ToUniversalTime();
         var grant = new AuthorityGrantRecord
         {
             Id = Guid.NewGuid(), UserProfileId = user.Id, AuthorityLevelId = level.Id,
             MaxAmountBase = request.MaxAmountBase, BaseCurrency = currency,
-            ScopeJson = scopeJson, ValidFrom = request.ValidFrom ?? DateTimeOffset.UtcNow,
-            ValidTo = request.ValidTo, Status = (int)GrantStatus.Active,
+            ScopeJson = scopeJson, ValidFrom = validFrom,
+            ValidTo = validTo, Status = (int)GrantStatus.Active,
             GrantedAt = DateTimeOffset.UtcNow, GrantedBy = actor.Id, Version = 1
         };
         if (grant.ValidTo is not null && grant.ValidTo <= grant.ValidFrom)
@@ -557,8 +647,10 @@ public sealed class OrganizationController(
         grant.RevokedAt = DateTimeOffset.UtcNow;
         grant.RevokedBy = actor.Id;
         grant.Version++;
-        AddAudit(actor, "AUTHORITY_REVOKED", "AuthorityGrant", grant.Id, request.Reason, "{}",
-            grant.Version - 1, grant.Version);
+        AddAudit(actor, "AUTHORITY_REVOKED", "AuthorityGrant", grant.Id, request.Reason,
+            JsonSerializer.Serialize(new { status = GrantStatus.Revoked, grant.RevokedAt }),
+            grant.Version - 1, grant.Version, grant.ScopeJson,
+            JsonSerializer.Serialize(new { status = GrantStatus.Active }));
         await dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
@@ -570,6 +662,8 @@ public sealed class OrganizationController(
         CancellationToken cancellationToken)
     {
         var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken);
         if (!Enum.TryParse<SystemRole>(request.Role, true, out var role) ||
             !Enum.IsDefined(role))
         {
@@ -612,30 +706,27 @@ public sealed class OrganizationController(
             JsonSerializer.Serialize(new { userId = user.Id, role = role.ToString() }),
             null, assignment.Version, scopeJson);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return NoContent();
     }
 
-    [HttpDelete("users/{userId:guid}/roles/{role}")]
+    [HttpDelete("users/{userId:guid}/roles/{assignmentId:guid}")]
     public async Task<IActionResult> RevokeRole(
         Guid userId,
-        string role,
+        Guid assignmentId,
         [FromBody] AdministrativeReasonRequest request,
         CancellationToken cancellationToken)
     {
         var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken);
-        if (!Enum.TryParse<SystemRole>(role, true, out var parsedRole) || !Enum.IsDefined(parsedRole))
-        {
-            throw new DomainValidationException("Role is not recognized.");
-        }
         var assignment = await dbContext.RoleAssignments.SingleOrDefaultAsync(
-            item => item.UserProfileId == userId && item.Role == (int)parsedRole &&
-                    item.Status == (int)AssignmentStatus.Active && item.ScopeJson == GlobalScopeJson,
+            item => item.Id == assignmentId && item.UserProfileId == userId &&
+                    item.Status == (int)AssignmentStatus.Active,
             cancellationToken)
             ?? throw new DomainNotFoundException("Active role assignment was not found.");
         EnsureExpectedVersion(assignment.Version, request.ExpectedVersion);
-        if (parsedRole == SystemRole.Admin && await IsLastAdministratorAsync(userId, cancellationToken))
+        if (assignment.Role == (int)SystemRole.Admin && await IsLastAdministratorAsync(userId, cancellationToken))
         {
             throw new DomainConflictException("The last active administrator role cannot be revoked.");
         }
@@ -643,8 +734,11 @@ public sealed class OrganizationController(
         assignment.RevokedAt = DateTimeOffset.UtcNow;
         assignment.RevokedBy = actor.Id;
         assignment.Version++;
-        AddAudit(actor, "ROLE_REVOKED", "RoleAssignment", assignment.Id, request.Reason, "{}",
-            assignment.Version - 1, assignment.Version);
+        AddAudit(actor, "ROLE_REVOKED", "RoleAssignment", assignment.Id, request.Reason,
+            JsonSerializer.Serialize(new { status = AssignmentStatus.Revoked, assignment.RevokedAt }),
+            assignment.Version - 1, assignment.Version,
+            assignment.ScopeJson,
+            JsonSerializer.Serialize(new { status = AssignmentStatus.Active }));
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return NoContent();
@@ -769,7 +863,21 @@ public sealed class OrganizationController(
     }
 
     private static string Required(string? value, string field) =>
-        string.IsNullOrWhiteSpace(value) ? throw new DomainValidationException($"{field} is required.") : value.Trim();
+        string.IsNullOrWhiteSpace(value)
+            ? throw new DomainValidationException($"{field} is required.")
+            : value.Trim().Length > 160
+                ? throw new DomainValidationException($"{field} must contain at most 160 characters.")
+                : value.Trim();
+
+    private static string RequiredCode(string? value, string field)
+    {
+        var normalized = Required(value, field).ToUpperInvariant();
+        if (normalized.Length > 80)
+        {
+            throw new DomainValidationException($"{field} must contain at most 80 characters.");
+        }
+        return normalized;
+    }
 
     private static void EnsureExpectedVersion(int actualVersion, int expectedVersion)
     {
@@ -781,6 +889,16 @@ public sealed class OrganizationController(
         {
             throw new DomainConflictException("The resource version is stale.");
         }
+    }
+
+    private static AuthorityRequirement BuildAuthorityRequirement(AuthorityInput input)
+    {
+        if (!Enum.TryParse<ApprovalAuthorityType>(input.Type, true, out var type) ||
+            !Enum.IsDefined(type))
+        {
+            throw new DomainValidationException("Authority type is not recognized.");
+        }
+        return AuthorityRequirement.Required(type, input.MinimumRank, input.AmountBase, input.BaseCurrency);
     }
 
     private async Task<string> BuildScopeJsonAsync(
@@ -812,7 +930,7 @@ public sealed class OrganizationController(
             }
             else
             {
-                reference = Required(reference, nameof(input.Reference));
+                reference = RequiredCode(reference, nameof(input.Reference));
                 reference = dimension switch
                 {
                     ScopeDimension.Department => await dbContext.Departments
@@ -841,7 +959,10 @@ public sealed class OrganizationController(
         try
         {
             var entries = JsonSerializer.Deserialize<ScopeInput[]>(scopeJson) ?? [];
-            return entries.Any(entry =>
+            var scopedEntries = entries.Where(entry =>
+                string.Equals(entry.Dimension, "Department", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(entry.Dimension, "LegalEntity", StringComparison.OrdinalIgnoreCase)).ToArray();
+            return scopedEntries.Length > 0 && scopedEntries.All(entry =>
                 (string.Equals(entry.Dimension, "Department", StringComparison.OrdinalIgnoreCase) &&
                  entry.Reference is not null && access.Departments.Contains(entry.Reference)) ||
                 (string.Equals(entry.Dimension, "LegalEntity", StringComparison.OrdinalIgnoreCase) &&
@@ -917,12 +1038,18 @@ public sealed record UserResponse(Guid Id, string? Issuer, string? Subject, stri
 public sealed record RoleResponse(Guid Id, string Role, string ScopeJson, string Status, int Version);
 public sealed record GrantResponse(Guid Id, Guid AuthorityLevelId, decimal? MaxAmountBase, string BaseCurrency,
     string ScopeJson, DateTimeOffset ValidFrom, DateTimeOffset? ValidTo, string Status, int Version);
-public sealed record AuditResponse(Guid Id, DateTimeOffset OccurredAt, string Action, string TargetType,
-    Guid TargetId, int? PreviousVersion, int? NewVersion, string ScopeJson, string Reason,
-    string CorrelationReference);
+public sealed record AuditResponse(Guid Id, DateTimeOffset OccurredAt, Guid? ActorUserId, string Action,
+    string TargetType, Guid TargetId, int? PreviousVersion, int? NewVersion, string ScopeJson,
+    string? BeforeJson, string AfterJson, string Reason, string CorrelationReference);
 public sealed record UpdateOrganizationRequest(string? Name, string? TimeZoneId, int ExpectedVersion, string? Reason);
 public sealed record LegalEntityResponse(Guid Id, string Code, string Name, string Status, int Version);
 public sealed record CreateLegalEntityRequest(string? Code, string? Name, string? Reason, int ExpectedOrganizationVersion = 0);
+public sealed record UpdateLegalEntityRequest(string? Name, int ExpectedVersion, string? Reason);
+public sealed record ResolveEligibilityRequest(string RequiredRole, IReadOnlyCollection<ScopeInput>? RequiredScopes,
+    AuthorityInput? Authority, DateTimeOffset? EvaluatedAt, IReadOnlyCollection<Guid>? ExcludedUserIds);
+public sealed record AuthorityInput(string Type, int MinimumRank, decimal? AmountBase, string? BaseCurrency);
+public sealed record EligibilityResponse(Guid UserId, Guid RoleAssignmentId, Guid? AuthorityGrantId,
+    EligibilityEvidence Evidence);
 public sealed record UpdateDepartmentRequest(string? Name, string? Status, int ExpectedVersion, string? Reason);
 public sealed record CreateDepartmentRequest(string? Code, string? Name, string? Reason, int ExpectedOrganizationVersion = 0);
 public sealed record CompleteSetupRequest(Guid DepartmentId, string? JobTitle, string? Reason, int ExpectedVersion = 0);

@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-08 05:56 -05
-> **Actualizado:** 2026-09-08 07:35 -05
-> **HEAD verificado:** Pendiente (checkpoint de implementación)
+> **Actualizado:** 2026-09-08 13:35 -05
+> **HEAD verificado:** 86f3ba78afab733d405e312375b2f65b1ab7ff6b
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -105,16 +105,44 @@
 - Limitaciones que requieren revisión: no se ejecutó un emisor Keycloak real; no todos los contratos HTTP negativos tienen pruebas E2E; la lectura `AUDITOR` acotada por scope y algunas reglas de transición de Department requieren confirmación contra escenarios de integración.
 - Estado: no se marca aún `Lista para integrar`; falta revisión independiente y confirmación de criterios pendientes.
 
+### CP-05 — 2026-09-08 12:42 -05 — Correcciones posteriores a revisión
+
+- Cambios: middleware JIT con resolución scoped por request; scopes API tipados y validados contra referencias activas (`Organization`, `LegalEntity`, `Department`); índices persistentes de singleton Legal Entity y assignments activos; moneda/límite de grants; evidencia de elegibilidad ampliada con snapshots de scope, vigencia, límites y nivel; revocación transaccional del último ADMIN; transiciones y lecturas administrativas adicionales; Problem Details 400/409/401.
+- Verificación: `dotnet build ProcureToPay.sln --no-restore` (0 advertencias, 0 errores); `dotnet test --solution ProcureToPay.sln --no-restore` (20 correctos); `git diff --check` limpio.
+- HEAD: `36df88b095b2fb01a230e975f9e1b34727af16f6` en rama aislada.
+- Próximo paso: segunda revisión independiente; no integrar mientras queden criterios sin evidencia HTTP completa.
+
 ## Verificación independiente
 
-> **Resultado:** Pendiente
+> **Resultado:** BLOCKED (confirmado en segunda revisión)
 > **Método:** Subagente `sdd-implementation-reviewer`
-> **Fecha:** Pendiente
+> **Fecha:** 2026-09-08 (segunda pasada)
 
-- Conformidad con la spec: Pendiente.
-- Cobertura de criterios: Pendiente.
-- Cambios fuera de alcance: Pendiente.
-- Riesgos residuales: Pendiente.
+- Conformidad con la spec: BLOCKED; persisten gaps en transiciones de usuarios, scopes compuestos/solapamiento, API de lectura/administración, catálogos, auditoría reproducible, health operativo y pruebas HTTP.
+- Cobertura de criterios: CA-05 y CA-08 con cobertura unitaria; CA-01–CA-04 y CA-06–CA-11 no demostrados completamente.
+- Cambios fuera de alcance: Ninguno identificado.
+- Riesgos residuales: no integrar hasta cerrar los blockers listados por el revisor independiente.
+
+### Hallazgos bloqueantes de revisión independiente
+
+1. La API debe validar scopes tipados (incluidos `LEGAL_ENTITY`), referencias activas y filtrar lecturas `AUDITOR` por scope.
+2. Faltan operaciones administrativas de Legal Entity y transiciones de Department, además de pruebas HTTP negativas completas.
+3. Grants/elegibilidad deben validar moneda, límites, catálogo y producir evidencia reproducible completa.
+4. Último `ADMIN`, auditoría padre/subcambios y concurrencia requieren transacción y versiones reales.
+5. Run/implementación deben volver a verificarse tras corregir los puntos anteriores.
+
+### CP-06 — 2026-09-08 13:35 -05 — Correcciones adicionales
+
+- Cambios: guards de estado en dominio/API; scopes como colección tipada con `LEGAL_ENTITY`, referencias activas, scopes compuestos y solapamiento real; catálogo ISO 4217 derivado de culturas; evidencia de elegibilidad copiada a estructuras inmutables; auditoría con versiones y subcambios; lectura auditada; health check de bootstrap; Problem Details uniforme para model-state, autenticación, concurrencia y conflictos.
+- Verificación: `dotnet build ProcureToPay.sln --no-restore` (0 advertencias, 0 errores); `dotnet test --solution ProcureToPay.sln --no-restore` (21 correctos); `git diff --check` limpio.
+- HEAD: `86f3ba78afab733d405e312375b2f65b1ab7ff6b` en rama aislada.
+- Estado: pendiente de nueva revisión independiente; no se declara integración.
+
+### Segunda revisión — hallazgos vigentes
+
+La segunda pasada confirmó middleware scoped, validación básica de referencias y transacciones del último ADMIN, pero bloqueó por: guards de transición de usuarios; scopes como conjuntos y solapamiento real; referencias de Department en grants futuros; API de Legal Entity/roles/grants/evidencia y lectura AUDITOR; catálogo ISO/IANA y versionado de niveles; snapshots before/after y subcambios de auditoría; evidencia de exclusiones inmutable; Problem Details de model-state; health/bootstrap operativo y cobertura E2E completa.
+
+La rama tiene tres commits de implementación (`4f6dff4`, `36df88b` y `86f3ba7`) y el único cambio posterior es este run administrativo. No se ha hecho merge a `main`.
 
 ## Resumen de cambios
 
@@ -149,8 +177,8 @@
 
 ## Cierre
 
-- HEAD verificado: Pendiente.
-- Estrategia de integración: merge/rebase/squash/commit directo por decidir al integrar.
+- HEAD verificado: 86f3ba78afab733d405e312375b2f65b1ab7ff6b.
+- Estrategia de integración: tres commits de checkpoint en rama aislada; integración aún bloqueada por revisión independiente.
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.
 - Metadatos de vigencia actualizados: Pendiente.

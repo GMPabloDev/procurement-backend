@@ -1,5 +1,7 @@
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 // pi-lens-ignore: lsp:CS0234
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.SharedKernel;
@@ -7,8 +9,12 @@ using ProcureToPay.Infrastructure.Persistence;
 
 namespace ProcureToPay.Infrastructure.Persistence.Organization;
 
-public sealed class CurrentUserProvisioningService(ProcureToPayDbContext dbContext)
+public sealed class CurrentUserProvisioningService(
+    ProcureToPayDbContext dbContext,
+    ILogger<CurrentUserProvisioningService>? logger = null)
 {
+    private readonly ILogger<CurrentUserProvisioningService> _logger =
+        logger ?? NullLogger<CurrentUserProvisioningService>.Instance;
     public async Task<UserProfileRecord> EnsureProfileAsync(
         ClaimsPrincipal principal,
         CancellationToken cancellationToken = default)
@@ -54,6 +60,9 @@ public sealed class CurrentUserProvisioningService(ProcureToPayDbContext dbConte
                     cancellationToken);
             }
 
+            _logger.LogInformation(
+                "organization.user_provisioned_jit issuer={Issuer} subject={Subject} userId={UserId} status={Status}",
+                profile.Issuer, profile.Subject, profile.Id, nameof(UserProfileStatus.PendingSetup));
             return profile;
         }
 
@@ -64,6 +73,9 @@ public sealed class CurrentUserProvisioningService(ProcureToPayDbContext dbConte
             profile.DisplayName = Normalize(displayName);
             profile.Version++;
             await dbContext.SaveChangesAsync(cancellationToken);
+            _logger.LogInformation(
+                "organization.user_claims_synchronized issuer={Issuer} subject={Subject} userId={UserId} version={Version}",
+                profile.Issuer, profile.Subject, profile.Id, profile.Version);
         }
 
         return profile;

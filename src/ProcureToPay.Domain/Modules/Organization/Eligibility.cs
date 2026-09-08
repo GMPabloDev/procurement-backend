@@ -194,7 +194,8 @@ public static class EligibilityResolver
 
             foreach (var assignment in userAssignments.OrderBy(assignment => assignment.Id))
             {
-                if (!assignment.Covers(request.RequiredScope))
+                if (assignment.AssignedAt > request.EvaluatedAt ||
+                    !assignment.Covers(request.RequiredScope))
                 {
                     continue;
                 }

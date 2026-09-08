@@ -92,9 +92,10 @@ public sealed class OrganizationBootstrapper(
         dbContext.LegalEntities.Add(ToRecord(legalEntity));
         dbContext.Departments.Add(ToRecord(department, organization.Id));
         dbContext.UserProfiles.Add(ToRecord(admin, organization.Id));
+        var adminAssignmentId = Guid.NewGuid();
         dbContext.RoleAssignments.Add(new RoleAssignmentRecord
         {
-            Id = Guid.NewGuid(),
+            Id = adminAssignmentId,
             UserProfileId = admin.Id,
             Role = (int)SystemRole.Admin,
             ScopeJson = GlobalScopeJson,
@@ -110,7 +111,7 @@ public sealed class OrganizationBootstrapper(
             organization.Id,
             options.Reason,
             GlobalScopeJson,
-            $"{{\"organizationId\":\"{organization.Id}\",\"adminUserId\":\"{admin.Id}\"}}"));
+            $"{{\"subchanges\":[{{\"targetType\":\"Organization\",\"targetId\":\"{organization.Id}\",\"newVersion\":1}},{{\"targetType\":\"LegalEntity\",\"targetId\":\"{legalEntity.Id}\",\"newVersion\":1}},{{\"targetType\":\"Department\",\"targetId\":\"{department.Id}\",\"newVersion\":1}},{{\"targetType\":\"UserProfile\",\"targetId\":\"{admin.Id}\",\"newVersion\":1}},{{\"targetType\":\"RoleAssignment\",\"targetId\":\"{adminAssignmentId}\",\"newVersion\":1}}]}}"));
         dbContext.BootstrapStates.Add(new BootstrapStateRecord
         {
             ConfigurationFingerprint = fingerprint,
@@ -147,6 +148,9 @@ public sealed class OrganizationBootstrapper(
             user => user.Issuer == options.AdminIssuer && user.Subject == options.AdminSubject,
             cancellationToken);
         var now = DateTimeOffset.UtcNow;
+        var previousAdminVersion = existing?.Version;
+        var beforeAdminJson = existing is null ? null :
+            $"{{\"status\":\"{((UserProfileStatus)existing.Status)}\",\"departmentId\":\"{existing.DepartmentId}\",\"jobTitle\":\"{existing.JobTitle}\"}}";
 
         UserProfileRecord admin;
         if (existing is null)
@@ -202,7 +206,8 @@ public sealed class OrganizationBootstrapper(
             admin.Id,
             options.Reason,
             GlobalScopeJson,
-            $"{{\"userId\":\"{admin.Id}\",\"adminAssignmentCreated\":{(!hasAdminAssignment).ToString().ToLowerInvariant()}}}"));
+            $"{{\"subchanges\":[{{\"targetType\":\"UserProfile\",\"targetId\":\"{admin.Id}\",\"previousVersion\":{previousAdminVersion?.ToString() ?? "null"},\"newVersion\":{admin.Version}}},{{\"targetType\":\"RoleAssignment\",\"targetId\":\"{admin.Id}\",\"newVersion\":1,\"created\":{(!hasAdminAssignment).ToString().ToLowerInvariant()}}}]}}",
+            previousAdminVersion, admin.Version, beforeAdminJson));
 
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -263,7 +268,10 @@ public sealed class OrganizationBootstrapper(
         Guid targetId,
         string reason,
         string scopeJson,
-        string afterJson) => new()
+        string afterJson,
+        int? previousVersion = null,
+        int? newVersion = 1,
+        string? beforeJson = null) => new()
         {
             Id = Guid.NewGuid(),
             ActorType = "SYSTEM",
@@ -272,8 +280,10 @@ public sealed class OrganizationBootstrapper(
             Action = action,
             TargetType = targetType,
             TargetId = targetId,
-            NewVersion = 1,
+            PreviousVersion = previousVersion,
+            NewVersion = newVersion,
             ScopeJson = scopeJson,
+            BeforeJson = beforeJson,
             AfterJson = afterJson,
             Reason = reason,
             CorrelationReference = targetId.ToString("N")

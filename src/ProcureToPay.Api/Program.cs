@@ -1,5 +1,6 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -147,6 +148,10 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapHealthChecks("/health");
+app.MapHealthChecks("/health/bootstrap", new HealthCheckOptions
+{
+    Predicate = registration => registration.Name == "organization-bootstrap"
+});
 
 app.MapControllers();
 
