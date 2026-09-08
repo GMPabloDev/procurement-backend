@@ -23,6 +23,8 @@ public sealed class UnitTest1
             TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        var problem = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("/problems/authentication-required", problem, StringComparison.Ordinal);
     }
 
     private sealed class TestApiFactory : WebApplicationFactory<Program>

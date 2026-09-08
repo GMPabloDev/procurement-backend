@@ -186,7 +186,8 @@ public sealed class ApprovalAuthorityGrant
 
         var normalizedCurrency = baseCurrency?.Trim().ToUpperInvariant();
         if (normalizedCurrency is null || normalizedCurrency.Length != 3 ||
-            normalizedCurrency.Any(character => character is < 'A' or > 'Z'))
+            normalizedCurrency.Any(character => character is < 'A' or > 'Z') ||
+            !CurrencyCatalog.IsIso4217(normalizedCurrency))
         {
             throw new DomainValidationException("Grant base currency must be a three-letter ISO 4217 code.");
         }

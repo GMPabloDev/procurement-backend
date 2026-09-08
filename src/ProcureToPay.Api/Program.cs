@@ -1,11 +1,14 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Mvc;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using ProcureToPay.Api.ExceptionHandling;
+using ProcureToPay.Api.Health;
 using ProcureToPay.Api.Identity;
 using ProcureToPay.Application;
 using ProcureToPay.Infrastructure;
+using ProcureToPay.Infrastructure.Persistence.Organization;
 using Scalar.AspNetCore;
 
 const string AngularDevelopmentCorsPolicy = "AngularDevelopment";
@@ -15,6 +18,21 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 
 builder.Services.AddControllers();
+builder.Services.Configure<ApiBehaviorOptions>(options =>
+{
+    options.InvalidModelStateResponseFactory = context =>
+    {
+        var problem = new ValidationProblemDetails(context.ModelState)
+        {
+            Status = StatusCodes.Status400BadRequest,
+            Title = "Validation failed",
+            Type = "/problems/validation",
+            Instance = context.HttpContext.Request.Path
+        };
+        problem.Extensions["traceId"] = context.HttpContext.TraceIdentifier;
+        return new BadRequestObjectResult(problem);
+    };
+});
 builder.Services
     .AddApiVersioning(options =>
     {
@@ -79,7 +97,8 @@ var sqlServerConnectionString = builder.Configuration.GetConnectionString("SqlSe
     ?? throw new InvalidOperationException("Connection string 'ConnectionStrings:SqlServer' is not configured.");
 builder.Services
     .AddHealthChecks()
-    .AddSqlServer(sqlServerConnectionString, name: "sqlserver", tags: ["ready"]);
+    .AddSqlServer(sqlServerConnectionString, name: "sqlserver", tags: ["ready"])
+    .AddCheck<OrganizationBootstrapHealthCheck>("organization-bootstrap", tags: ["ready"]);
 
 var telemetryServiceName = builder.Configuration["OpenTelemetry:ServiceName"]
     ?? builder.Environment.ApplicationName;

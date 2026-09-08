@@ -62,6 +62,20 @@ public sealed class OrganizationAuthorizationTests
     }
 
     [Fact]
+    public void User_transitions_reject_setup_or_activation_from_wrong_state()
+    {
+        var user = new UserProfile(Guid.NewGuid(), "https://issuer", "subject-2", null, null);
+        user.CompleteSetup(Guid.NewGuid(), "Analyst");
+        user.Activate(true);
+
+        Assert.Throws<DomainConflictException>(() => user.CompleteSetup(Guid.NewGuid(), "Changed"));
+        Assert.Throws<DomainConflictException>(() => user.Activate(true));
+
+        user.Deactivate();
+        Assert.Throws<DomainConflictException>(() => user.Activate(true));
+    }
+
+    [Fact]
     public void Scope_set_requires_explicit_non_empty_scope_and_rejects_cost_centers()
     {
         Assert.Throws<DomainValidationException>(() => AuthorizationScopeSet.Create([]));

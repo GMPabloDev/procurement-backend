@@ -223,7 +223,9 @@ public sealed class Organization
     private static string NormalizeCurrency(string value)
     {
         var normalized = value?.Trim().ToUpperInvariant();
-        if (normalized is null || normalized.Length != 3 || normalized.Any(character => character is < 'A' or > 'Z'))
+        if (normalized is null || normalized.Length != 3 ||
+            normalized.Any(character => character is < 'A' or > 'Z') ||
+            !CurrencyCatalog.IsIso4217(normalized))
         {
             throw new DomainValidationException("Base currency must be a three-letter ISO 4217 code.");
         }
@@ -383,6 +385,11 @@ public sealed class UserProfile
 
     public void CompleteSetup(Guid departmentId, string jobTitle)
     {
+        if (Status != UserProfileStatus.PendingSetup)
+        {
+            throw new DomainConflictException("Only a pending user can complete setup.");
+        }
+
         if (departmentId == Guid.Empty)
         {
             throw new DomainValidationException("An active Department is required.");
@@ -395,6 +402,11 @@ public sealed class UserProfile
 
     public void Activate(bool departmentIsActive)
     {
+        if (Status != UserProfileStatus.PendingSetup)
+        {
+            throw new DomainConflictException("Only a pending user can be activated.");
+        }
+
         if (DepartmentId is null || string.IsNullOrWhiteSpace(JobTitle) || !departmentIsActive)
         {
             throw new DomainValidationException("User requires an active Department and Job Title before activation.");

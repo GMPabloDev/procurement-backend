@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using ProcureToPay.Domain.SharedKernel;
 
 namespace ProcureToPay.Domain.Modules.Organization;
@@ -59,7 +60,7 @@ public sealed record EligibilityRequest(
             requiredScope,
             authority,
             evaluatedAt.ToUniversalTime(),
-            (excludedUserIds ?? []).ToHashSet());
+            (excludedUserIds ?? []).ToImmutableHashSet());
     }
 }
 
@@ -246,7 +247,7 @@ public static class EligibilityResolver
                         grant?.ValidTo,
                         grant?.Level.Code,
                         grant?.Level.Rank,
-                        request.ExcludedUserIds)));
+                        request.ExcludedUserIds.ToImmutableHashSet())));
             }
         }
 
