@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-08 05:56 -05
-> **Actualizado:** 2026-09-08 18:00 -05
-> **HEAD verificado:** 61afd78e465f0a3054116906ae15980cf8325ebd
+> **Actualizado:** 2026-09-08 20:00 -05
+> **HEAD verificado:** 4caf2216b827d1ac2ff5998575d4ad2b09c8b789
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -24,7 +24,7 @@
 | `specctl check 01 --approval` | Pasa | Spec aprobada, sdd/v3, digest válido, sin avisos. |
 | `specctl doctor` | Pasa | Estado administrativo válido, sin avisos. |
 | `dotnet build ProcureToPay.sln --no-restore` | Pasa | Build .NET 10 correcto, 0 advertencias, 0 errores. |
-| `dotnet test --solution ProcureToPay.sln --no-restore` | Pasa | 3 ensamblados ejecutados, 26 tests correctos, 0 errores. |
+| `dotnet test --solution ProcureToPay.sln --no-restore` | Pasa | 3 ensamblados ejecutados, 27 tests correctos, 0 errores. |
 | `git status --short` | Pasa | Árbol limpio antes de crear la rama. |
 
 **Fallos preexistentes:** Ninguno. Las tres pruebas existentes son placeholders y no cubren la SPEC.
@@ -39,7 +39,7 @@
 | T-04 | Verificada | `OrganizationBootstrapperTests.Bootstrap_is_idempotent_and_recovery_adds_audited_admin`: SQL Server efímero, bootstrap inicial, repetición inocua, divergencia rechazada y recuperación auditada. Suite completa: 18 correctos. | working-tree / CP-02 |
 | T-05 | Verificada | Middleware de provisioning JIT por `iss`+`sub`, estado propio `/api/v1/me`, autorización local y denegación de perfiles no activos; integración probada en SQL Server efímero. | working-tree / CP-03 |
 | T-06 | Verificada | API versionada para organización, Departments, usuarios, roles, niveles y grants; Problem Details 403/404/409/422; auditoría atómica, control de versiones, último ADMIN protegido y revocación de assignments/grants al desactivar. | working-tree / CP-03 |
-| T-07 | Verificada | Suite Domain/Unit, integración SQL Server efímera con bootstrap/JIT/concurrencia/CLI y API/E2E con JWT firmado localmente, 401/403, auditoría scoped, elegibilidad y health; 26 pruebas correctas. | `61afd78` / CP-11 |
+| T-07 | Verificada | Suite Domain/Unit, integración SQL Server efímera con bootstrap/JIT/concurrencia/CLI y API/E2E con JWT firmado localmente, 401/403, auditoría scoped, elegibilidad y health; 27 pruebas correctas. | `4298180` / CP-12 |
 | T-08 | Verificada | `docs/organization-operations.md` documenta despliegue, bootstrap sin secretos, JIT, autorización, concurrencia, auditoría, recuperación y frontera con la siguiente SPEC. | working-tree / CP-04 |
 
 ## Checkpoints
@@ -152,17 +152,17 @@
 - HEAD: `1af8f046ff675103d9649c0f9a3e63be5ed81142` en rama aislada.
 - Estado: pendiente de revisión independiente final; no se declara integración.
 
-### CP-11 — 2026-09-08 18:00 -05 — Cierre de blockers contractuales
+### CP-12 — 2026-09-08 19:00 -05 — Cierre de blockers contractuales
 
 - Cambios: E2E usa `JwtBearer` con JWT localmente firmado y validación de issuer/audience/firma/expiración; se cubren lifecycle setup/activate/deactivate y revocación HTTP, elegibilidad exitosa con evidencia, errores 400/404/409, zona IANA `CET`, catálogo ISO vigente, orden total de ranks y `ExpectedPreviousVersion`.
 - Cambios de trazabilidad: bootstrap/recovery/desactivación ahora conservan snapshots `before`/`after` por subcambio; el fingerprint excluye el motivo operativo y los procesos CLI se ejecutan desde el ensamblado publicado fuera de HTTP.
-- Verificación: `dotnet build ProcureToPay.sln --no-restore` (0 advertencias, 0 errores); `dotnet test --solution ProcureToPay.sln --no-restore` (26 correctos); `run_lint.py`, `specctl check 01 --approval`, `specctl doctor`, `git diff --check` y `git fsck --full --no-dangling` correctos.
+- Verificación: `dotnet build ProcureToPay.sln --no-restore` (0 advertencias, 0 errores); `dotnet test --solution ProcureToPay.sln --no-restore` (27 correctos); `run_lint.py`, `specctl check 01 --approval`, `specctl doctor`, `git diff --check` y `git fsck --full --no-dangling` correctos.
 - Estado: listo para revisión independiente final; no se declara integración hasta obtener `PASS`.
-- HEAD de código: `61afd78e465f0a3054116906ae15980cf8325ebd`.
+- HEAD de código: `4caf2216b827d1ac2ff5998575d4ad2b09c8b789`.
 
 ### Segunda revisión — hallazgos históricos
 
-La revisión independiente anterior (`f114666`) fue `BLOCK` sobre el estado previo a CP-11. Sus observaciones se cerraron en el checkpoint siguiente y se conservan aquí como historial, no como estado vigente.
+La revisión independiente anterior (`f114666`) fue `BLOCK` sobre el estado previo a CP-12. Sus observaciones se cerraron en el checkpoint siguiente y se conservan aquí como historial, no como estado vigente.
 
 ### CP-08 — 2026-09-08 14:45 -05 — Cierre de salvaguardas adicionales
 
@@ -178,9 +178,9 @@ La revisión independiente anterior (`f114666`) fue `BLOCK` sobre el estado prev
 - HEAD: `163832ecab1faa06c9eb90976490f2be2b2e3ff9` en rama aislada.
 - Estado: pendiente de nueva revisión independiente; no se declara integración.
 
-La segunda pasada confirmó middleware scoped, validación básica de referencias y transacciones del último ADMIN, pero bloqueó el estado anterior por guards de transición de usuarios, scopes compuestos, API HTTP, catálogo ISO/IANA, versionado, snapshots de auditoría y cobertura E2E. CP-11 incorpora esas correcciones: JWT Bearer firmado, lifecycle/revocación HTTP, elegibilidad exitosa, rank/versionado, catálogo vigente, snapshots before/after y prueba de CLI.
+La segunda pasada confirmó middleware scoped, validación básica de referencias y transacciones del último ADMIN, pero bloqueó el estado anterior por guards de transición de usuarios, scopes compuestos, API HTTP, catálogo ISO/IANA, versionado, snapshots de auditoría y cobertura E2E. CP-12 incorpora esas correcciones: JWT Bearer firmado, lifecycle/revocación HTTP, elegibilidad exitosa, rank/versionado, catálogo vigente, snapshots before/after, errores 422 y prueba de CLI.
 
-La rama mantiene todos los commits de implementación y checkpoints administrativos; el HEAD verificable actual es `61afd78e`. No se ha hecho merge a `main`.
+La rama mantiene todos los commits de implementación y checkpoints administrativos; el HEAD verificable actual es `4298180`. No se ha hecho merge a `main`.
 
 ## Resumen de cambios
 
@@ -224,8 +224,8 @@ La rama mantiene todos los commits de implementación y checkpoints administrati
 
 ## Cierre
 
-- HEAD verificado: 61afd78e465f0a3054116906ae15980cf8325ebd.
-- Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285`, `f14c017`, `a531e70`, `0ce1dbf`, `163832e`, `ded2410`, `1af8f04`, `aacdb57` y `61afd78` en rama aislada; integración aún bloqueada por revisión independiente.
+- HEAD verificado: 4caf2216b827d1ac2ff5998575d4ad2b09c8b789.
+- Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285`, `f14c017`, `a531e70`, `0ce1dbf`, `163832e`, `ded2410`, `1af8f04`, `aacdb57`, `61afd78`, `4298180` y `4caf221` en rama aislada; integración aún bloqueada por revisión independiente.
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.
 - Metadatos de vigencia actualizados: Pendiente.
