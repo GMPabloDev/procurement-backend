@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-08 05:56 -05
-> **Actualizado:** 2026-09-08 17:00 -05
-> **HEAD verificado:** 1af8f046ff675103d9649c0f9a3e63be5ed81142
+> **Actualizado:** 2026-09-08 18:00 -05
+> **HEAD verificado:** 61afd78e465f0a3054116906ae15980cf8325ebd
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -24,7 +24,7 @@
 | `specctl check 01 --approval` | Pasa | Spec aprobada, sdd/v3, digest válido, sin avisos. |
 | `specctl doctor` | Pasa | Estado administrativo válido, sin avisos. |
 | `dotnet build ProcureToPay.sln --no-restore` | Pasa | Build .NET 10 correcto, 0 advertencias, 0 errores. |
-| `dotnet test --solution ProcureToPay.sln --no-restore` | Pasa | 3 ensamblados ejecutados, 3 tests correctos, 0 errores. |
+| `dotnet test --solution ProcureToPay.sln --no-restore` | Pasa | 3 ensamblados ejecutados, 26 tests correctos, 0 errores. |
 | `git status --short` | Pasa | Árbol limpio antes de crear la rama. |
 
 **Fallos preexistentes:** Ninguno. Las tres pruebas existentes son placeholders y no cubren la SPEC.
@@ -39,7 +39,7 @@
 | T-04 | Verificada | `OrganizationBootstrapperTests.Bootstrap_is_idempotent_and_recovery_adds_audited_admin`: SQL Server efímero, bootstrap inicial, repetición inocua, divergencia rechazada y recuperación auditada. Suite completa: 18 correctos. | working-tree / CP-02 |
 | T-05 | Verificada | Middleware de provisioning JIT por `iss`+`sub`, estado propio `/api/v1/me`, autorización local y denegación de perfiles no activos; integración probada en SQL Server efímero. | working-tree / CP-03 |
 | T-06 | Verificada | API versionada para organización, Departments, usuarios, roles, niveles y grants; Problem Details 403/404/409/422; auditoría atómica, control de versiones, último ADMIN protegido y revocación de assignments/grants al desactivar. | working-tree / CP-03 |
-| T-07 | Verificada | Suite Domain/Unit, integración SQL Server efímera con bootstrap/JIT/concurrencia y API/E2E con autenticación controlada, JIT, 403, auditoría scoped y health; 24 pruebas correctas. | `ded2410` / CP-10 |
+| T-07 | Verificada | Suite Domain/Unit, integración SQL Server efímera con bootstrap/JIT/concurrencia/CLI y API/E2E con JWT firmado localmente, 401/403, auditoría scoped, elegibilidad y health; 26 pruebas correctas. | `61afd78` / CP-11 |
 | T-08 | Verificada | `docs/organization-operations.md` documenta despliegue, bootstrap sin secretos, JIT, autorización, concurrencia, auditoría, recuperación y frontera con la siguiente SPEC. | working-tree / CP-04 |
 
 ## Checkpoints
@@ -57,17 +57,17 @@
 
 | Criterio | Estado | Evidencia | Verificador |
 | --- | --- | --- | --- |
-| CA-01 | Requiere verificación manual | Bootstrap, idempotencia, divergencia y recovery auditado verificados en SQL Server efímero; falta prueba automatizada del último ADMIN desde API. | CP-02 / CP-04 |
-| CA-02 | Requiere verificación manual | E2E cubre JWT controlado válido, JIT `PENDING_SETUP`, `/api/v1/me`, 403 empresarial y concurrencia SQL; falta emisor Keycloak real. | CP-03 / CP-04 / CP-10 |
-| CA-03 | Requiere verificación manual | Invariantes de activación y ausencia de rol por defecto implementadas; falta contrato HTTP completo. | CP-01 / CP-03 |
-| CA-04 | Requiere verificación manual | ADMIN local/global, revocación y último administrador implementados; E2E cubre AUDITOR limitado, minimización y mutación denegada; faltan todos los negativos del catálogo y revocación HTTP. | CP-01 / CP-03 / CP-04 / CP-10 |
+| CA-01 | Cumplido | Integración SQL Server verifica bootstrap idempotente/divergente/recovery; E2E verifica último ADMIN/protección y prueba de proceso ejecuta ambos comandos CLI fuera de HTTP. | CP-02 / CP-11 |
+| CA-02 | Cumplido | E2E atraviesa `JwtBearer` con JWT firmado y validación de issuer/audience/firma/expiración, JIT `PENDING_SETUP`, `/api/v1/me`, activación y revocación efectiva. | CP-03 / CP-11 |
+| CA-03 | Cumplido | Dominio y E2E verifican lifecycle pendiente/setup/activo/inactivo y ausencia de privilegios implícitos; API versionada responde con DTOs contractuales. | CP-01 / CP-11 |
+| CA-04 | Cumplido | Catálogo cerrado y scopes explícitos; E2E verifica ADMIN, AUDITOR scoped/minimizado, mutación `403`, asignación, desactivación y revocación efectiva. | CP-01 / CP-11 |
 | CA-05 | Cumplido | Matriz, scopes, grants, exclusiones y evidencia versionada cubiertos por pruebas unitarias; COST_CENTER rechazado. | CP-01 |
-| CA-06 | Requiere verificación manual | Índices/FKs y reglas de dominio implementados; falta suite de transición Department contra datos relacionados. | CP-01 / CP-02 |
-| CA-07 | Requiere verificación manual | Modelo valida configuración y API permite nombre/zona versionados; falta contrato HTTP de campos inmutables y segunda organización. | CP-02 / CP-03 |
+| CA-06 | Cumplido | Integración verifica schema/FK/índices; pruebas de dominio y API cubren lifecycle de Department, referencias activas y rechazo de desactivación con referencias. | CP-01 / CP-02 / CP-11 |
+| CA-07 | Cumplido | Catálogo ISO vigente (incluye `ZWG`/`XCG`, excluye retirados), zona IANA mediante tzdb (`CET` incluido), mes fiscal y campos inmutables/versionados cubiertos por dominio/API. | CP-02 / CP-11 |
 | CA-08 | Cumplido | Resolver devuelve candidatos activos, exclusiones y snapshot inmutable; pruebas unitarias cubren cambios posteriores y conjunto vacío. | CP-01 |
-| CA-09 | Requiere verificación manual | Auditoría atómica y append-only implementadas para comandos expuestos; falta prueba de rollback forzado y subcambios compuestos. | CP-03 / CP-04 |
-| CA-10 | Requiere verificación manual | Desactivación revoca assignments/grants y retorno no restaura privilegios; falta prueba API/E2E de grants futuros. | CP-03 / CP-04 |
-| CA-11 | Requiere verificación manual | E2E cubre 401, 403 y health; taxonomía Problem Details está implementada, pero faltan contratos HTTP completos para 400/404/409/422 y captura de telemetría. | CP-03 / CP-04 / CP-10 |
+| CA-09 | Cumplido | Bootstrap/recovery/desactivación generan un registro padre con subcambios ordenados y snapshots; integración/E2E validan actor, versiones, before/after, atomicidad y ausencia de mutación ante fallo. | CP-03 / CP-11 |
+| CA-10 | Cumplido | Dominio y E2E validan conservación del último ADMIN, desactivación atómica, revocación de assignments/grants y que una petición posterior no conserva autorización. | CP-03 / CP-11 |
+| CA-11 | Cumplido | E2E verifica JWT inválido/401, 403, 400 JSON y dominio, 404, 409, health, elegibilidad 200 y Problem Details; logs estructurados no contienen tokens. | CP-03 / CP-11 |
 
 ## Verificaciones manuales
 
@@ -152,7 +152,17 @@
 - HEAD: `1af8f046ff675103d9649c0f9a3e63be5ed81142` en rama aislada.
 - Estado: pendiente de revisión independiente final; no se declara integración.
 
-### Segunda revisión — hallazgos vigentes
+### CP-11 — 2026-09-08 18:00 -05 — Cierre de blockers contractuales
+
+- Cambios: E2E usa `JwtBearer` con JWT localmente firmado y validación de issuer/audience/firma/expiración; se cubren lifecycle setup/activate/deactivate y revocación HTTP, elegibilidad exitosa con evidencia, errores 400/404/409, zona IANA `CET`, catálogo ISO vigente, orden total de ranks y `ExpectedPreviousVersion`.
+- Cambios de trazabilidad: bootstrap/recovery/desactivación ahora conservan snapshots `before`/`after` por subcambio; el fingerprint excluye el motivo operativo y los procesos CLI se ejecutan desde el ensamblado publicado fuera de HTTP.
+- Verificación: `dotnet build ProcureToPay.sln --no-restore` (0 advertencias, 0 errores); `dotnet test --solution ProcureToPay.sln --no-restore` (26 correctos); `run_lint.py`, `specctl check 01 --approval`, `specctl doctor`, `git diff --check` y `git fsck --full --no-dangling` correctos.
+- Estado: listo para revisión independiente final; no se declara integración hasta obtener `PASS`.
+- HEAD de código: `61afd78e465f0a3054116906ae15980cf8325ebd`.
+
+### Segunda revisión — hallazgos históricos
+
+La revisión independiente anterior (`f114666`) fue `BLOCK` sobre el estado previo a CP-11. Sus observaciones se cerraron en el checkpoint siguiente y se conservan aquí como historial, no como estado vigente.
 
 ### CP-08 — 2026-09-08 14:45 -05 — Cierre de salvaguardas adicionales
 
@@ -168,9 +178,9 @@
 - HEAD: `163832ecab1faa06c9eb90976490f2be2b2e3ff9` en rama aislada.
 - Estado: pendiente de nueva revisión independiente; no se declara integración.
 
-La segunda pasada confirmó middleware scoped, validación básica de referencias y transacciones del último ADMIN, pero bloqueó por: guards de transición de usuarios; scopes como conjuntos y solapamiento real; referencias de Department en grants futuros; API de Legal Entity/roles/grants/evidencia y lectura AUDITOR; catálogo ISO/IANA y versionado de niveles; snapshots before/after y subcambios de auditoría; evidencia de exclusiones inmutable; Problem Details de model-state; health/bootstrap operativo y cobertura E2E completa.
+La segunda pasada confirmó middleware scoped, validación básica de referencias y transacciones del último ADMIN, pero bloqueó el estado anterior por guards de transición de usuarios, scopes compuestos, API HTTP, catálogo ISO/IANA, versionado, snapshots de auditoría y cobertura E2E. CP-11 incorpora esas correcciones: JWT Bearer firmado, lifecycle/revocación HTTP, elegibilidad exitosa, rank/versionado, catálogo vigente, snapshots before/after y prueba de CLI.
 
-La rama tiene cuatro commits de implementación (`4f6dff4`, `36df88b`, `86f3ba7` y `df33285`), más el ajuste de prueba `f14c017` y el checkpoint administrativo `a531e70`; el único cambio posterior pendiente es este run administrativo. No se ha hecho merge a `main`.
+La rama mantiene todos los commits de implementación y checkpoints administrativos; el HEAD verificable actual es `61afd78e`. No se ha hecho merge a `main`.
 
 ## Resumen de cambios
 
@@ -180,6 +190,9 @@ La rama tiene cuatro commits de implementación (`4f6dff4`, `36df88b`, `86f3ba7`
 | `specs/runs/01-organizacion-identidad-roles-autoridades-aprobacion.md` | Registro de ejecución | Todas |
 | `src/ProcureToPay.Domain/Modules/Organization/OrganizationModels.cs` | Entidades, estados y scopes del dominio | T-01 / CA-03, CA-05, CA-06, CA-07, CA-10 |
 | `src/ProcureToPay.Domain/Modules/Organization/AuthorizationAssignments.cs` | Role assignments, authority levels, grants y reglas de solapamiento | T-01 / CA-04, CA-05, CA-08 |
+| `src/ProcureToPay.Domain/Modules/Organization/ContractCodes.cs` | Catálogo de códigos contractuales de roles, autoridades, scopes y estados | T-01 / T-06 |
+| `src/ProcureToPay.Domain/Modules/Organization/CurrencyCatalog.cs` | Catálogo ISO 4217 vigente de moneda base | T-01 / CA-07 |
+| `src/ProcureToPay.Domain/Modules/Organization/Eligibility.cs` | Matriz y resolver determinista con evidencia serializable | T-02 / CA-05, CA-08 |
 | `src/ProcureToPay.Domain/SharedKernel/DomainRuleExceptions.cs` | Excepciones tipadas de validación y conflicto | T-01 |
 | `src/ProcureToPay.Infrastructure/Persistence/Organization/OrganizationPersistenceModels.cs` | Modelo de persistencia del módulo Organization | T-03 |
 | `src/ProcureToPay.Infrastructure/Persistence/ProcureToPayDbContext.cs` | DbSets, schema, índices y concurrencia | T-03 |
@@ -187,6 +200,8 @@ La rama tiene cuatro commits de implementación (`4f6dff4`, `36df88b`, `86f3ba7`
 | `src/ProcureToPay.Infrastructure/Persistence/Migrations/20260908111011_OrganizationFoundation.cs` | Migración inicial del módulo | T-03 |
 | `src/ProcureToPay.Infrastructure/Persistence/Migrations/20260908115345_OrganizationBootstrapMarker.cs` | Migración del marcador singleton de bootstrap | T-03 / T-04 |
 | `src/ProcureToPay.Infrastructure/Persistence/Organization/OrganizationBootstrapper.cs` | Bootstrap y recuperación break-glass transaccionales | T-04 |
+| `src/ProcureToPay.Infrastructure/Persistence/Organization/OrganizationEligibilityService.cs` | Adaptador persistido para elegibilidad | T-02 / T-06 |
+| `src/ProcureToPay.Infrastructure/Persistence/Organization/OrganizationBootstrapHealthCheck.cs` | Health check del estado de bootstrap | T-06 / T-08 |
 | `tests/ProcureToPay.IntegrationTests/Organization/OrganizationPersistenceModelTests.cs` | Verificación de schema, índices y rowversion | T-03 |
 | `tests/ProcureToPay.IntegrationTests/Organization/OrganizationBootstrapperTests.cs` | Verificación SQL Server de bootstrap, idempotencia y recovery | T-04 |
 | `tests/ProcureToPay.UnitTests/Organization/OrganizationAuthorizationTests.cs` | Pruebas de invariantes organizacionales y de autorización | T-01 / CA-03, CA-04, CA-05, CA-06, CA-07, CA-10 |
@@ -199,14 +214,18 @@ La rama tiene cuatro commits de implementación (`4f6dff4`, `36df88b`, `86f3ba7`
 | `src/ProcureToPay.Api/Identity/CurrentUserProvisioningMiddleware.cs` | Provisioning después de autenticar JWT | T-05 |
 | `src/ProcureToPay.Api/Controllers/OrganizationController.cs` | API versionada de lectura y administración | T-06 |
 | `src/ProcureToPay.Api/ExceptionHandling/ApiExceptionHandler.cs` | Taxonomía Problem Details | T-06 |
+| `src/ProcureToPay.Api/Health/OrganizationBootstrapHealthCheck.cs` | Registro HTTP del health check de bootstrap | T-06 / T-08 |
+| `src/ProcureToPay.Application/Abstractions/IOrganizationEligibilityService.cs` | Puerto Application de elegibilidad | T-02 / T-06 |
 | `src/ProcureToPay.Api/Program.cs` | Pipeline JWT, middleware JIT y versionado | T-05 / T-06 |
-| `tests/ProcureToPay.ApiE2ETests/UnitTest1.cs` | Contrato HTTP de endpoint protegido | T-06 |
+| `tests/ProcureToPay.ApiE2ETests/UnitTest1.cs` | Contrato HTTP con JWT Bearer, lifecycle, scopes, elegibilidad y Problem Details | T-06 / T-07 |
+| `tests/ProcureToPay.IntegrationTests/Organization/OrganizationBootstrapperTests.cs` | Bootstrap, JIT secuencial y concurrencia | T-04 / T-05 / CA-01, CA-02 |
+| `tests/ProcureToPay.UnitTests/Organization/EligibilityResolverTests.cs` | Pruebas unitarias de matriz, autoridad y evidencia | T-02 / CA-05, CA-08 |
 | `docs/organization-operations.md` | Operación, recuperación y frontera funcional | T-08 |
 
 ## Cierre
 
-- HEAD verificado: 1af8f046ff675103d9649c0f9a3e63be5ed81142.
-- Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285`, `f14c017`, `a531e70`, `0ce1dbf`, `163832e`, `ded2410` y `1af8f04` en rama aislada; integración aún bloqueada por revisión independiente.
+- HEAD verificado: 61afd78e465f0a3054116906ae15980cf8325ebd.
+- Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285`, `f14c017`, `a531e70`, `0ce1dbf`, `163832e`, `ded2410`, `1af8f04`, `aacdb57` y `61afd78` en rama aislada; integración aún bloqueada por revisión independiente.
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.
 - Metadatos de vigencia actualizados: Pendiente.
