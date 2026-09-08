@@ -54,7 +54,7 @@ public sealed class EligibilityResolverTests
             user.Id,
             SystemRole.FinanceApprover,
             scope,
-            DateTimeOffset.UtcNow,
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
             Guid.NewGuid());
         var level = new AuthorityLevelVersion(
             Guid.NewGuid(),
