@@ -1,0 +1,49 @@
+{
+  "realm": "procure-to-pay",
+  "displayName": "ProcureToPay Development",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "procure-to-pay-api",
+      "name": "ProcureToPay API",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "procure-to-pay-angular",
+      "name": "ProcureToPay Angular Development",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://localhost:4200/*",
+        "https://localhost:4200/*"
+      ],
+      "webOrigins": [
+        "http://localhost:4200",
+        "https://localhost:4200"
+      ],
+      "protocolMappers": [
+        {
+          "name": "procure-to-pay-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "procure-to-pay-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}
