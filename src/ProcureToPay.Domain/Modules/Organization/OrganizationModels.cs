@@ -333,7 +333,7 @@ public sealed class Department
             throw new DomainValidationException("Department code must contain between 1 and 80 characters.");
         }
 
-        return value.Trim();
+        return value.Trim().ToUpperInvariant();
     }
 
     private static string NormalizeName(string value)

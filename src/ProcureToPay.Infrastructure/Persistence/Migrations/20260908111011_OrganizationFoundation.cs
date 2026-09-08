@@ -315,37 +315,8 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "AdministrativeAuditRecords",
-                schema: "Organization");
-
-            migrationBuilder.DropTable(
-                name: "AuthorityGrants",
-                schema: "Organization");
-
-            migrationBuilder.DropTable(
-                name: "LegalEntities",
-                schema: "Organization");
-
-            migrationBuilder.DropTable(
-                name: "RoleAssignments",
-                schema: "Organization");
-
-            migrationBuilder.DropTable(
-                name: "AuthorityLevels",
-                schema: "Organization");
-
-            migrationBuilder.DropTable(
-                name: "UserProfiles",
-                schema: "Organization");
-
-            migrationBuilder.DropTable(
-                name: "Departments",
-                schema: "Organization");
-
-            migrationBuilder.DropTable(
-                name: "Organizations",
-                schema: "Organization");
+            migrationBuilder.Sql(
+                "THROW 51000, 'Organization foundation migrations are forward-only to preserve business and audit history.', 1;");
         }
     }
 }

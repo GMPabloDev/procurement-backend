@@ -1,3 +1,4 @@
+using System.Data;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -72,26 +73,69 @@ public sealed class OrganizationController(
     [HttpGet("organization")]
     public async Task<ActionResult<OrganizationResponse>> GetOrganization(CancellationToken cancellationToken)
     {
-        await RequireReadAccessAsync(cancellationToken);
+        var access = await RequireReadAccessAsync(cancellationToken);
         var organization = await dbContext.Organizations.SingleAsync(cancellationToken);
+        var departmentCount = access.IsGlobal
+            ? await dbContext.Departments.CountAsync(cancellationToken)
+            : await dbContext.Departments.CountAsync(item => access.Departments.Contains(item.Code), cancellationToken);
+        var userCount = access.IsGlobal
+            ? await dbContext.UserProfiles.CountAsync(cancellationToken)
+            : await dbContext.UserProfiles.CountAsync(
+                item => item.Department != null && access.Departments.Contains(item.Department.Code), cancellationToken);
         return Ok(new OrganizationResponse(
-            organization.Id,
-            organization.Code,
-            organization.Name,
-            organization.BaseCurrency,
-            organization.TimeZoneId,
-            organization.FiscalYearStartMonth,
-            organization.Version,
-            await dbContext.Departments.CountAsync(cancellationToken),
-            await dbContext.UserProfiles.CountAsync(cancellationToken)));
+            organization.Id, organization.Code, organization.Name, organization.BaseCurrency,
+            organization.TimeZoneId, organization.FiscalYearStartMonth, organization.Version,
+            departmentCount, userCount));
+    }
+
+    [HttpGet("legal-entities")]
+    public async Task<ActionResult<IReadOnlyCollection<LegalEntityResponse>>> GetLegalEntities(
+        CancellationToken cancellationToken)
+    {
+        var access = await RequireReadAccessAsync(cancellationToken);
+        var entities = await dbContext.LegalEntities
+            .Where(entity => access.IsGlobal || access.LegalEntities.Contains(entity.Code))
+            .OrderBy(entity => entity.Code)
+            .Select(entity => new LegalEntityResponse(entity.Id, entity.Code, entity.Name,
+                ((EntityStatus)entity.Status).ToString(), entity.Version))
+            .ToArrayAsync(cancellationToken);
+        return Ok(entities);
+    }
+
+    [HttpPost("legal-entities")]
+    public async Task<ActionResult<LegalEntityResponse>> CreateLegalEntity(
+        CreateLegalEntityRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
+        var organization = await dbContext.Organizations.SingleAsync(cancellationToken);
+        EnsureExpectedVersion(organization.Version, request.ExpectedOrganizationVersion);
+        if (await dbContext.LegalEntities.AnyAsync(cancellationToken))
+        {
+            throw new DomainConflictException("Only one Legal Entity is supported by this organization foundation.");
+        }
+        var entity = new LegalEntityRecord
+        {
+            Id = Guid.NewGuid(), OrganizationId = organization.Id,
+            Code = Required(request.Code, nameof(request.Code)).ToUpperInvariant(),
+            Name = Required(request.Name, nameof(request.Name)),
+            Status = (int)EntityStatus.Active, Version = 1
+        };
+        dbContext.LegalEntities.Add(entity);
+        AddAudit(actor, "LEGAL_ENTITY_CREATED", "LegalEntity", entity.Id, request.Reason,
+            JsonSerializer.Serialize(new { entity.Code, entity.Name }));
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return Created($"/api/v1/legal-entities/{entity.Id}",
+            new LegalEntityResponse(entity.Id, entity.Code, entity.Name, nameof(EntityStatus.Active), entity.Version));
     }
 
     [HttpGet("departments")]
     public async Task<ActionResult<IReadOnlyCollection<DepartmentResponse>>> GetDepartments(
         CancellationToken cancellationToken)
     {
-        await RequireReadAccessAsync(cancellationToken);
+        var access = await RequireReadAccessAsync(cancellationToken);
         var departments = await dbContext.Departments
+            .Where(department => access.IsGlobal || access.Departments.Contains(department.Code))
             .OrderBy(department => department.Code)
             .Select(department => new DepartmentResponse(
                 department.Id,
@@ -111,7 +155,7 @@ public sealed class OrganizationController(
         var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
         var organization = await dbContext.Organizations.SingleAsync(cancellationToken);
         EnsureExpectedVersion(organization.Version, request.ExpectedOrganizationVersion);
-        var code = Required(request.Code, nameof(request.Code));
+        var code = Required(request.Code, nameof(request.Code)).ToUpperInvariant();
         var name = Required(request.Name, nameof(request.Name));
         var department = new DepartmentRecord
         {
@@ -129,11 +173,57 @@ public sealed class OrganizationController(
         return Created($"/api/v1/departments/{department.Id}", ToResponse(department));
     }
 
+    [HttpPatch("departments/{departmentId:guid}")]
+    public async Task<ActionResult<DepartmentResponse>> UpdateDepartment(
+        Guid departmentId,
+        UpdateDepartmentRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
+        var department = await dbContext.Departments.SingleOrDefaultAsync(
+            item => item.Id == departmentId, cancellationToken)
+            ?? throw new DomainNotFoundException("Department was not found.");
+        EnsureExpectedVersion(department.Version, request.ExpectedVersion);
+        if (request.Name is not null)
+        {
+            department.Name = Required(request.Name, nameof(request.Name));
+        }
+        if (request.Status is not null)
+        {
+            if (!Enum.TryParse<EntityStatus>(request.Status, true, out var status) || !Enum.IsDefined(status))
+            {
+                throw new DomainValidationException("Department status is not recognized.");
+            }
+            if (status == EntityStatus.Inactive && department.Status == (int)EntityStatus.Active)
+            {
+                var userIds = await dbContext.UserProfiles
+                    .Where(user => user.DepartmentId == department.Id && user.Status == (int)UserProfileStatus.Active)
+                    .Select(user => user.Id)
+                    .ToArrayAsync(cancellationToken);
+                if (userIds.Length > 0 ||
+                    await dbContext.RoleAssignments.AnyAsync(item => userIds.Contains(item.UserProfileId) &&
+                        item.Status == (int)AssignmentStatus.Active, cancellationToken) ||
+                    await dbContext.AuthorityGrants.AnyAsync(item => userIds.Contains(item.UserProfileId) &&
+                        item.Status == (int)GrantStatus.Active, cancellationToken))
+                {
+                    throw new DomainConflictException("Department has active references and cannot be deactivated.");
+                }
+            }
+            department.Status = (int)status;
+        }
+        department.Version++;
+        AddAudit(actor, "DEPARTMENT_UPDATED", "Department", department.Id, request.Reason,
+            JsonSerializer.Serialize(new { department.Name, status = ((EntityStatus)department.Status).ToString() }),
+            department.Version - 1, department.Version);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return Ok(ToResponse(department));
+    }
+
     [HttpGet("authority-levels")]
     public async Task<ActionResult<IReadOnlyCollection<AuthorityLevelResponse>>> GetAuthorityLevels(
         CancellationToken cancellationToken)
     {
-        await RequireReadAccessAsync(cancellationToken);
+        _ = await RequireReadAccessAsync(cancellationToken);
         var levels = await dbContext.AuthorityLevels
             .Where(level => level.IsActive)
             .OrderBy(level => level.Type).ThenBy(level => level.Rank)
@@ -176,14 +266,16 @@ public sealed class OrganizationController(
     public async Task<ActionResult<IReadOnlyCollection<UserResponse>>> GetUsers(
         CancellationToken cancellationToken)
     {
-        await RequireReadAccessAsync(cancellationToken);
-        var users = await dbContext.UserProfiles
+        var access = await RequireReadAccessAsync(cancellationToken);
+        var users = dbContext.UserProfiles
+            .Where(user => access.IsGlobal ||
+                user.Department != null && access.Departments.Contains(user.Department.Code))
             .Include(user => user.Department)
             .OrderBy(user => user.DisplayName)
             .Select(user => new UserResponse(
                 user.Id,
-                user.Issuer,
-                user.Subject,
+                null,
+                null,
                 user.Email,
                 user.DisplayName,
                 ((UserProfileStatus)user.Status).ToString(),
@@ -252,6 +344,8 @@ public sealed class OrganizationController(
         CancellationToken cancellationToken)
     {
         var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken);
         var user = await dbContext.UserProfiles.Include(item => item.Department)
             .SingleOrDefaultAsync(item => item.Id == userId, cancellationToken)
             ?? throw new DomainNotFoundException("User profile was not found.");
@@ -303,6 +397,7 @@ public sealed class OrganizationController(
             JsonSerializer.Serialize(new { assignmentsRevoked = assignments.Length, grantsRevoked = grants.Length, subchanges }),
             user.Version - 1, user.Version);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(ToResponse(user));
     }
 
@@ -448,6 +543,8 @@ public sealed class OrganizationController(
         CancellationToken cancellationToken)
     {
         var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken);
         if (!Enum.TryParse<SystemRole>(role, true, out var parsedRole) || !Enum.IsDefined(parsedRole))
         {
             throw new DomainValidationException("Role is not recognized.");
@@ -469,6 +566,7 @@ public sealed class OrganizationController(
         AddAudit(actor, "ROLE_REVOKED", "RoleAssignment", assignment.Id, request.Reason, "{}",
             assignment.Version - 1, assignment.Version);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return NoContent();
     }
 
@@ -483,30 +581,76 @@ public sealed class OrganizationController(
             return false;
         }
 
-        var activeAdministrators = await dbContext.RoleAssignments.CountAsync(
-            item => item.Role == (int)SystemRole.Admin &&
-                    item.Status == (int)AssignmentStatus.Active && item.ScopeJson == GlobalScopeJson,
+        var administratorIds = await dbContext.RoleAssignments
+            .Where(item => item.Role == (int)SystemRole.Admin &&
+                           item.Status == (int)AssignmentStatus.Active &&
+                           item.ScopeJson == GlobalScopeJson)
+            .Select(item => item.UserProfileId)
+            .Distinct()
+            .ToArrayAsync(cancellationToken);
+        var activeAdministrators = await dbContext.UserProfiles.CountAsync(
+            item => administratorIds.Contains(item.Id) && item.Status == (int)UserProfileStatus.Active,
             cancellationToken);
         return activeAdministrators <= 1;
     }
 
-    private async Task RequireReadAccessAsync(CancellationToken cancellationToken)
+    private async Task<ReadScope> RequireReadAccessAsync(CancellationToken cancellationToken)
     {
         var profile = await provisioningService.EnsureProfileAsync(User, cancellationToken);
         if (profile.Status != (int)UserProfileStatus.Active)
         {
             throw new DomainForbiddenException("The local user profile is not active.");
         }
-        var hasAccess = await dbContext.RoleAssignments.AnyAsync(
-            assignment => assignment.UserProfileId == profile.Id &&
-                          (assignment.Role == (int)SystemRole.Admin || assignment.Role == (int)SystemRole.Auditor) &&
-                          assignment.Status == (int)AssignmentStatus.Active &&
-                          assignment.ScopeJson == GlobalScopeJson,
-            cancellationToken);
-        if (!hasAccess)
+        var assignments = await dbContext.RoleAssignments
+            .Where(assignment => assignment.UserProfileId == profile.Id &&
+                                (assignment.Role == (int)SystemRole.Admin || assignment.Role == (int)SystemRole.Auditor) &&
+                                assignment.Status == (int)AssignmentStatus.Active)
+            .Select(assignment => new { assignment.Role, assignment.ScopeJson })
+            .ToArrayAsync(cancellationToken);
+        if (assignments.Any(assignment => assignment.Role == (int)SystemRole.Admin &&
+                                          assignment.ScopeJson == GlobalScopeJson))
+        {
+            return ReadScope.Global;
+        }
+
+        var departments = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var legalEntities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var assignment in assignments.Where(item => item.Role == (int)SystemRole.Auditor))
+        {
+            ScopeEntry[] entries;
+            try
+            {
+                entries = JsonSerializer.Deserialize<ScopeEntry[]>(assignment.ScopeJson) ?? [];
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+            if (entries.Any(entry => entry.Dimension.Equals("Organization", StringComparison.OrdinalIgnoreCase)))
+            {
+                return ReadScope.Global;
+            }
+            foreach (var entry in entries)
+            {
+                if (entry.Reference is null)
+                {
+                    continue;
+                }
+                if (entry.Dimension.Equals("Department", StringComparison.OrdinalIgnoreCase))
+                {
+                    departments.Add(entry.Reference);
+                }
+                else if (entry.Dimension.Equals("LegalEntity", StringComparison.OrdinalIgnoreCase))
+                {
+                    legalEntities.Add(entry.Reference);
+                }
+            }
+        }
+        if (departments.Count == 0 && legalEntities.Count == 0)
         {
             throw new DomainForbiddenException("The user does not have administrative read access.");
         }
+        return new ReadScope(false, departments, legalEntities);
     }
 
     private void AddAudit(UserProfileRecord actor, string action, string targetType, Guid targetId,
@@ -599,6 +743,18 @@ public sealed class OrganizationController(
             ((UserProfileStatus)user.Status).ToString(), user.DepartmentId, user.Department?.Code,
             user.JobTitle, user.Version);
 
+    private sealed record ScopeEntry(string Dimension, string? Reference);
+
+    private sealed record ReadScope(
+        bool IsGlobal,
+        IReadOnlySet<string> Departments,
+        IReadOnlySet<string> LegalEntities)
+    {
+        public static ReadScope Global { get; } = new(true,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+    }
+
     private const string GlobalScopeJson = "[{\"dimension\":\"Organization\",\"reference\":null}]";
 }
 
@@ -607,9 +763,12 @@ public sealed record MeResponse(Guid Id, string Issuer, string Subject, string? 
 public sealed record OrganizationResponse(Guid Id, string Code, string Name, string BaseCurrency,
     string TimeZoneId, int FiscalYearStartMonth, int Version, int DepartmentCount, int UserCount);
 public sealed record DepartmentResponse(Guid Id, string Code, string Name, string Status, int Version);
-public sealed record UserResponse(Guid Id, string Issuer, string Subject, string? Email, string? DisplayName,
+public sealed record UserResponse(Guid Id, string? Issuer, string? Subject, string? Email, string? DisplayName,
     string Status, Guid? DepartmentId, string? DepartmentCode, string? JobTitle, int Version);
 public sealed record UpdateOrganizationRequest(string? Name, string? TimeZoneId, int ExpectedVersion, string? Reason);
+public sealed record LegalEntityResponse(Guid Id, string Code, string Name, string Status, int Version);
+public sealed record CreateLegalEntityRequest(string? Code, string? Name, string? Reason, int ExpectedOrganizationVersion = 0);
+public sealed record UpdateDepartmentRequest(string? Name, string? Status, int ExpectedVersion, string? Reason);
 public sealed record CreateDepartmentRequest(string? Code, string? Name, string? Reason, int ExpectedOrganizationVersion = 0);
 public sealed record CompleteSetupRequest(Guid DepartmentId, string? JobTitle, string? Reason, int ExpectedVersion = 0);
 public sealed record AdministrativeReasonRequest(string? Reason, int ExpectedVersion = 0);
