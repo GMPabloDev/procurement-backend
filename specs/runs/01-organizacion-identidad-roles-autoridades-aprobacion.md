@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-08 05:56 -05
-> **Actualizado:** 2026-09-08 15:20 -05
-> **HEAD verificado:** 163832ecab1faa06c9eb90976490f2be2b2e3ff9
+> **Actualizado:** 2026-09-08 17:00 -05
+> **HEAD verificado:** 1af8f046ff675103d9649c0f9a3e63be5ed81142
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -39,7 +39,7 @@
 | T-04 | Verificada | `OrganizationBootstrapperTests.Bootstrap_is_idempotent_and_recovery_adds_audited_admin`: SQL Server efímero, bootstrap inicial, repetición inocua, divergencia rechazada y recuperación auditada. Suite completa: 18 correctos. | working-tree / CP-02 |
 | T-05 | Verificada | Middleware de provisioning JIT por `iss`+`sub`, estado propio `/api/v1/me`, autorización local y denegación de perfiles no activos; integración probada en SQL Server efímero. | working-tree / CP-03 |
 | T-06 | Verificada | API versionada para organización, Departments, usuarios, roles, niveles y grants; Problem Details 403/404/409/422; auditoría atómica, control de versiones, último ADMIN protegido y revocación de assignments/grants al desactivar. | working-tree / CP-03 |
-| T-07 | Verificada | Suite completa: Domain/Unit, integración SQL Server efímera con bootstrap/JIT/concurrencia y API/E2E `401`; 20 pruebas correctas. | working-tree / CP-04 |
+| T-07 | Verificada | Suite Domain/Unit, integración SQL Server efímera con bootstrap/JIT/concurrencia y API/E2E con autenticación controlada, JIT, 403, auditoría scoped y health; 24 pruebas correctas. | `ded2410` / CP-10 |
 | T-08 | Verificada | `docs/organization-operations.md` documenta despliegue, bootstrap sin secretos, JIT, autorización, concurrencia, auditoría, recuperación y frontera con la siguiente SPEC. | working-tree / CP-04 |
 
 ## Checkpoints
@@ -58,16 +58,16 @@
 | Criterio | Estado | Evidencia | Verificador |
 | --- | --- | --- | --- |
 | CA-01 | Requiere verificación manual | Bootstrap, idempotencia, divergencia y recovery auditado verificados en SQL Server efímero; falta prueba automatizada del último ADMIN desde API. | CP-02 / CP-04 |
-| CA-02 | Requiere verificación manual | JIT secuencial y concurrente verificado; `/api/v1/me` y 401 cubiertos, falta E2E con JWT válido pendiente y 403 empresarial. | CP-03 / CP-04 |
+| CA-02 | Requiere verificación manual | E2E cubre JWT controlado válido, JIT `PENDING_SETUP`, `/api/v1/me`, 403 empresarial y concurrencia SQL; falta emisor Keycloak real. | CP-03 / CP-04 / CP-10 |
 | CA-03 | Requiere verificación manual | Invariantes de activación y ausencia de rol por defecto implementadas; falta contrato HTTP completo. | CP-01 / CP-03 |
-| CA-04 | Requiere verificación manual | ADMIN local/global, revocación y último administrador implementados; falta prueba E2E de AUDITOR limitado por scope. | CP-01 / CP-03 / CP-04 |
+| CA-04 | Requiere verificación manual | ADMIN local/global, revocación y último administrador implementados; E2E cubre AUDITOR limitado, minimización y mutación denegada; faltan todos los negativos del catálogo y revocación HTTP. | CP-01 / CP-03 / CP-04 / CP-10 |
 | CA-05 | Cumplido | Matriz, scopes, grants, exclusiones y evidencia versionada cubiertos por pruebas unitarias; COST_CENTER rechazado. | CP-01 |
 | CA-06 | Requiere verificación manual | Índices/FKs y reglas de dominio implementados; falta suite de transición Department contra datos relacionados. | CP-01 / CP-02 |
 | CA-07 | Requiere verificación manual | Modelo valida configuración y API permite nombre/zona versionados; falta contrato HTTP de campos inmutables y segunda organización. | CP-02 / CP-03 |
 | CA-08 | Cumplido | Resolver devuelve candidatos activos, exclusiones y snapshot inmutable; pruebas unitarias cubren cambios posteriores y conjunto vacío. | CP-01 |
 | CA-09 | Requiere verificación manual | Auditoría atómica y append-only implementadas para comandos expuestos; falta prueba de rollback forzado y subcambios compuestos. | CP-03 / CP-04 |
 | CA-10 | Requiere verificación manual | Desactivación revoca assignments/grants y retorno no restaura privilegios; falta prueba API/E2E de grants futuros. | CP-03 / CP-04 |
-| CA-11 | Requiere verificación manual | 401 E2E y taxonomía Problem Details implementada; faltan pruebas HTTP completas para 403/404/409/422 y captura de telemetría. | CP-03 / CP-04 |
+| CA-11 | Requiere verificación manual | E2E cubre 401, 403 y health; taxonomía Problem Details está implementada, pero faltan contratos HTTP completos para 400/404/409/422 y captura de telemetría. | CP-03 / CP-04 / CP-10 |
 
 ## Verificaciones manuales
 
@@ -145,6 +145,13 @@
 - HEAD: `a531e70bce8315e21ff7b2754d8b53920118bf4e` en rama aislada.
 - Estado: pendiente de nueva revisión independiente; no se declara integración.
 
+### CP-10 — 2026-09-08 16:10 -05 — Cobertura HTTP controlada
+
+- Cambios: suite API/E2E con SQL Server efímero y autenticación controlada cubre JIT válido, estado pendiente, 403 empresarial, ADMIN, AUDITOR scoped con minimización, mutación denegada, health y respuestas 400/404/409; el endpoint de elegibilidad devuelve DTOs contractuales.
+- Verificación: `dotnet build ProcureToPay.sln --no-restore` (0 advertencias, 0 errores); `dotnet test --solution ProcureToPay.sln --no-restore` (24 correctos); `run_lint.py`, `specctl check 01 --approval`, `specctl doctor`, `git diff --check` y `git fsck --full` correctos.
+- HEAD: `1af8f046ff675103d9649c0f9a3e63be5ed81142` en rama aislada.
+- Estado: pendiente de revisión independiente final; no se declara integración.
+
 ### Segunda revisión — hallazgos vigentes
 
 ### CP-08 — 2026-09-08 14:45 -05 — Cierre de salvaguardas adicionales
@@ -198,8 +205,8 @@ La rama tiene cuatro commits de implementación (`4f6dff4`, `36df88b`, `86f3ba7`
 
 ## Cierre
 
-- HEAD verificado: 163832ecab1faa06c9eb90976490f2be2b2e3ff9.
-- Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285`, `f14c017`, `a531e70`, `0ce1dbf` y `163832e` en rama aislada; integración aún bloqueada por revisión independiente.
+- HEAD verificado: 1af8f046ff675103d9649c0f9a3e63be5ed81142.
+- Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285`, `f14c017`, `a531e70`, `0ce1dbf`, `163832e`, `ded2410` y `1af8f04` en rama aislada; integración aún bloqueada por revisión independiente.
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.
 - Metadatos de vigencia actualizados: Pendiente.
