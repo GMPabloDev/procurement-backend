@@ -1,5 +1,6 @@
 using FluentValidation;
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc;
 using ProcureToPay.Domain.SharedKernel;
 
@@ -17,6 +18,49 @@ public sealed class ApiExceptionHandler(
         var problemDetails = exception switch
         {
             ValidationException validationException => CreateValidationProblemDetails(validationException),
+            DomainValidationException validationException => new ProblemDetails
+            {
+                Status = StatusCodes.Status400BadRequest,
+                Title = "Validation failed",
+                Type = "/problems/validation",
+                Detail = validationException.Message
+            },
+            DbUpdateConcurrencyException => new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Concurrency conflict",
+                Type = "/problems/conflict",
+                Detail = "The resource was modified by another request."
+            },
+            DbUpdateException => new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Conflict",
+                Type = "/problems/conflict",
+                Detail = "The requested change conflicts with existing data."
+            },
+            DomainForbiddenException forbiddenException => new ProblemDetails
+            {
+                Status = StatusCodes.Status403Forbidden,
+                Title = "Forbidden",
+                Type = "/problems/forbidden",
+                Detail = forbiddenException.Message
+            },
+            DomainNotFoundException notFoundException => new ProblemDetails
+            {
+                Status = StatusCodes.Status404NotFound,
+                Title = "Not found",
+                Type = "/problems/not-found",
+                Detail = notFoundException.Message
+            },
+            // pi-lens-ignore: lsp:CS0246
+            DomainConflictException conflictException => new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Conflict",
+                Type = "/problems/conflict",
+                Detail = conflictException.Message
+            },
             DomainException domainException => new ProblemDetails
             {
                 Status = StatusCodes.Status422UnprocessableEntity,
@@ -32,7 +76,7 @@ public sealed class ApiExceptionHandler(
             }
         };
 
-        if (exception is ValidationException or DomainException)
+        if (exception is ValidationException or DomainException or DbUpdateException)
         {
             logger.LogWarning(exception, "Handled request exception.");
         }
