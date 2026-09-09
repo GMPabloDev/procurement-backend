@@ -2,7 +2,7 @@
 
 > **Formato:** sdd/v3
 > **Estado:** Aprobada
-> **Ejecución:** No iniciada
+> **Ejecución:** En implementación
 > **Vigencia:** Pendiente
 > **Revisión:** 1
 > **Digest contractual:** 63fec425400bc197524e23cb3a130ab2d7d64f6eba823944b3ebee8923e6d688

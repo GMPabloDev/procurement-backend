@@ -109,7 +109,8 @@ var sqlServerConnectionString = builder.Configuration.GetConnectionString("SqlSe
 builder.Services
     .AddHealthChecks()
     .AddSqlServer(sqlServerConnectionString, name: "sqlserver", tags: ["ready"])
-    .AddCheck<OrganizationBootstrapHealthCheck>("organization-bootstrap", tags: ["ready"]);
+    .AddCheck<OrganizationBootstrapHealthCheck>("organization-bootstrap", tags: ["ready"])
+    .AddCheck<PolicyConfigurationHealthCheck>("policy-configuration", tags: ["ready"]);
 
 var telemetryServiceName = builder.Configuration["OpenTelemetry:ServiceName"]
     ?? builder.Environment.ApplicationName;
@@ -161,6 +162,10 @@ app.MapHealthChecks("/health");
 app.MapHealthChecks("/health/bootstrap", new HealthCheckOptions
 {
     Predicate = registration => registration.Name == "organization-bootstrap"
+});
+app.MapHealthChecks("/health/policy", new HealthCheckOptions
+{
+    Predicate = registration => registration.Name == "policy-configuration"
 });
 
 app.MapControllers();

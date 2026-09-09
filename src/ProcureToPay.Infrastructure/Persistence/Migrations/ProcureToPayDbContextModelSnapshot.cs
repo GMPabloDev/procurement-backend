@@ -453,6 +453,228 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.ToTable("UserProfiles", "Organization");
                 });
 
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Policy.PolicyActivationRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ActorType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("EffectiveFrom")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("PolicySetVersionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrganizationId", "EffectiveFrom");
+
+                    b.HasIndex("PolicySetVersionId", "EffectiveFrom")
+                        .IsUnique();
+
+                    b.ToTable("PolicyActivations", "Policy");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Policy.PolicyEvaluationBundleRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("BundleJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("CorrelationReference")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<DateTimeOffset>("EvaluatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("EvaluationKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("IdempotencyFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("InputDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("PolicyContentDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("PolicySetVersionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("PreviousBundleId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Result")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("ResultDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<Guid>("SubjectId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("SubjectVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("WorkloadClientId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("WorkloadIssuer")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("nvarchar(320)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IdempotencyFingerprint")
+                        .IsUnique();
+
+                    b.HasIndex("PolicySetVersionId");
+
+                    b.HasIndex("OrganizationId", "SubjectId", "SubjectVersion");
+
+                    b.HasIndex("OrganizationId", "WorkloadIssuer", "WorkloadClientId", "Operation", "EvaluationKey")
+                        .IsUnique();
+
+                    b.ToTable("PolicyEvaluationBundles", "Policy");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Policy.PolicyRetirementRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ActorType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("EffectiveTo")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("PolicyActivationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PolicyActivationId")
+                        .IsUnique();
+
+                    b.ToTable("PolicyRetirements", "Policy");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Policy.PolicySetVersionRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ContentDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("ContentJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("ScopesJson")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<long>("Sequence")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrganizationId", "Sequence")
+                        .IsUnique();
+
+                    b.ToTable("PolicySetVersions", "Policy");
+                });
+
             modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Organization.AuthorityGrantRecord", b =>
                 {
                     b.HasOne("ProcureToPay.Infrastructure.Persistence.Organization.AuthorityLevelRecord", "AuthorityLevel")
@@ -523,6 +745,50 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.Navigation("Organization");
                 });
 
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Policy.PolicyActivationRecord", b =>
+                {
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Policy.PolicySetVersionRecord", "PolicySetVersion")
+                        .WithMany("Activations")
+                        .HasForeignKey("PolicySetVersionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("PolicySetVersion");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Policy.PolicyEvaluationBundleRecord", b =>
+                {
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Policy.PolicySetVersionRecord", "PolicySetVersion")
+                        .WithMany("Evaluations")
+                        .HasForeignKey("PolicySetVersionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("PolicySetVersion");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Policy.PolicyRetirementRecord", b =>
+                {
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Policy.PolicyActivationRecord", "PolicyActivation")
+                        .WithOne("Retirement")
+                        .HasForeignKey("ProcureToPay.Infrastructure.Persistence.Policy.PolicyRetirementRecord", "PolicyActivationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("PolicyActivation");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Policy.PolicySetVersionRecord", b =>
+                {
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Organization.OrganizationRecord", "Organization")
+                        .WithMany()
+                        .HasForeignKey("OrganizationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Organization");
+                });
+
             modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Organization.AuthorityLevelRecord", b =>
                 {
                     b.Navigation("Grants");
@@ -547,6 +813,18 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.Navigation("AuthorityGrants");
 
                     b.Navigation("RoleAssignments");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Policy.PolicyActivationRecord", b =>
+                {
+                    b.Navigation("Retirement");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Policy.PolicySetVersionRecord", b =>
+                {
+                    b.Navigation("Activations");
+
+                    b.Navigation("Evaluations");
                 });
 #pragma warning restore 612, 618
         }

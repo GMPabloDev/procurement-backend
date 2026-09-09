@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ProcureToPay.Application.Abstractions;
+using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Application.Abstractions.Files;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Organization;
@@ -26,6 +27,11 @@ public static class DependencyInjection
         services.AddScoped<OrganizationBootstrapper>();
         services.AddScoped<CurrentUserProvisioningService>();
         services.AddScoped<OrganizationEligibilityService>();
+        services.AddScoped<PolicyPersistenceService>();
+        services.AddSingleton<PolicyWorkloadAllowlist>();
+        // pi-lens-ignore: CS0246
+        services.AddScoped<PolicyFactProviderRegistry>();
+        services.AddScoped<PolicyEvaluationService>();
         services.AddScoped<IOrganizationEligibilityService>(provider =>
             provider.GetRequiredService<OrganizationEligibilityService>());
 

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc;
 using ProcureToPay.Domain.SharedKernel;
+using ProcureToPay.Infrastructure.Persistence.Policy;
 
 namespace ProcureToPay.Api.ExceptionHandling;
 
@@ -53,7 +54,14 @@ public sealed class ApiExceptionHandler(
                 Type = "/problems/not-found",
                 Detail = notFoundException.Message
             },
-            // pi-lens-ignore: lsp:CS0246
+            // pi-lens-ignore: lsp:CS0246, CS0246
+            PolicyDependencyUnavailableException dependencyException => new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Policy dependency unavailable",
+                Type = "/problems/policy-dependency-unavailable",
+                Detail = dependencyException.Message
+            },
             DomainConflictException conflictException => new ProblemDetails
             {
                 Status = StatusCodes.Status409Conflict,
