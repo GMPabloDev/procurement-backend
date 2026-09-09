@@ -120,6 +120,7 @@ public sealed record PolicyEvaluationBundle(
     public string? FactsDigest { get; init; }
     public string? ManifestDigest { get; init; }
     public string? InputCanonicalJson { get; init; }
+    public string? RequestSnapshotJson { get; init; }
     public Guid? ActivationId { get; init; }
     public Guid? PreviousBundleId { get; init; }
 }

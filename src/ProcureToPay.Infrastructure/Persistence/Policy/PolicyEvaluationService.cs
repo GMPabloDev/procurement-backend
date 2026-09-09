@@ -141,8 +141,15 @@ public sealed class PolicyEvaluationService(
             ? string.Empty
             : PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
                 recomputedInputDigest, replay.ScopeEvaluations, replay.Controls, null));
-        if (replay.Id != existing.Id || replay.Subject.Id != existing.SubjectId ||
+        if (replay.Id != existing.Id ||
+            !string.Equals(replay.EvaluationKey, existing.EvaluationKey, StringComparison.Ordinal) ||
+            replay.Subject.Id != existing.SubjectId ||
             replay.Subject.Version != existing.SubjectVersion ||
+            !string.Equals(replay.Operation, existing.Operation, StringComparison.Ordinal) ||
+            replay.EvaluatedAt != existing.EvaluatedAt ||
+            !string.Equals(replay.PolicyContentDigest, existing.PolicyContentDigest, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(replay.Result.ToString().ToUpperInvariant(), existing.Result, StringComparison.Ordinal) ||
+            replay.PreviousBundleId != existing.PreviousBundleId ||
             !string.Equals(replay.InputDigest, existing.InputDigest, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(replay.ResultDigest, existing.ResultDigest, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(replay.InputDigest, recomputedInputDigest, StringComparison.OrdinalIgnoreCase) ||
@@ -542,6 +549,7 @@ public sealed class PolicyEvaluationService(
             FactsDigest = metadata?.FactsDigest,
             ManifestDigest = metadata?.ManifestDigest,
             InputCanonicalJson = inputCanonical,
+            RequestSnapshotJson = metadata?.InputCanonicalJson,
             InputDigest = inputDigest,
             ResultDigest = resultDigest
         };

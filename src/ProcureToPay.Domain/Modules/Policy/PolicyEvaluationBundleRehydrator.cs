@@ -36,6 +36,7 @@ public static class PolicyEvaluationBundleRehydrator
             FactsDigest = NullableString(root, "factsDigest"),
             ManifestDigest = NullableString(root, "manifestDigest"),
             InputCanonicalJson = NullableString(root, "inputCanonicalJson"),
+            RequestSnapshotJson = NullableString(root, "requestSnapshotJson"),
             ActivationId = NullableGuid(root, "activationId"),
             PreviousBundleId = NullableGuid(root, "previousBundleId")
         };
