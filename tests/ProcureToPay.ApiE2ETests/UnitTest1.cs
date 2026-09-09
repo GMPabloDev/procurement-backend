@@ -131,6 +131,16 @@ public sealed class UnitTest1
         Assert.Equal(HttpStatusCode.UnprocessableEntity, invalidLifecycle.StatusCode);
         Assert.Contains("/problems/domain-rule-violation",
             await invalidLifecycle.Content.ReadAsStringAsync(cancellationToken), StringComparison.Ordinal);
+        using var validAdminAssignment = await adminClient.PostAsJsonAsync(
+            $"/api/v1/users/{pendingTwoId}/roles",
+            new
+            {
+                role = "ADMIN",
+                scopes = new[] { new { dimension = "ORGANIZATION", reference = (string?)null } },
+                reason = "valid global admin scope",
+                expectedUserVersion = 1
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.NoContent, validAdminAssignment.StatusCode);
         using var setup = await adminClient.PatchAsJsonAsync(
             $"/api/v1/users/{pendingProfileId}/setup",
             new { departmentId = department.Id, jobTitle = "Requester", reason = "setup", expectedVersion = 1 },
