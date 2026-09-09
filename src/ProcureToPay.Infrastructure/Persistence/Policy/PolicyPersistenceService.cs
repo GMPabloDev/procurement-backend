@@ -315,6 +315,8 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             throw new DomainValidationException("Policy retirement cannot be backdated.");
         }
 
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            System.Data.IsolationLevel.Serializable, cancellationToken);
         var activation = await dbContext.PolicyActivations
             .SingleOrDefaultAsync(candidate => candidate.Id == activationId, cancellationToken)
             ?? throw new DomainNotFoundException("The policy activation does not exist.");
@@ -340,6 +342,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         dbContext.PolicyRetirements.Add(record);
         AddAudit("POLICY_RETIRED", activationId, null, null, null, actor, reason, correlationReference);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return record;
     }
 

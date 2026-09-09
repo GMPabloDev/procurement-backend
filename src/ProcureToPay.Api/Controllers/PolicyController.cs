@@ -75,26 +75,6 @@ public sealed class PolicyController(
         return Ok(ToResponse(publishedAndActivated.Version));
     }
 
-    [HttpPost("{policyId:guid}/activate")]
-    public async Task<ActionResult<PolicyActivationResponse>> Activate(
-        Guid policyId,
-        PolicyActivationRequest request,
-        CancellationToken cancellationToken)
-    {
-        var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
-        var organizationId = await GetOrganizationIdAsync(cancellationToken);
-        var activation = await policyService.ActivateAsync(
-            organizationId,
-            policyId,
-            request.EffectiveFrom ?? DateTimeOffset.UtcNow,
-            new PolicyActor("USER", actor.Id),
-            request.Reason,
-            HttpContext.TraceIdentifier,
-            cancellationToken);
-        return Created($"/api/v1/policies/activations/{activation.Id}",
-            new PolicyActivationResponse(activation.Id, activation.PolicySetVersionId, activation.EffectiveFrom));
-    }
-
     [HttpDelete("activations/{activationId:guid}")]
     public async Task<IActionResult> Retire(
         Guid activationId,
@@ -162,7 +142,6 @@ public sealed record PolicyDraftRequest(
 
 public sealed record PolicyActionRequest(string Reason, DateTimeOffset EffectiveFrom);
 
-public sealed record PolicyActivationRequest(DateTimeOffset? EffectiveFrom, string Reason);
 
 public sealed record PolicyRetirementRequest(DateTimeOffset? EffectiveTo, string Reason);
 
