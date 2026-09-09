@@ -312,10 +312,7 @@ public sealed class PolicyEvaluationService(
                 correlationReference)
             {
                 SubjectType = metadata?.SubjectType ?? "PURCHASE_REQUEST",
-                Cause = metadata is null ? "INITIAL" : "FACT_PROVIDER_EVALUATION",
-                FactsDigest = metadata?.FactsDigest,
-                ManifestDigest = metadata?.ManifestDigest,
-                InputCanonicalJson = metadata?.InputCanonicalJson
+                Cause = metadata is null ? "INITIAL" : "FACT_PROVIDER_EVALUATION"
             },
             cancellationToken);
         return bundle with { Id = persisted.Id };

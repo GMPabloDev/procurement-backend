@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
+using ProcureToPay.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,7 +11,9 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ProcureToPay.Infrastructure.Persistence.Migrations
 {
     /// <inheritdoc />
-    public partial class PolicyExceptionVerification : Migration
+    [DbContext(typeof(ProcureToPayDbContext))]
+[Migration("20260909183407_PolicyExceptionVerification")]
+public partial class PolicyExceptionVerificationMigration : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)

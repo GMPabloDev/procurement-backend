@@ -1,9 +1,13 @@
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using ProcureToPay.Infrastructure.Persistence;
 
 #nullable disable
 
 namespace ProcureToPay.Infrastructure.Persistence.Migrations;
 
+[DbContext(typeof(ProcureToPayDbContext))]
+[Migration("20260909170000_ScopeIdempotencyFingerprint")]
 public partial class ScopeIdempotencyFingerprint : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)

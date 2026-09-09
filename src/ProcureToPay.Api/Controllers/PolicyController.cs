@@ -16,6 +16,7 @@ namespace ProcureToPay.Api.Controllers;
 [Route("api/v1/policies")]
 public sealed class PolicyController(
     PolicyPersistenceService policyService,
+    PolicyEvaluationService policyEvaluationService,
     ProcureToPayDbContext dbContext,
     CurrentUserProvisioningService provisioningService) : ControllerBase
 {
@@ -48,6 +49,10 @@ public sealed class PolicyController(
         PolicyDraftRequest request,
         CancellationToken cancellationToken)
     {
+        if (request.ContentJson.Length > 10 * 1024 * 1024)
+        {
+            throw new BadHttpRequestException("Policy content exceeds the 10 MiB limit.", StatusCodes.Status413PayloadTooLarge);
+        }
         var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
         var organizationId = await GetOrganizationIdAsync(cancellationToken);
         var draft = await policyService.AppendDraftAsync(
@@ -95,6 +100,29 @@ public sealed class PolicyController(
         return NoContent();
     }
 
+    [HttpPost("evaluate")]
+    public async Task<ActionResult<PolicyEvaluationBundle>> Evaluate(
+        PolicyEvaluationRequest request,
+        CancellationToken cancellationToken)
+    {
+        var issuer = User.FindFirst("iss")?.Value ?? "internal://procure-to-pay";
+        var clientId = User.FindFirst("client_id")?.Value ?? User.FindFirst("azp")?.Value;
+        if (string.IsNullOrWhiteSpace(clientId))
+        {
+            throw new DomainForbiddenException("A workload client identity is required.");
+        }
+        var factRequest = new PolicyFactRequest(
+            request.SubjectType,
+            request.SubjectId,
+            request.SubjectVersion,
+            request.Operation,
+            request.RequestedAtUtc ?? DateTimeOffset.UtcNow,
+            new PolicyWorkloadPrincipal(issuer, clientId),
+            HttpContext.TraceIdentifier);
+        return Ok(await policyEvaluationService.EvaluateEnterprisePurchaseRequestAsync(
+            factRequest, request.EvaluationKey, cancellationToken));
+    }
+
     [HttpGet("evaluations/{evaluationId:guid}")]
     public async Task<ActionResult<PolicyEvaluationResponse>> GetEvaluation(
         Guid evaluationId,
@@ -119,6 +147,11 @@ public sealed class PolicyController(
         CancellationToken cancellationToken)
     {
         _ = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
+        if (request.ContentJson.Length > 10 * 1024 * 1024 ||
+            (request.InputSnapshot is not null && request.InputSnapshot.Value.GetRawText().Length > 5 * 1024 * 1024))
+        {
+            throw new BadHttpRequestException("Simulation payload exceeds the configured limit.", StatusCodes.Status413PayloadTooLarge);
+        }
         if (string.IsNullOrWhiteSpace(request.ContentJson) ||
             !string.Equals(PolicyCanonicalizer.Hash(request.ContentJson), request.ContentDigest,
                 StringComparison.OrdinalIgnoreCase) ||
@@ -224,6 +257,14 @@ public sealed class PolicyController(
         ((PolicySetStatus)record.Status).ToString().ToUpperInvariant(),
         record.ScopesJson, record.ContentDigest, record.CreatedAt);
 }
+
+public sealed record PolicyEvaluationRequest(
+    string SubjectType,
+    Guid SubjectId,
+    int SubjectVersion,
+    string Operation,
+    string EvaluationKey,
+    DateTimeOffset? RequestedAtUtc = null);
 
 public sealed record PolicyDraftRequest(
     string ScopesJson,

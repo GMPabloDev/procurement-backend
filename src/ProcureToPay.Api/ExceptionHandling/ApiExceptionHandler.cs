@@ -19,6 +19,13 @@ public sealed class ApiExceptionHandler(
         var problemDetails = exception switch
         {
             ValidationException validationException => CreateValidationProblemDetails(validationException),
+            BadHttpRequestException tooLargeException when tooLargeException.StatusCode == StatusCodes.Status413PayloadTooLarge => new ProblemDetails
+            {
+                Status = StatusCodes.Status413PayloadTooLarge,
+                Title = "Payload too large",
+                Type = "/problems/payload-too-large",
+                Detail = tooLargeException.Message
+            },
             DomainValidationException validationException => new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
