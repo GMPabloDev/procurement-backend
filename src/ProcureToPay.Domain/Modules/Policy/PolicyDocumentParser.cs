@@ -7,6 +7,22 @@ namespace ProcureToPay.Domain.Modules.Policy;
 
 public static class PolicyDocumentParser
 {
+    public static PolicyRequestInput ParseSimulationRequest(JsonElement root)
+    {
+        var subject = ParseSubject(root.GetProperty("subject"));
+        var lines = root.GetProperty("lines").EnumerateArray().Select(line =>
+            new PolicyLineInput(
+                ParseSubject(line.GetProperty("subject")),
+                ParseFacts(line.GetProperty("facts")))).ToArray();
+        return new PolicyRequestInput(
+            subject,
+            root.GetProperty("organization_id").GetGuid(),
+            root.GetProperty("legal_entity_id").GetGuid(),
+            root.GetProperty("base_currency").GetString()!,
+            lines,
+            root.TryGetProperty("facts", out var facts) ? ParseFacts(facts) : null);
+    }
+
     public static PolicySetVersion Parse(
         string canonicalJson,
         Guid id,
@@ -104,6 +120,12 @@ public static class PolicyDocumentParser
             exceptionable,
             null);
     }
+
+    private static PolicySubjectReference ParseSubject(JsonElement value) =>
+        new(value.GetProperty("id").GetGuid(), value.GetProperty("version").GetInt32());
+
+    private static IReadOnlyDictionary<string, PolicyValue> ParseFacts(JsonElement facts) =>
+        facts.EnumerateObject().ToDictionary(property => property.Name, property => ParseValue(property.Value), StringComparer.Ordinal);
 
     private static PolicyValue ParseValue(JsonElement value)
     {

@@ -15,6 +15,12 @@ public sealed class PolicyConfigurationUnavailableException(string message) : Do
 
 public sealed record PolicyWorkloadIdentity(string Issuer, string ClientId);
 public sealed record PolicyWorkloadPrincipal(string Issuer, string ClientId);
+public sealed record PolicyEvaluationMetadata(
+    string Operation,
+    string SubjectType,
+    string FactsDigest,
+    string ManifestDigest,
+    string InputCanonicalJson);
 public sealed record PolicyFactRequest(string SubjectType, Guid SubjectId, int SubjectVersion,
     string Operation, DateTimeOffset RequestedAtUtc, PolicyWorkloadPrincipal Workload,
     string CorrelationReference);
@@ -70,8 +76,30 @@ public sealed class PolicyFactProviderRegistry(IEnumerable<IPolicyFactProvider> 
 public sealed class PolicyEvaluationService(
     PolicyPersistenceService persistenceService,
     PolicyWorkloadAllowlist workloadAllowlist,
-    PolicyFactProviderRegistry factProviderRegistry) : IPolicyEvaluationPort
+    PolicyFactProviderRegistry factProviderRegistry,
+    PolicyExceptionVerifierRegistry exceptionVerifierRegistry) : IPolicyEvaluationPort
 {
+    public async Task<PolicyEvaluationBundle> ApplyQuotationWaiverAsync(
+        PolicyEvaluationBundle bundle,
+        QuotationWaiverRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var verifier = exceptionVerifierRegistry.Resolve();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        QuotationWaiverEvidence evidence;
+        try
+        {
+            evidence = await QuotationWaiverEvaluator.VerifyAsync(
+                request, verifier, DateTimeOffset.UtcNow, timeout.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new PolicyDependencyUnavailableException("The quotation waiver verifier timed out.");
+        }
+        return QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(bundle, request, evidence);
+    }
+
     public async Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestAsync(
         PolicyFactRequest factRequest,
         string evaluationKey,
@@ -180,7 +208,13 @@ public sealed class PolicyEvaluationService(
             evaluationKey,
             evaluatedAt,
             factRequest.CorrelationReference,
-            cancellationToken);
+            cancellationToken,
+            new PolicyEvaluationMetadata(
+                factRequest.Operation,
+                factRequest.SubjectType,
+                facts.FactsDigest,
+                facts.Manifest.Digest,
+                PolicyCanonicalizer.CanonicalizeRequest(facts.Request, evaluatedAt)));
     }
 
     public async Task<PolicyEvaluationBundle> EvaluateActivePurchaseRequestAsync(
@@ -190,19 +224,25 @@ public sealed class PolicyEvaluationService(
         string evaluationKey,
         DateTimeOffset evaluatedAt,
         string correlationReference,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        PolicyEvaluationMetadata? metadata = null)
     {
         var active = await persistenceService.FindActiveAsync(
             request.OrganizationId, evaluatedAt, cancellationToken)
-            ?? throw new DomainConflictException("No active policy is available.");
+            ?? throw new PolicyConfigurationUnavailableException("No active policy is available.");
         if (active.PolicySetVersionId != policySnapshot.Id ||
             !string.Equals(active.PolicySetVersion.ContentDigest, policySnapshot.ContentDigest,
                 StringComparison.Ordinal))
         {
-            throw new DomainConflictException("The policy snapshot is not the current active version.");
+            throw new PolicyDependencyUnavailableException("The selected policy snapshot is not current.");
+        }
+        if (!string.Equals(PolicyCanonicalizer.ComputePolicyDigest(policySnapshot),
+                active.PolicySetVersion.ContentDigest, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new PolicyDependencyUnavailableException("The active policy digest is corrupted.");
         }
         return await EvaluatePurchaseRequestAsync(
-            policySnapshot, request, workload, evaluationKey, evaluatedAt, correlationReference, cancellationToken);
+            policySnapshot, request, workload, evaluationKey, evaluatedAt, correlationReference, cancellationToken, metadata);
     }
 
     public async Task<PolicyEvaluationBundle> EvaluatePurchaseRequestAsync(
@@ -212,7 +252,8 @@ public sealed class PolicyEvaluationService(
         string evaluationKey,
         DateTimeOffset evaluatedAt,
         string correlationReference,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        PolicyEvaluationMetadata? metadata = null)
     {
         if (!workloadAllowlist.IsAllowed(workload))
         {
@@ -226,10 +267,14 @@ public sealed class PolicyEvaluationService(
                 request.OrganizationId,
                 workload.Issuer,
                 workload.ClientId,
-                "PURCHASE_REQUEST",
+                metadata?.Operation ?? "PURCHASE_REQUEST",
                 evaluationKey,
                 policy.Id,
-                correlationReference),
+                correlationReference)
+            {
+                SubjectType = metadata?.SubjectType ?? "PURCHASE_REQUEST",
+                Cause = metadata is null ? "INITIAL" : "FACT_PROVIDER_EVALUATION"
+            },
             cancellationToken);
         return bundle with { Id = persisted.Id };
     }

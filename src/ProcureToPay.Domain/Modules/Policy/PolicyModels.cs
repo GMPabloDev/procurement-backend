@@ -510,6 +510,11 @@ public sealed class PolicySetVersion
             {
                 throw new DomainValidationException($"Scope {scope} requires exactly one fallback rule.");
             }
+            if (fallback[0].Predicates.Length != 0 ||
+                fallback[0].Effects[0].Type is not (PolicyEffectType.Allow or PolicyEffectType.Block))
+            {
+                throw new DomainValidationException("A fallback must be unconditional and allow or block.");
+            }
         }
 
         if (rules.GroupBy(rule => (rule.Scope, rule.Code)).Any(group => group.Count() > 1))

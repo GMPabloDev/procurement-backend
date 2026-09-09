@@ -55,6 +55,13 @@ public sealed class ApiExceptionHandler(
                 Detail = notFoundException.Message
             },
             // pi-lens-ignore: lsp:CS0246, CS0246
+            PolicyConfigurationUnavailableException configurationException => new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Policy configuration unavailable",
+                Type = "/problems/policy-configuration-unavailable",
+                Detail = configurationException.Message
+            },
             PolicyDependencyUnavailableException dependencyException => new ProblemDetails
             {
                 Status = StatusCodes.Status503ServiceUnavailable,

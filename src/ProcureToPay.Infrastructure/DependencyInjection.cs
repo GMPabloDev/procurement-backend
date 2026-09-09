@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ProcureToPay.Application.Abstractions;
+using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Application.Abstractions.Files;
 using ProcureToPay.Infrastructure.Persistence;
@@ -31,6 +32,8 @@ public static class DependencyInjection
         services.AddSingleton<PolicyWorkloadAllowlist>();
         // pi-lens-ignore: CS0246
         services.AddScoped<PolicyFactProviderRegistry>();
+        services.AddScoped<IQuotationWaiverVerifier, DefaultDenyQuotationWaiverVerifier>();
+        services.AddScoped<PolicyExceptionVerifierRegistry>();
         services.AddScoped<PolicyEvaluationService>();
         services.AddScoped<IOrganizationEligibilityService>(provider =>
             provider.GetRequiredService<OrganizationEligibilityService>());

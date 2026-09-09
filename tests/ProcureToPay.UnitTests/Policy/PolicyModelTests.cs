@@ -32,6 +32,20 @@ public sealed class PolicyModelTests
     }
 
     [Fact]
+    public void Fallback_must_be_unconditional_allow_or_block()
+    {
+        var policy = CreatePolicy(PolicyScope.Line);
+        policy.AddRule(new PolicyRule(
+            "DEFAULT",
+            PolicyScope.Line,
+            [new PolicyPredicate("CONTRACT_REQUIRED", PolicyOperator.IsTrue, PolicyValue.Boolean(true))],
+            [new PolicyEffect(PolicyEffectType.Allow, "DEFAULT")],
+            isFallback: true));
+
+        Assert.Throws<DomainValidationException>(() => policy.ValidateForPublication());
+    }
+
+    [Fact]
     public void Policy_version_rejects_duplicate_codes_and_disabled_scope_rules()
     {
         var duplicatePolicy = CreatePolicy(PolicyScope.Line);

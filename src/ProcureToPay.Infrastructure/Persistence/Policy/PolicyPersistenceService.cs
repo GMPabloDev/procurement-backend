@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using ProcureToPay.Domain.Modules.Policy;
@@ -24,7 +25,13 @@ public sealed record PolicyEvaluationCaller(
     string Operation,
     string EvaluationKey,
     Guid PolicySetVersionId,
-    string CorrelationReference);
+    string CorrelationReference)
+{
+    public string SubjectType { get; init; } = string.Empty;
+    public string Cause { get; init; } = "INITIAL";
+    public string? PreviousResultDigest { get; init; }
+    public IReadOnlyList<string> ExceptionReferenceIds { get; init; } = [];
+}
 
 public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
 {
@@ -376,6 +383,13 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             throw new DomainConflictException("The evaluation key is already bound to a different request.");
         }
 
+        var nextSequence = await dbContext.PolicyEvaluationBundles
+            .CountAsync(evaluation => evaluation.OrganizationId == caller.OrganizationId &&
+                                      evaluation.SubjectId == bundle.Subject.Id &&
+                                      evaluation.SubjectVersion == bundle.Subject.Version,
+                cancellationToken);
+        var bundleJson = SerializeBundleWithMetadata(bundle, nextSequence + 1, caller.Operation);
+
         var record = new PolicyEvaluationBundleRecord
         {
             Id = bundle.Id,
@@ -391,8 +405,8 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             PolicyContentDigest = bundle.PolicyContentDigest,
             InputDigest = bundle.InputDigest,
             Result = bundle.Result.ToString().ToUpperInvariant(),
-            ResultDigest = PolicyCanonicalizer.Hash(SerializeBundle(bundle)),
-            BundleJson = SerializeBundle(bundle),
+            ResultDigest = PolicyCanonicalizer.Hash(bundleJson),
+            BundleJson = bundleJson,
             IdempotencyFingerprint = fingerprint,
             PreviousBundleId = bundle.PreviousBundleId,
             CorrelationReference = caller.CorrelationReference
@@ -525,11 +539,31 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
     private static string SerializeBundle(PolicyEvaluationBundle bundle) =>
         JsonSerializer.Serialize(bundle, JsonOptions);
 
+    private static string SerializeBundleWithMetadata(
+        PolicyEvaluationBundle bundle,
+        long sequence,
+        string operation)
+    {
+        var json = JsonNode.Parse(SerializeBundle(bundle))!.AsObject();
+        json["evaluationSequence"] = sequence;
+        json["operation"] = operation;
+        return json.ToJsonString(JsonOptions);
+    }
+
     private static string ComputeFingerprint(PolicyEvaluationCaller caller, PolicyEvaluationBundle bundle)
     {
-        var value = string.Join("|", caller.OrganizationId, caller.WorkloadIssuer, caller.WorkloadClientId,
-            caller.Operation, caller.EvaluationKey, bundle.Subject.Id, bundle.Subject.Version,
-            bundle.PreviousBundleId?.ToString("D") ?? string.Empty);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+        var command = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["cause"] = caller.Cause,
+            ["exception_reference_ids"] = caller.ExceptionReferenceIds.Order(StringComparer.Ordinal).ToArray(),
+            ["operation"] = caller.Operation,
+            ["previous_bundle_id"] = bundle.PreviousBundleId?.ToString("D"),
+            ["previous_result_digest"] = caller.PreviousResultDigest,
+            ["subject_id"] = bundle.Subject.Id.ToString("D"),
+            ["subject_type"] = caller.SubjectType,
+            ["subject_version"] = bundle.Subject.Version
+        };
+        var canonical = JsonSerializer.Serialize(command);
+        return PolicyCanonicalizer.Hash(canonical);
     }
 }

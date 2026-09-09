@@ -97,7 +97,10 @@ public sealed record PolicyScopeEvaluation(
     IReadOnlySet<Guid> SubjectIds,
     IReadOnlyList<string> MatchedRuleCodes,
     IReadOnlyList<PolicyGeneratedControl> Controls,
-    PolicyResult Result);
+    PolicyResult Result)
+{
+    public bool HasAllowEffect { get; init; }
+}
 
 public sealed record PolicyEvaluationBundle(
     Guid Id,
@@ -111,6 +114,12 @@ public sealed record PolicyEvaluationBundle(
     PolicyResult Result,
     string ResultDigest)
 {
+    public long EvaluationSequence { get; init; }
+    public string Operation { get; init; } = string.Empty;
+    public string? FactsDigest { get; init; }
+    public string? ManifestDigest { get; init; }
+    public string? InputCanonicalJson { get; init; }
+    public Guid? ActivationId { get; init; }
     public Guid? PreviousBundleId { get; init; }
 }
 
@@ -416,6 +425,8 @@ public static class PolicyEvaluator
             matching = rules.Where(rule => rule.IsFallback).ToArray();
         }
 
+        var hasAllowEffect = matching.SelectMany(rule => rule.Effects)
+            .Any(effect => effect.Type is PolicyEffectType.Allow or PolicyEffectType.AllowDirectPurchase);
         var controls = matching
             .SelectMany(rule => rule.Effects
                 .Where(effect => effect.Type is not (PolicyEffectType.Allow or PolicyEffectType.AllowDirectPurchase))
@@ -426,57 +437,80 @@ public static class PolicyEvaluator
             subjectIds,
             matching.Select(rule => $"{rule.Code}:{rule.Revision}").ToImmutableArray(),
             controls,
-            ResolveResult(controls));
+            ResolveResult(controls, hasAllowEffect))
+        {
+            HasAllowEffect = hasAllowEffect
+        };
     }
 
     private static IReadOnlyList<PolicyGeneratedControl> Combine(IReadOnlyList<PolicyScopeEvaluation> scopes)
     {
         var lineIds = scopes.SelectMany(scope => scope.SubjectIds).ToImmutableHashSet();
-        var expanded = scopes.SelectMany(scope => scope.Controls.Select(control =>
-            scope.Scope == PolicyScope.Request && control.SubjectIds.Count == 1
-                ? control with { SubjectIds = lineIds, OriginScopes = control.OriginScopes.Add(scope.Scope) }
-                : control)).ToArray();
+        var expanded = scopes.SelectMany(scope => scope.Controls.SelectMany(control =>
+            scope.Scope == PolicyScope.Request
+                ? lineIds.Select(lineId => control with
+                {
+                    SubjectIds = ImmutableHashSet.Create(lineId),
+                    OriginScopes = control.OriginScopes.Add(scope.Scope)
+                })
+                : [control])).ToArray();
 
-        var combined = new List<PolicyGeneratedControl>();
-        foreach (var group in expanded.GroupBy(control => new
-        {
-            control.RequirementKey,
-            control.Type,
-            ApprovalRole = control.Approval?.Role,
-            ApprovalAuthority = control.Approval?.AuthorityType,
-            ApprovalScope = control.Approval?.DecisionScope
-        }))
-        {
-            if (group.Key.Type == PolicyEffectType.Block)
+        var perLine = expanded
+            .GroupBy(control => new
             {
-                combined.Add(group.OrderBy(control => control.Reason, StringComparer.Ordinal).First());
-                continue;
-            }
+                control.RequirementKey,
+                control.Type,
+                Line = control.SubjectIds.Count == 1 ? control.SubjectIds.Single() : Guid.Empty,
+                ApprovalRole = control.Approval?.Role,
+                ApprovalAuthority = control.Approval?.AuthorityType,
+                ApprovalScope = control.Approval?.DecisionScope,
+                control.Phase
+            })
+            .Select(MergeControls)
+            .ToArray();
 
-            var first = group.First();
-            var approval = group.Key.Type == PolicyEffectType.RequireApproval
-                ? CombineApproval(group.Select(control => control.Approval!))
-                : first.Approval;
-            var quotations = group.Key.Type == PolicyEffectType.RequireQuotations
-                ? group.Max(control => control.MinimumQuotations)
-                : first.MinimumQuotations;
-            var documents = group.SelectMany(control => control.SupportingDocumentTypes).ToImmutableHashSet(StringComparer.Ordinal);
-            combined.Add(first with
+        var combined = perLine
+            .GroupBy(control => new
             {
-                OriginScopes = group.SelectMany(control => control.OriginScopes).ToImmutableHashSet(),
-                SubjectIds = group.SelectMany(control => control.SubjectIds).ToImmutableHashSet(),
-                Approval = approval,
-                MinimumQuotations = quotations,
-                SupportingDocumentTypes = documents,
-                OriginRuleCodes = group.SelectMany(control => control.OriginRuleCodes).ToImmutableHashSet(StringComparer.Ordinal),
-                Reason = string.Join("; ", group.Select(control => control.Reason).Where(reason => !string.IsNullOrWhiteSpace(reason)).Distinct(StringComparer.Ordinal))
-            });
-        }
-
-        return combined
+                control.RequirementKey,
+                control.Type,
+                control.Phase,
+                Approval = control.Approval is null ? string.Empty : JsonSerializer.Serialize(control.Approval),
+                control.MinimumQuotations,
+                Documents = string.Join("|", control.SupportingDocumentTypes.Order(StringComparer.Ordinal))
+            })
+            .Select(MergeControls)
+            .Where(control => control.Type != PolicyEffectType.AllowDirectPurchase ||
+                !perLine.Any(other => other.RequirementKey == control.RequirementKey && other.Type == PolicyEffectType.RequirePo))
             .OrderBy(control => control.RequirementKey, StringComparer.Ordinal)
             .ThenBy(control => control.Type)
             .ToArray();
+        return combined;
+    }
+
+    private static PolicyGeneratedControl MergeControls(IEnumerable<PolicyGeneratedControl> controls)
+    {
+        var group = controls.ToArray();
+        var first = group[0];
+        var approval = first.Type == PolicyEffectType.RequireApproval
+            ? CombineApproval(group.Where(control => control.Approval is not null).Select(control => control.Approval!))
+            : first.Approval;
+        return first with
+        {
+            OriginScopes = group.SelectMany(control => control.OriginScopes).ToImmutableHashSet(),
+            SubjectIds = group.SelectMany(control => control.SubjectIds).ToImmutableHashSet(),
+            Approval = approval,
+            MinimumQuotations = first.Type == PolicyEffectType.RequireQuotations
+                ? group.Max(control => control.MinimumQuotations)
+                : first.MinimumQuotations,
+            SupportingDocumentTypes = group.SelectMany(control => control.SupportingDocumentTypes)
+                .ToImmutableHashSet(StringComparer.Ordinal),
+            OriginRuleCodes = group.SelectMany(control => control.OriginRuleCodes)
+                .ToImmutableHashSet(StringComparer.Ordinal),
+            Reason = string.Join("; ", group.Select(control => control.Reason)
+                .Where(reason => !string.IsNullOrWhiteSpace(reason))
+                .Distinct(StringComparer.Ordinal))
+        };
     }
 
     private static PolicyApprovalDescriptor CombineApproval(IEnumerable<PolicyApprovalDescriptor> approvals)
@@ -585,12 +619,17 @@ public static class PolicyEvaluator
             ? value.AsMoney()
             : throw new DomainValidationException($"Fact '{key}' is required.");
 
-    private static PolicyResult ResolveResult(IEnumerable<PolicyGeneratedControl> controls) =>
-        controls.Any(control => control.Type == PolicyEffectType.Block)
+    private static PolicyResult ResolveResult(IEnumerable<PolicyGeneratedControl> controls, bool hasAllowEffect)
+    {
+        var materialized = controls.ToArray();
+        return materialized.Any(control => control.Type == PolicyEffectType.Block)
             ? PolicyResult.Blocked
-            : controls.Count() > 0
+            : materialized.Length > 0
                 ? PolicyResult.RequirementsGenerated
-                : PolicyResult.Passed;
+                : hasAllowEffect
+                    ? PolicyResult.Passed
+                    : PolicyResult.Blocked;
+    }
 
     private static PolicyResult ResolveResult(
         IReadOnlyList<PolicyScopeEvaluation> scopes,
