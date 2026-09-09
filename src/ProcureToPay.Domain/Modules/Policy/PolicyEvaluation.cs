@@ -150,6 +150,19 @@ public static class PolicyCanonicalizer
 
     public static string ComputePolicyDigest(PolicySetVersion policy) => Hash(CanonicalizePolicy(policy));
 
+    public static PolicyEvaluationBundle WithEvaluationMetadata(
+        PolicyEvaluationBundle bundle,
+        string operation,
+        string factsDigest,
+        string manifestDigest,
+        string inputCanonicalJson) => bundle with
+        {
+            Operation = operation,
+            FactsDigest = factsDigest,
+            ManifestDigest = manifestDigest,
+            InputCanonicalJson = inputCanonicalJson
+        };
+
     public static string CanonicalizeEvaluationInput(
         DateTimeOffset evaluatedAt,
         string operation,

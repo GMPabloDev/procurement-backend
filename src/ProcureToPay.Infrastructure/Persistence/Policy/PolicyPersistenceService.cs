@@ -448,6 +448,73 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         return record;
     }
 
+    public async Task<PolicyExceptionVerificationRecord> AppendExceptionVerificationAsync(
+        Guid evaluationBundleId,
+        QuotationWaiverRequest request,
+        QuotationWaiverEvidence evidence,
+        CancellationToken cancellationToken = default)
+    {
+        if (evaluationBundleId == Guid.Empty || string.IsNullOrWhiteSpace(request.TargetRequirementKey) ||
+            string.IsNullOrWhiteSpace(evidence.VerifierReference))
+        {
+            throw new DomainValidationException("Quotation waiver persistence requires a bound evaluation and target.");
+        }
+
+        var workflowDecisionId = evidence.VerifierReference;
+        var existing = await dbContext.Set<PolicyExceptionVerificationRecord>().SingleOrDefaultAsync(record =>
+            record.WorkflowDecisionId == workflowDecisionId &&
+            record.BaseBundleId == evaluationBundleId &&
+            record.TargetRequirementKey == request.TargetRequirementKey,
+            cancellationToken);
+        if (existing is not null)
+        {
+            if (existing.Binding == request.Binding && existing.EvidenceDigest == evidence.EvidenceDigest &&
+                existing.Nonce == request.Nonce)
+            {
+                return existing;
+            }
+            throw new DomainConflictException("The quotation waiver decision is already bound to another evidence.");
+        }
+
+        var record = new PolicyExceptionVerificationRecord
+        {
+            Id = Guid.NewGuid(),
+            EvaluationBundleId = evaluationBundleId,
+            BaseBundleId = evaluationBundleId,
+            WorkflowDecisionId = workflowDecisionId,
+            TargetRequirementKey = request.TargetRequirementKey,
+            Binding = request.Binding,
+            Nonce = request.Nonce,
+            EvidenceDigest = evidence.EvidenceDigest,
+            ApproverId = request.ApproverId,
+            ExpiresAt = evidence.ExpiresAt,
+            VerifierReference = evidence.VerifierReference,
+            SnapshotJson = JsonSerializer.Serialize(new { request, evidence }, JsonOptions),
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        dbContext.Set<PolicyExceptionVerificationRecord>().Add(record);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            dbContext.Entry(record).State = EntityState.Detached;
+            var concurrent = await dbContext.Set<PolicyExceptionVerificationRecord>().SingleOrDefaultAsync(item =>
+                item.WorkflowDecisionId == workflowDecisionId &&
+                item.BaseBundleId == evaluationBundleId &&
+                item.TargetRequirementKey == request.TargetRequirementKey,
+                cancellationToken);
+            if (concurrent is not null && concurrent.Binding == request.Binding &&
+                concurrent.EvidenceDigest == evidence.EvidenceDigest)
+            {
+                return concurrent;
+            }
+            throw;
+        }
+        return record;
+    }
+
     private static void ValidateDocument(PolicyDraftDocument document)
     {
         if (document.OrganizationId == Guid.Empty || string.IsNullOrWhiteSpace(document.ScopesJson) ||

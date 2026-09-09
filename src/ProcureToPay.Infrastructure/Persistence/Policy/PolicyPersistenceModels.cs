@@ -72,3 +72,20 @@ public sealed class PolicyEvaluationBundleRecord
     public PolicySetVersionRecord PolicySetVersion { get; set; } = null!;
 }
 
+public sealed class PolicyExceptionVerificationRecord
+{
+    public Guid Id { get; set; }
+    public Guid EvaluationBundleId { get; set; }
+    public Guid BaseBundleId { get; set; }
+    public string WorkflowDecisionId { get; set; } = null!;
+    public string TargetRequirementKey { get; set; } = null!;
+    public string Binding { get; set; } = null!;
+    public string Nonce { get; set; } = null!;
+    public string EvidenceDigest { get; set; } = null!;
+    public Guid ApproverId { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+    public string VerifierReference { get; set; } = null!;
+    public string SnapshotJson { get; set; } = null!;
+    public DateTimeOffset CreatedAt { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+}

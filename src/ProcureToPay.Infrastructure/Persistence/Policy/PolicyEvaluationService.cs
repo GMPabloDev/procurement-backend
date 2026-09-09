@@ -27,7 +27,10 @@ public sealed record PolicyFactRequest(string SubjectType, Guid SubjectId, int S
 public sealed record PolicyCompletenessManifest(Guid RequestId, int RequestVersion,
     IReadOnlyList<PolicySubjectReference> Lines, string Digest);
 public sealed record PolicyFactBundle(PolicyRequestInput Request, PolicyCompletenessManifest Manifest,
-    string ProviderId, string ContractVersion, string FactsDigest);
+    string ProviderId, string ContractVersion, string FactsDigest)
+{
+    public IReadOnlyDictionary<string, string> Provenance { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+}
 
 public interface IPolicyWorkloadAllowlist
 {
@@ -77,7 +80,8 @@ public sealed class PolicyEvaluationService(
     PolicyPersistenceService persistenceService,
     PolicyWorkloadAllowlist workloadAllowlist,
     PolicyFactProviderRegistry factProviderRegistry,
-    PolicyExceptionVerifierRegistry exceptionVerifierRegistry) : IPolicyEvaluationPort
+    PolicyExceptionVerifierRegistry exceptionVerifierRegistry,
+    PolicyReferenceCatalogRegistry referenceCatalogRegistry) : IPolicyEvaluationPort
 {
     public async Task<PolicyEvaluationBundle> ApplyQuotationWaiverAsync(
         PolicyEvaluationBundle bundle,
@@ -97,6 +101,8 @@ public sealed class PolicyEvaluationService(
         {
             throw new PolicyDependencyUnavailableException("The quotation waiver verifier timed out.");
         }
+        await persistenceService.AppendExceptionVerificationAsync(
+            bundle.Id, request, evidence, cancellationToken);
         return QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(bundle, request, evidence);
     }
 
@@ -187,6 +193,7 @@ public sealed class PolicyEvaluationService(
             .OrderBy(line => line.id)
             .ThenBy(line => line.version)
             .ToArray();
+        await ValidateReferenceCatalogsAsync(facts.Request, cancellationToken);
         if (!string.Equals(facts.ProviderId, provider.ProviderId, StringComparison.Ordinal) ||
             !string.Equals(facts.ContractVersion, provider.ContractVersion, StringComparison.Ordinal) ||
             facts.Request.OrganizationId != policySnapshot.OrganizationId ||
@@ -215,6 +222,38 @@ public sealed class PolicyEvaluationService(
                 facts.FactsDigest,
                 facts.Manifest.Digest,
                 PolicyCanonicalizer.CanonicalizeRequest(facts.Request, evaluatedAt)));
+    }
+
+    private async Task ValidateReferenceCatalogsAsync(
+        PolicyRequestInput request,
+        CancellationToken cancellationToken)
+    {
+        var values = request.Facts?.Values
+            .Concat(request.Lines.SelectMany(line => line.Facts.Values))
+            .Where(value => value.Kind == PolicyValueKind.Reference)
+            .ToArray() ?? [];
+        foreach (var value in values)
+        {
+            var catalog = referenceCatalogRegistry.Resolve(value.ReferenceType!);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            bool exists;
+            try
+            {
+                var reference = value.Value.Split(':', 2);
+                exists = await catalog.ExistsAsync(
+                    new PolicyReferenceLookup(value.ReferenceType!, Guid.Parse(reference[0]), int.Parse(reference[1]), string.Empty),
+                    timeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new PolicyDependencyUnavailableException("The policy reference catalog timed out.");
+            }
+            if (!exists)
+            {
+                throw new DomainValidationException("A policy reference could not be verified by its catalog.");
+            }
+        }
     }
 
     public async Task<PolicyEvaluationBundle> EvaluateActivePurchaseRequestAsync(
@@ -261,6 +300,15 @@ public sealed class PolicyEvaluationService(
         }
 
         var bundle = PolicyEvaluator.EvaluateRequest(policy, request, evaluationKey, evaluatedAt);
+        if (metadata is not null)
+        {
+            bundle = PolicyCanonicalizer.WithEvaluationMetadata(
+                bundle,
+                metadata.Operation,
+                metadata.FactsDigest,
+                metadata.ManifestDigest,
+                metadata.InputCanonicalJson);
+        }
         var persisted = await persistenceService.AppendEvaluationAsync(
             bundle,
             new PolicyEvaluationCaller(

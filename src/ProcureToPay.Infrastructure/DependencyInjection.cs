@@ -34,6 +34,8 @@ public static class DependencyInjection
         services.AddScoped<PolicyFactProviderRegistry>();
         services.AddScoped<IQuotationWaiverVerifier, DefaultDenyQuotationWaiverVerifier>();
         services.AddScoped<PolicyExceptionVerifierRegistry>();
+        services.AddScoped<IPolicyReferenceCatalog, DefaultDenyPolicyReferenceCatalog>();
+        services.AddScoped<PolicyReferenceCatalogRegistry>();
         services.AddScoped<PolicyEvaluationService>();
         services.AddScoped<IOrganizationEligibilityService>(provider =>
             provider.GetRequiredService<OrganizationEligibilityService>());

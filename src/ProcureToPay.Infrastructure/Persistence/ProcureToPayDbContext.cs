@@ -20,6 +20,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<PolicyActivationRecord> PolicyActivations => Set<PolicyActivationRecord>();
     public DbSet<PolicyRetirementRecord> PolicyRetirements => Set<PolicyRetirementRecord>();
     public DbSet<PolicyEvaluationBundleRecord> PolicyEvaluationBundles => Set<PolicyEvaluationBundleRecord>();
+    public DbSet<PolicyExceptionVerificationRecord> PolicyExceptionVerifications => Set<PolicyExceptionVerificationRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -36,6 +37,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigurePolicyActivation(modelBuilder);
         ConfigurePolicyRetirement(modelBuilder);
         ConfigurePolicyEvaluationBundle(modelBuilder);
+        ConfigurePolicyExceptionVerification(modelBuilder);
         base.OnModelCreating(modelBuilder);
     }
 
@@ -204,6 +206,24 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
             .WithOne(record => record.Retirement)
             .HasForeignKey<PolicyRetirementRecord>(record => record.PolicyActivationId)
             .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigurePolicyExceptionVerification(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PolicyExceptionVerificationRecord>();
+        entity.ToTable("PolicyExceptionVerifications", "Policy");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.WorkflowDecisionId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.TargetRequirementKey).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Binding).HasMaxLength(256).IsRequired();
+        entity.Property(record => record.Nonce).HasMaxLength(256).IsRequired();
+        entity.Property(record => record.EvidenceDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.VerifierReference).HasMaxLength(256).IsRequired();
+        entity.Property(record => record.SnapshotJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.WorkflowDecisionId, record.BaseBundleId, record.TargetRequirementKey })
+            .IsUnique();
+        entity.HasIndex(record => record.EvaluationBundleId);
     }
 
     private static void ConfigurePolicyEvaluationBundle(ModelBuilder modelBuilder)

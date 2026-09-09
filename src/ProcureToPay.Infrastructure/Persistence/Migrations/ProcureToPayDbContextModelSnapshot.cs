@@ -590,6 +590,77 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.ToTable("PolicyEvaluationBundles", "Policy");
                 });
 
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Policy.PolicyExceptionVerificationRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ApproverId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BaseBundleId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Binding")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("EvaluationBundleId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("EvidenceDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Nonce")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("SnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("TargetRequirementKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("VerifierReference")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("WorkflowDecisionId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EvaluationBundleId");
+
+                    b.HasIndex("WorkflowDecisionId", "BaseBundleId", "TargetRequirementKey")
+                        .IsUnique();
+
+                    b.ToTable("PolicyExceptionVerifications", "Policy");
+                });
+
             modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Policy.PolicyRetirementRecord", b =>
                 {
                     b.Property<Guid>("Id")
