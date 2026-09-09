@@ -236,15 +236,15 @@ public static class PolicyCanonicalizer
                 ["controls"] = scope.Controls.OrderBy(control => control.RequirementKey, StringComparer.Ordinal)
                     .ThenBy(control => control.Type).Select(CanonicalizeControl).ToArray(),
                 ["matched_rules"] = scope.MatchedRuleCodes.Order(StringComparer.Ordinal).ToArray(),
-                ["result"] = scope.Result.ToString(),
-                ["scope"] = scope.Scope.ToString(),
+                ["result"] = CanonicalName(scope.Result),
+                ["scope"] = CanonicalName(scope.Scope),
                 ["subjects"] = scope.SubjectIds.Order().Select(id => id.ToString("D")).ToArray()
             }).ToArray();
         return JsonSerializer.Serialize(new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
             ["canonicalization_version"] = Version,
             ["combined_controls"] = canonicalControls,
-            ["combined_result"] = combinedResult.ToString(),
+            ["combined_result"] = CanonicalName(combinedResult),
             ["diff"] = diff,
             ["evaluation_input_digest"] = inputDigest,
             ["scope_evaluations"] = canonicalScopes
@@ -254,15 +254,38 @@ public static class PolicyCanonicalizer
     private static object CanonicalizeControl(PolicyGeneratedControl control) =>
         new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["approval"] = control.Approval,
+            ["approval"] = control.Approval is null ? null : CanonicalizeApproval(control.Approval),
             ["minimum_quotations"] = control.MinimumQuotations,
             ["origin_rules"] = control.OriginRuleCodes.Order(StringComparer.Ordinal).ToArray(),
-            ["origin_scopes"] = control.OriginScopes.Order().Select(scope => scope.ToString()).ToArray(),
+            ["origin_scopes"] = control.OriginScopes.Order().Select(CanonicalName).ToArray(),
+            ["supporting_document_types"] = control.SupportingDocumentTypes.Order(StringComparer.Ordinal).ToArray(),
+            ["reason"] = control.Reason,
             ["phase"] = control.Phase,
             ["requirement_key"] = control.RequirementKey,
             ["subjects"] = control.SubjectIds.Order().Select(id => id.ToString("D")).ToArray(),
-            ["type"] = control.Type.ToString()
+            ["type"] = CanonicalName(control.Type)
         };
+
+    public static object CanonicalizeFactPayload(PolicyRequestInput request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["base_currency"] = request.BaseCurrency,
+            ["facts"] = CanonicalizeFacts(request.Facts),
+            ["legal_entity_id"] = request.LegalEntityId.ToString("D"),
+            ["lines"] = request.Lines
+                .OrderBy(line => line.Subject.Id)
+                .ThenBy(line => line.Subject.Version)
+                .Select(line => new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["facts"] = CanonicalizeFacts(line.Facts),
+                    ["subject_ref"] = Subject(line.Subject)
+                }).ToArray(),
+            ["organization_id"] = request.OrganizationId.ToString("D"),
+            ["subject_ref"] = Subject(request.Subject)
+        };
+    }
 
     public static string CanonicalizeRequest(PolicyRequestInput request, DateTimeOffset evaluatedAt)
     {
@@ -360,7 +383,7 @@ public static class PolicyCanonicalizer
                 ["rank"] = approval.AuthorityLevel.Rank,
                 ["version"] = approval.AuthorityLevel.Version
             },
-            ["authority_type"] = approval.AuthorityType?.ToString().ToUpperInvariant(),
+            ["authority_type"] = approval.AuthorityType is null ? null : CanonicalName(approval.AuthorityType.Value),
             ["base_currency"] = approval.BaseCurrency,
             ["decision_scope"] = approval.DecisionScope,
             ["exceptionable"] = approval.Exceptionable,

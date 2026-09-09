@@ -205,6 +205,7 @@ public sealed class PolicyEvaluationService(
         {
             throw new DomainForbiddenException("The workload is not allowlisted for policy evaluation.");
         }
+        factRequest = factRequest with { RequestedAtUtc = DateTimeOffset.UtcNow };
 
         if (factRequest.OrganizationId is Guid requestOrganizationId)
         {
@@ -238,7 +239,7 @@ public sealed class PolicyEvaluationService(
         {
             throw new PolicyDependencyUnavailableException("The policy fact provider timed out.");
         }
-        var at = DateTimeOffset.UtcNow;
+        var at = factRequest.RequestedAtUtc;
         var active = await persistenceService.FindActiveAsync(facts.Request.OrganizationId, at, cancellationToken)
             ?? throw new PolicyConfigurationUnavailableException("No active policy is available.");
         var scopedExisting = await persistenceService.FindByWorkloadEvaluationKeyAsync(
@@ -280,6 +281,10 @@ public sealed class PolicyEvaluationService(
         }
 
         var provider = factProviderRegistry.Resolve(factRequest.SubjectType, factRequest.Operation);
+        if (preloadedFacts is null)
+        {
+            factRequest = factRequest with { RequestedAtUtc = DateTimeOffset.UtcNow };
+        }
         PolicyFactBundle facts;
         if (preloadedFacts is not null)
         {
@@ -319,12 +324,12 @@ public sealed class PolicyEvaluationService(
             facts.Manifest.RequestVersion != facts.Request.Subject.Version ||
             !expectedLines.SequenceEqual(manifestLines) ||
             !string.Equals(facts.Manifest.Digest, expectedManifestDigest, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(facts.FactsDigest, ComputeFactsDigest(facts, factRequest.RequestedAtUtc), StringComparison.OrdinalIgnoreCase))
+            !string.Equals(facts.FactsDigest, ComputeFactsDigest(facts), StringComparison.OrdinalIgnoreCase))
         {
             throw new DomainValidationException("The policy fact bundle or completeness manifest is invalid.");
         }
 
-        var evaluatedAt = DateTimeOffset.UtcNow;
+        var evaluatedAt = factRequest.RequestedAtUtc;
         return await EvaluateActivePurchaseRequestAsync(
             policySnapshot,
             facts.Request,
@@ -355,7 +360,24 @@ public sealed class PolicyEvaluationService(
         return PolicyCanonicalizer.Hash(JsonSerializer.Serialize(preimage));
     }
 
-    private static string ComputeFactsDigest(PolicyFactBundle bundle, DateTimeOffset requestedAt)
+    private static object CanonicalizeFactPayload(PolicyRequestInput request)
+    {
+        using var document = JsonDocument.Parse(PolicyCanonicalizer.CanonicalizeRequest(
+            request, DateTimeOffset.UnixEpoch));
+        var properties = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, "evaluated_at_utc", StringComparison.Ordinal))
+            {
+                var name = string.Equals(property.Name, "subject", StringComparison.Ordinal)
+                    ? "subject_ref" : property.Name;
+                properties[name] = property.Value.Clone();
+            }
+        }
+        return properties;
+    }
+
+    private static string ComputeFactsDigest(PolicyFactBundle bundle)
     {
         var preimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -368,7 +390,7 @@ public sealed class PolicyEvaluationService(
                     .Select(line => new { id = line.Id.ToString("D"), version = line.Version }).ToArray(),
                 digest = bundle.Manifest.Digest
             },
-            ["facts"] = PolicyCanonicalizer.CanonicalizeRequest(bundle.Request, requestedAt),
+            ["facts"] = CanonicalizeFactPayload(bundle.Request),
             ["provenance"] = bundle.Provenance.OrderBy(pair => pair.Key, StringComparer.Ordinal)
                 .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
             ["provider_contract_version"] = bundle.ContractVersion,
