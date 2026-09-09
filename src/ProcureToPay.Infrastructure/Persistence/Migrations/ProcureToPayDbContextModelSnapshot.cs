@@ -580,9 +580,6 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("IdempotencyFingerprint")
-                        .IsUnique();
-
                     b.HasIndex("PolicySetVersionId");
 
                     b.HasIndex("OrganizationId", "SubjectId", "SubjectVersion");

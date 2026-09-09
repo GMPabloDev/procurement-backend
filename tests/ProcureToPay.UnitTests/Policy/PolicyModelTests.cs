@@ -34,15 +34,12 @@ public sealed class PolicyModelTests
     [Fact]
     public void Fallback_must_be_unconditional_allow_or_block()
     {
-        var policy = CreatePolicy(PolicyScope.Line);
-        policy.AddRule(new PolicyRule(
+        Assert.Throws<DomainValidationException>(() => new PolicyRule(
             "DEFAULT",
             PolicyScope.Line,
-            [new PolicyPredicate("CONTRACT_REQUIRED", PolicyOperator.IsTrue, PolicyValue.Boolean(true))],
-            [new PolicyEffect(PolicyEffectType.Allow, "DEFAULT")],
+            [],
+            [new PolicyEffect(PolicyEffectType.RequirePo, "DEFAULT")],
             isFallback: true));
-
-        Assert.Throws<DomainValidationException>(() => policy.ValidateForPublication());
     }
 
     [Fact]

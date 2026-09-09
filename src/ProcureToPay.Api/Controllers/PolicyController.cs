@@ -87,7 +87,7 @@ public sealed class PolicyController(
         var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
         await policyService.RetireAsync(
             activationId,
-            request.EffectiveTo ?? DateTimeOffset.UtcNow,
+            request.EffectiveTo ?? DateTimeOffset.UtcNow.AddSeconds(1),
             new PolicyActor("USER", actor.Id),
             request.Reason,
             HttpContext.TraceIdentifier,

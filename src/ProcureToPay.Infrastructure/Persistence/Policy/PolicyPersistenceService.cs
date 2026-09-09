@@ -31,6 +31,9 @@ public sealed record PolicyEvaluationCaller(
     public string Cause { get; init; } = "INITIAL";
     public string? PreviousResultDigest { get; init; }
     public IReadOnlyList<string> ExceptionReferenceIds { get; init; } = [];
+    public string? ExceptionTargetRequirementKey { get; init; }
+    public int? ExceptionFrom { get; init; }
+    public int? ExceptionTo { get; init; }
 }
 
 public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
@@ -422,10 +425,21 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         {
             dbContext.Entry(record).State = EntityState.Detached;
             var duplicate = await dbContext.PolicyEvaluationBundles
-                .SingleOrDefaultAsync(evaluation => evaluation.IdempotencyFingerprint == fingerprint, cancellationToken);
+                .SingleOrDefaultAsync(evaluation =>
+                    evaluation.OrganizationId == caller.OrganizationId &&
+                    evaluation.WorkloadIssuer == caller.WorkloadIssuer &&
+                    evaluation.WorkloadClientId == caller.WorkloadClientId &&
+                    evaluation.Operation == caller.Operation &&
+                    evaluation.EvaluationKey == caller.EvaluationKey,
+                    cancellationToken);
             if (duplicate is not null)
             {
-                return duplicate;
+                if (duplicate.IdempotencyFingerprint == fingerprint)
+                {
+                    return duplicate;
+                }
+
+                throw new DomainConflictException("The evaluation key is already bound to a different request.");
             }
 
             throw;
@@ -556,6 +570,9 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         {
             ["cause"] = caller.Cause,
             ["exception_reference_ids"] = caller.ExceptionReferenceIds.Order(StringComparer.Ordinal).ToArray(),
+            ["exception_target_requirement_key"] = caller.ExceptionTargetRequirementKey,
+            ["exception_from"] = caller.ExceptionFrom,
+            ["exception_to"] = caller.ExceptionTo,
             ["operation"] = caller.Operation,
             ["previous_bundle_id"] = bundle.PreviousBundleId?.ToString("D"),
             ["previous_result_digest"] = caller.PreviousResultDigest,
