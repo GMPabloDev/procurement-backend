@@ -68,6 +68,39 @@ public sealed class OrganizationBootstrapperTests
         Assert.Contains("\"before\"", recoveryAudit.AfterJson, StringComparison.Ordinal);
         Assert.Contains("\"after\"", recoveryAudit.AfterJson, StringComparison.Ordinal);
 
+        var organization = await context.Organizations.SingleAsync(cancellationToken);
+        var preparedUser = new UserProfileRecord
+        {
+            Id = Guid.NewGuid(), OrganizationId = organization.Id,
+            Issuer = recovery.AdminIssuer, Subject = "prepared-pending",
+            Status = (int)UserProfileStatus.PendingSetup, Version = 1
+        };
+        var authorityLevel = new AuthorityLevelRecord
+        {
+            Id = Guid.NewGuid(), Type = (int)ApprovalAuthorityType.Financial,
+            Code = "RECOVERY_TEST", Rank = 1, LevelVersion = 1, IsActive = true
+        };
+        context.UserProfiles.Add(preparedUser);
+        context.AuthorityLevels.Add(authorityLevel);
+        context.AuthorityGrants.Add(new AuthorityGrantRecord
+        {
+            Id = Guid.NewGuid(), UserProfile = preparedUser, AuthorityLevel = authorityLevel,
+            MaxAmountBase = 100, BaseCurrency = "PEN",
+            ScopeJson = GlobalDepartmentScopeJson, ValidFrom = DateTimeOffset.UtcNow,
+            Status = (int)GrantStatus.Active, GrantedAt = DateTimeOffset.UtcNow,
+            GrantedBy = SystemActorId, Version = 1
+        });
+        await context.SaveChangesAsync(cancellationToken);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            bootstrapper.RecoverAdministratorAsync(
+                recovery with { AdminSubject = "prepared-pending" }, cancellationToken));
+        var untouchedPreparedUser = await context.UserProfiles.SingleAsync(
+            item => item.Subject == "prepared-pending", cancellationToken);
+        Assert.Equal((int)UserProfileStatus.PendingSetup, untouchedPreparedUser.Status);
+        Assert.Equal(1, await context.AuthorityGrants.CountAsync(
+            item => item.UserProfileId == preparedUser.Id && item.Status == (int)GrantStatus.Active,
+            cancellationToken));
+
         var existingAdmin = await context.UserProfiles.SingleAsync(
             item => item.Subject == "admin-1", cancellationToken);
         var existingAdminVersionBeforeRecovery = existingAdmin.Version + 1;
@@ -228,6 +261,9 @@ public sealed class OrganizationBootstrapperTests
         var error = await process.StandardError.ReadToEndAsync(cancellationToken);
         Assert.True(process.ExitCode == 0, $"CLI failed: {output}\n{error}");
     }
+
+    private const string GlobalDepartmentScopeJson = "[{\"dimension\":\"DEPARTMENT\",\"reference\":\"IT\"}]";
+    private static readonly Guid SystemActorId = Guid.Parse("00000000-0000-0000-0000-000000000001");
 
     private static OrganizationBootstrapOptions CreateOptions(string subject, string reason) => new(
         "ACME",

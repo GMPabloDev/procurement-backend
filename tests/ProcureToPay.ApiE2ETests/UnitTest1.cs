@@ -245,6 +245,10 @@ public sealed class UnitTest1
         using var auditorClient = factory.CreateClient();
         auditorClient.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", TestApiFactory.CreateToken("auditor-1"));
+        using var globalOrganization = await auditorClient.GetAsync("/api/v1/organization", cancellationToken);
+        Assert.Equal(HttpStatusCode.Forbidden, globalOrganization.StatusCode);
+        using var globalAuthorityLevels = await auditorClient.GetAsync("/api/v1/authority-levels", cancellationToken);
+        Assert.Equal(HttpStatusCode.Forbidden, globalAuthorityLevels.StatusCode);
         using var usersResponse = await auditorClient.GetAsync("/api/v1/users", cancellationToken);
         Assert.Equal(HttpStatusCode.OK, usersResponse.StatusCode);
         var users = await usersResponse.Content.ReadFromJsonAsync<JsonElement[]>(cancellationToken);
@@ -377,7 +381,6 @@ public sealed class UnitTest1
                 services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
                 {
                     options.RequireHttpsMetadata = false;
-                    options.MapInboundClaims = false;
                     options.TokenValidationParameters.IssuerSigningKey = SigningKey;
                     options.TokenValidationParameters.ValidIssuer = "https://keycloak.test/realms/procure-to-pay";
                     options.TokenValidationParameters.ValidAudience = "procure-to-pay-tests";

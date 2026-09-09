@@ -75,6 +75,7 @@ builder.Services
         options.Authority = authority;
         options.Audience = audience;
         options.RequireHttpsMetadata = requireHttpsMetadata;
+        options.MapInboundClaims = false;
         options.Events = new JwtBearerEvents
         {
             OnTokenValidated = context =>

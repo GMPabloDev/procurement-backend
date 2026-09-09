@@ -173,6 +173,24 @@ public sealed class OrganizationBootstrapper(
         var existing = await dbContext.UserProfiles.SingleOrDefaultAsync(
             user => user.Issuer == options.AdminIssuer && user.Subject == options.AdminSubject,
             cancellationToken);
+        if (existing is not null)
+        {
+            var hasNonAdministratorPrivileges = await dbContext.RoleAssignments.AnyAsync(
+                assignment => assignment.UserProfileId == existing.Id &&
+                              assignment.Status == (int)AssignmentStatus.Active &&
+                              assignment.Role != (int)SystemRole.Admin,
+                cancellationToken);
+            var hasApprovalAuthority = await dbContext.AuthorityGrants.AnyAsync(
+                grant => grant.UserProfileId == existing.Id &&
+                         grant.Status == (int)GrantStatus.Active,
+                cancellationToken);
+            if (hasNonAdministratorPrivileges || hasApprovalAuthority)
+            {
+                throw new InvalidOperationException(
+                    "Administrator recovery refuses an identity with pre-existing active privileges.");
+            }
+        }
+
         var now = DateTimeOffset.UtcNow;
         var previousAdminVersion = existing?.Version;
         var beforeAdminSnapshot = existing is null ? (object?)null : new

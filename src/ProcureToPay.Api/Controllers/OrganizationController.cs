@@ -109,7 +109,7 @@ public sealed class OrganizationController(
     [HttpGet("organization")]
     public async Task<ActionResult<OrganizationResponse>> GetOrganization(CancellationToken cancellationToken)
     {
-        var access = await RequireReadAccessAsync(cancellationToken);
+        var access = await RequireGlobalReadAccessAsync(cancellationToken);
         var organization = await dbContext.Organizations.SingleAsync(cancellationToken);
         var departmentCount = access.IsGlobal
             ? await dbContext.Departments.CountAsync(cancellationToken)
@@ -293,7 +293,7 @@ public sealed class OrganizationController(
     public async Task<ActionResult<IReadOnlyCollection<AuthorityLevelResponse>>> GetAuthorityLevels(
         CancellationToken cancellationToken)
     {
-        _ = await RequireReadAccessAsync(cancellationToken);
+        _ = await RequireGlobalReadAccessAsync(cancellationToken);
         var levels = await dbContext.AuthorityLevels
             .Where(level => level.IsActive)
             .OrderBy(level => level.Type).ThenBy(level => level.Rank)
@@ -912,6 +912,16 @@ public sealed class OrganizationController(
             return;
         }
         throw new DomainForbiddenException("The requested eligibility scope is outside the reader assignment.");
+    }
+
+    private async Task<ReadScope> RequireGlobalReadAccessAsync(CancellationToken cancellationToken)
+    {
+        var access = await RequireReadAccessAsync(cancellationToken);
+        if (!access.IsGlobal)
+        {
+            throw new DomainForbiddenException("Global organization access is required.");
+        }
+        return access;
     }
 
     private async Task<ReadScope> RequireReadAccessAsync(CancellationToken cancellationToken)
