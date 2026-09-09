@@ -51,5 +51,4 @@ public sealed class PolicyConfigurationHealthCheck(ProcureToPayDbContext dbConte
             return HealthCheckResult.Unhealthy("Policy configuration could not be checked.", exception);
         }
     }
-// pi-lens-ignore: CS0825
 }

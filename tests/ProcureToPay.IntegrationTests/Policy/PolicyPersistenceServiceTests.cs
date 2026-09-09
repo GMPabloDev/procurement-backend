@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.SharedKernel;
@@ -98,6 +99,11 @@ public sealed class PolicyPersistenceServiceTests
         var first = await service.AppendEvaluationAsync(bundle, caller, cancellationToken);
         var second = await service.AppendEvaluationAsync(bundle, caller, cancellationToken);
         Assert.Equal(first.Id, second.Id);
+        Assert.Equal(first.BundleJson, second.BundleJson);
+        using var persistedJson = JsonDocument.Parse(first.BundleJson);
+        Assert.Equal(bundle.ResultDigest, persistedJson.RootElement.GetProperty("resultDigest").GetString());
+        Assert.Equal(first.ResultDigest, persistedJson.RootElement.GetProperty("resultDigest").GetString());
+        Assert.Equal(1, persistedJson.RootElement.GetProperty("evaluationSequence").GetInt64());
         await Assert.ThrowsAsync<DomainConflictException>(() => service.AppendEvaluationAsync(
             bundle with { Subject = new PolicySubjectReference(bundle.Subject.Id, 2) }, caller, cancellationToken));
         Assert.Equal(1, await context.PolicyEvaluationBundles.CountAsync(cancellationToken));

@@ -413,7 +413,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             PolicyContentDigest = bundle.PolicyContentDigest,
             InputDigest = bundle.InputDigest,
             Result = bundle.Result.ToString().ToUpperInvariant(),
-            ResultDigest = PolicyCanonicalizer.Hash(bundleJson),
+            ResultDigest = bundle.ResultDigest,
             BundleJson = bundleJson,
             IdempotencyFingerprint = fingerprint,
             PreviousBundleId = bundle.PreviousBundleId,
@@ -461,27 +461,36 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         dbContext.PolicyEvaluationBundles.AsNoTracking()
             .SingleOrDefaultAsync(record => record.Id == evaluationId, cancellationToken);
 
-    public async Task<PolicyEvaluationBundleRecord?> FindByWorkloadEvaluationKeyAsync(
+    public Task<IReadOnlyList<PolicyEvaluationBundleRecord>> FindByWorkloadEvaluationKeyAsync(
         string issuer,
         string clientId,
         string operation,
         string evaluationKey,
-        CancellationToken cancellationToken = default)
-    {
-        var matches = await dbContext.PolicyEvaluationBundles.AsNoTracking()
+        CancellationToken cancellationToken = default) =>
+        dbContext.PolicyEvaluationBundles.AsNoTracking()
             .Where(record => record.WorkloadIssuer == issuer &&
                              record.WorkloadClientId == clientId &&
                              record.Operation == operation &&
                              record.EvaluationKey == evaluationKey)
             .Take(2)
-            .ToArrayAsync(cancellationToken);
-        if (matches.Length > 1)
-        {
-            throw new PolicyDependencyUnavailableException("The evaluation key is ambiguous across organizations.");
-        }
-        return matches.SingleOrDefault();
-    }
+            .ToArrayAsync(cancellationToken)
+            .ContinueWith(task => (IReadOnlyList<PolicyEvaluationBundleRecord>)task.Result,
+                cancellationToken, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
 
+    public Task<PolicyEvaluationBundleRecord?> FindByWorkloadEvaluationKeyAsync(
+        Guid organizationId,
+        string issuer,
+        string clientId,
+        string operation,
+        string evaluationKey,
+        CancellationToken cancellationToken = default) =>
+        dbContext.PolicyEvaluationBundles.AsNoTracking().SingleOrDefaultAsync(record =>
+            record.OrganizationId == organizationId &&
+            record.WorkloadIssuer == issuer &&
+            record.WorkloadClientId == clientId &&
+            record.Operation == operation &&
+            record.EvaluationKey == evaluationKey,
+            cancellationToken);
     public async Task<PolicyExceptionVerificationRecord> AppendExceptionVerificationAsync(
         Guid evaluationBundleId,
         QuotationWaiverRequest request,
