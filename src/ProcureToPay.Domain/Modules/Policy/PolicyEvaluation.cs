@@ -185,7 +185,7 @@ public static class PolicyCanonicalizer
                 .Select(predicate => new SortedDictionary<string, object?>(StringComparer.Ordinal)
                 {
                     ["fact_key"] = predicate.FactKey,
-                    ["operator"] = CanonicalName(predicate.Operator),
+                    ["operator"] = CanonicalOperator(predicate.Operator),
                     ["value"] = CanonicalizeValue(predicate.Value)
                 }).ToArray(),
             ["revision"] = rule.Revision,
@@ -207,6 +207,22 @@ public static class PolicyCanonicalizer
     private static string CanonicalName<TEnum>(TEnum value)
         where TEnum : struct, Enum =>
         Regex.Replace(value.ToString(), "(?<=[a-z0-9])(?=[A-Z])", "_").ToUpperInvariant();
+
+    private static string CanonicalOperator(PolicyOperator value) => value switch
+    {
+        PolicyOperator.Equal => "EQ",
+        PolicyOperator.NotEqual => "NEQ",
+        PolicyOperator.In => "IN",
+        PolicyOperator.NotIn => "NOT_IN",
+        PolicyOperator.IsTrue => "IS_TRUE",
+        PolicyOperator.IsFalse => "IS_FALSE",
+        PolicyOperator.GreaterThan => "GT",
+        PolicyOperator.GreaterThanOrEqual => "GTE",
+        PolicyOperator.LessThan => "LT",
+        PolicyOperator.LessThanOrEqual => "LTE",
+        PolicyOperator.Between => "BETWEEN",
+        _ => throw new DomainValidationException("Unknown policy operator.")
+    };
 
     private static SortedDictionary<string, object?> CanonicalizeApproval(PolicyApprovalDescriptor approval) =>
         new(StringComparer.Ordinal)

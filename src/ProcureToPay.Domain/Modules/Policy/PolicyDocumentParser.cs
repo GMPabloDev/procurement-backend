@@ -29,7 +29,7 @@ public static class PolicyDocumentParser
             var predicates = rule.GetProperty("predicates").EnumerateArray().Select(predicate =>
                 new PolicyPredicate(
                     predicate.GetProperty("fact_key").GetString()!,
-                    ParseEnum<PolicyOperator>(predicate.GetProperty("operator").GetString()!),
+                    ParseOperator(predicate.GetProperty("operator").GetString()!),
                     ParseValue(predicate.GetProperty("value"))));
             var effects = rule.GetProperty("effects").EnumerateArray().Select(ParseEffect);
             policy.AddRule(new PolicyRule(
@@ -139,12 +139,34 @@ public static class PolicyDocumentParser
         _ => throw new DomainValidationException("Unknown policy scope.")
     };
 
-    private static TEnum ParseEnum<TEnum>(string value) where TEnum : struct, Enum =>
-        Enum.TryParse<TEnum>(value.Replace('_', ' '), true, out var result)
+    private static PolicyOperator ParseOperator(string value) => value switch
+    {
+        "EQ" => PolicyOperator.Equal,
+        "NEQ" => PolicyOperator.NotEqual,
+        "IN" => PolicyOperator.In,
+        "NOT_IN" => PolicyOperator.NotIn,
+        "IS_TRUE" => PolicyOperator.IsTrue,
+        "IS_FALSE" => PolicyOperator.IsFalse,
+        "GT" => PolicyOperator.GreaterThan,
+        "GTE" => PolicyOperator.GreaterThanOrEqual,
+        "LT" => PolicyOperator.LessThan,
+        "LTE" => PolicyOperator.LessThanOrEqual,
+        "BETWEEN" => PolicyOperator.Between,
+        _ => throw new DomainValidationException($"Unknown policy operator '{value}'.")
+    };
+
+    private static TEnum ParseEnum<TEnum>(string value) where TEnum : struct, Enum
+    {
+        if (Enum.TryParse<TEnum>(value, true, out var direct))
+        {
+            return direct;
+        }
+        var pascal = string.Concat(value.Split('_', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => char.ToUpperInvariant(part[0]) + part[1..].ToLowerInvariant()));
+        return Enum.TryParse<TEnum>(pascal, true, out var result)
             ? result
-            : Enum.TryParse<TEnum>(value, true, out result)
-                ? result
-                : throw new DomainValidationException($"Unknown policy enum value '{value}'.");
+            : throw new DomainValidationException($"Unknown policy enum value '{value}'.");
+    }
 
     private static TEnum? NullableEnum<TEnum>(JsonElement element, string property) where TEnum : struct, Enum =>
         !element.TryGetProperty(property, out var value) || value.ValueKind == JsonValueKind.Null

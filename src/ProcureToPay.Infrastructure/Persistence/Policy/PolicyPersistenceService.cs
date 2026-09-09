@@ -243,6 +243,13 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         {
             throw new DomainConflictException("Only published policy versions can be activated.");
         }
+        if (await dbContext.PolicyRetirements.AnyAsync(retirement =>
+                dbContext.PolicyActivations.Any(activation =>
+                    activation.Id == retirement.PolicyActivationId && activation.PolicySetVersionId == policySetVersionId),
+                cancellationToken))
+        {
+            throw new DomainConflictException("A retired policy version cannot be reactivated.");
+        }
 
         var active = await dbContext.PolicyActivations
             .Where(activation => activation.OrganizationId == organizationId)
@@ -303,6 +310,11 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         string correlationReference,
         CancellationToken cancellationToken = default)
     {
+        if (effectiveTo < DateTimeOffset.UtcNow)
+        {
+            throw new DomainValidationException("Policy retirement cannot be backdated.");
+        }
+
         var activation = await dbContext.PolicyActivations
             .SingleOrDefaultAsync(candidate => candidate.Id == activationId, cancellationToken)
             ?? throw new DomainNotFoundException("The policy activation does not exist.");
@@ -433,6 +445,19 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
                 root.GetProperty("rules").EnumerateArray().Any(rule => !IsTypedRule(rule)))
             {
                 throw new DomainValidationException("Policy content does not match the typed policy schema.");
+            }
+
+            var parsed = PolicyDocumentParser.Parse(
+                document.ContentJson,
+                Guid.NewGuid(),
+                document.OrganizationId,
+                1,
+                PolicySetStatus.Draft,
+                document.ContentDigest);
+            if (!string.Equals(PolicyCanonicalizer.ComputePolicyDigest(parsed), document.ContentDigest,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new DomainValidationException("Policy digest does not match its typed canonical representation.");
             }
         }
         catch (JsonException exception)
