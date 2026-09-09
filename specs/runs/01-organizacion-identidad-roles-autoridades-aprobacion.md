@@ -1,7 +1,7 @@
 # RUN SPEC 01 — Organización, identidad, roles y autoridades de aprobación
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** En implementación
+> **Estado del run:** Lista para integrar
 > **Spec:** specs/01-organizacion-identidad-roles-autoridades-aprobacion.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 468f51deda013e5455c8fc477ab44edde12cbbd9
@@ -13,7 +13,7 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-08 05:56 -05
-> **Actualizado:** 2026-09-08 23:00 -05
+> **Actualizado:** 2026-09-09 00:58 -05
 > **HEAD verificado:** c09580af123a59ae843ff7778bf2702060cdf1d9
 > **Commit de integración:** Pendiente
 
@@ -114,7 +114,7 @@
 
 ## Verificación independiente
 
-> **Resultado:** BLOCKED (confirmado en segunda revisión)
+> **Resultado:** Sin bloqueos
 > **Método:** Subagente `sdd-implementation-reviewer`
 > **Fecha:** 2026-09-08 (segunda pasada)
 
@@ -157,12 +157,18 @@
 - Cambios: E2E usa `JwtBearer` con JWT localmente firmado y validación de issuer/audience/firma/expiración/claims requeridos; se cubren lifecycle setup/activate/deactivate/return-to-setup sin restaurar privilegios, revocación HTTP, último ADMIN, elegibilidad exitosa con evidencia, errores 400/404/409/422, zona IANA `CET`, catálogo ISO vigente, orden total de ranks y `ExpectedPreviousVersion`.
 - Cambios de trazabilidad: bootstrap/recovery/desactivación y versionado de niveles conservan snapshots `before`/`after` por subcambio; el fingerprint excluye el motivo operativo y los procesos CLI se ejecutan desde el ensamblado publicado fuera de HTTP; la representación global de scope es canónica `ORGANIZATION`.
 - Verificación: `dotnet build ProcureToPay.sln --no-restore` (0 advertencias, 0 errores); `dotnet test --solution ProcureToPay.sln --no-restore` (27 correctos); `run_lint.py`, `specctl check 01 --approval`, `specctl doctor`, `git diff --check` y `git fsck --full --no-dangling` correctos.
-- Estado: listo para revisión independiente final; no se declara integración hasta obtener `PASS`.
+- Estado: revisión independiente final `PASS`; listo para integración a `main`.
 - HEAD de código: `c09580af123a59ae843ff7778bf2702060cdf1d9`.
 
 ### Segunda revisión — hallazgos históricos
 
-La revisión independiente anterior (`f114666`) fue `BLOCK` sobre el estado previo a CP-12. Sus observaciones se cerraron en el checkpoint siguiente y se conservan aquí como historial, no como estado vigente.
+La revisión independiente anterior (`f114666`) fue `BLOCK` sobre un estado previo. Sus observaciones se cerraron en los checkpoints siguientes y se conservan aquí como historial, no como estado vigente.
+
+### Revisión independiente final — PASS (Sin bloqueos)
+
+- Checkpoint revisado: `27134cf`; código funcional: `c09580a`.
+- Dictamen: `PASS`; CA-01–CA-11, REQ-01–REQ-13 y NFR-01–NFR-05 cumplidos, sin blockers.
+- Evidencia confirmada: build 0/0, suite 27/27, LSP sin errores/warnings, Pi Lens sin errores/warnings, lint, `specctl check --approval`, `specctl doctor`, `git diff --check` y `git fsck` correctos.
 
 ### CP-08 — 2026-09-08 14:45 -05 — Cierre de salvaguardas adicionales
 
@@ -178,9 +184,9 @@ La revisión independiente anterior (`f114666`) fue `BLOCK` sobre el estado prev
 - HEAD: `163832ecab1faa06c9eb90976490f2be2b2e3ff9` en rama aislada.
 - Estado: pendiente de nueva revisión independiente; no se declara integración.
 
-La segunda pasada confirmó middleware scoped, validación básica de referencias y transacciones del último ADMIN, pero bloqueó el estado anterior por guards de transición de usuarios, scopes compuestos, API HTTP, catálogo ISO/IANA, versionado, snapshots de auditoría y cobertura E2E. CP-12 incorpora esas correcciones: JWT Bearer firmado, lifecycle/revocación HTTP, elegibilidad exitosa, rank/versionado, catálogo vigente, snapshots before/after, errores 422 y prueba de CLI.
+La segunda pasada confirmó middleware scoped, validación básica de referencias y transacciones del último ADMIN, pero bloqueó el estado anterior por guards de transición de usuarios, scopes compuestos, API HTTP, catálogo ISO/IANA, versionado, snapshots de auditoría y cobertura E2E. CP-15 incorpora esas correcciones: JWT Bearer firmado, lifecycle/revocación HTTP, elegibilidad exitosa, rank/versionado, catálogo vigente, snapshots before/after, errores 422 y prueba de CLI.
 
-La rama mantiene todos los commits de implementación y checkpoints administrativos; el HEAD verificable actual es `c09580a`. No se ha hecho merge a `main`.
+La rama mantiene todos los commits de implementación y checkpoints administrativos; el HEAD verificable actual es `c09580a`. La revisión independiente es `PASS`; aún no se ha hecho merge a `main`.
 
 ## Resumen de cambios
 
@@ -226,7 +232,7 @@ La rama mantiene todos los commits de implementación y checkpoints administrati
 
 - HEAD verificado: c09580af123a59ae843ff7778bf2702060cdf1d9.
 - Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285`, `f14c017`, `a531e70`, `0ce1dbf`, `163832e`, `ded2410`, `1af8f04`, `aacdb57`, `61afd78`, `4298180`, `4caf221`, `42da479` y `acacfaa` y `c09580a` en rama aislada; integración aún bloqueada por revisión independiente.
-- Commit integrado en rama base: Pendiente.
-- Verificación ejecutada sobre rama base: Pendiente.
-- Metadatos de vigencia actualizados: Pendiente.
-- Pendientes posteriores: Ninguno.
+- Commit integrado en rama base: Pendiente hasta ejecutar la integración autorizada tras `PASS`.
+- Verificación ejecutada sobre rama base: Pendiente hasta completar la integración.
+- Metadatos de vigencia actualizados: Actualizados para el checkpoint `PASS`.
+- Pendientes posteriores: Integrar a `main` y repetir la verificación.
