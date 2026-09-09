@@ -170,54 +170,68 @@ public static class PolicyCanonicalizer
         string policyDigest,
         Guid? activationId,
         string? factsDigest,
-        string? manifestDigest,
         Guid? previousBundleId,
-        string requestCanonical)
+        string? previousResultDigest,
+        IReadOnlyList<string>? exceptionVerificationDigests = null)
     {
         var input = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
             ["activation_id"] = activationId?.ToString("D"),
             ["canonicalization_version"] = Version,
-            ["evaluated_at_utc"] = evaluatedAt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
-            ["exception_verification_digests"] = Array.Empty<string>(),
+            ["evaluated_at_utc"] = evaluatedAt.ToUniversalTime().ToString(
+                "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture),
+            ["exception_verification_digests"] = (exceptionVerificationDigests ?? []).Order(StringComparer.Ordinal).ToArray(),
             ["fact_manifest_digest"] = factsDigest,
-            ["manifest_digest"] = manifestDigest,
             ["operation"] = operation,
             ["policy_content_digest"] = policyDigest,
             ["previous_bundle_id"] = previousBundleId?.ToString("D"),
-            ["previous_result_digest"] = null,
-            ["request"] = requestCanonical,
-            ["subject"] = Subject(subject)
+            ["previous_result_digest"] = previousResultDigest,
+            ["subject_ref"] = Subject(subject)
         };
         return JsonSerializer.Serialize(input, CanonicalJsonOptions);
     }
+
+    [Obsolete("Use the contractual evaluation input preimage overload.")]
+    public static string CanonicalizeEvaluationInput(
+        DateTimeOffset evaluatedAt,
+        string operation,
+        PolicySubjectReference subject,
+        string policyDigest,
+        Guid? activationId,
+        string? factsDigest,
+        string? manifestDigest,
+        Guid? previousBundleId,
+        string requestCanonical) =>
+        CanonicalizeEvaluationInput(evaluatedAt, operation, subject, policyDigest, activationId,
+            factsDigest, previousBundleId, null);
 
     public static string CanonicalizeEvaluationResult(
         string inputDigest,
         IReadOnlyList<PolicyScopeEvaluation> scopes,
         IReadOnlyList<PolicyGeneratedControl> controls,
+        object? diff) =>
+        CanonicalizeEvaluationResult(inputDigest, scopes, controls, PolicyResult.Passed, diff);
+
+    public static string CanonicalizeEvaluationResult(
+        string inputDigest,
+        IReadOnlyList<PolicyScopeEvaluation> scopes,
+        IReadOnlyList<PolicyGeneratedControl> controls,
+        PolicyResult combinedResult,
         object? diff)
     {
         var canonicalControls = controls
             .OrderBy(control => control.RequirementKey, StringComparer.Ordinal)
             .ThenBy(control => control.Type)
-            .Select(control => new SortedDictionary<string, object?>(StringComparer.Ordinal)
-            {
-                ["approval"] = control.Approval,
-                ["minimum_quotations"] = control.MinimumQuotations,
-                ["origin_rules"] = control.OriginRuleCodes.Order(StringComparer.Ordinal).ToArray(),
-                ["origin_scopes"] = control.OriginScopes.Order().Select(scope => scope.ToString()).ToArray(),
-                ["phase"] = control.Phase,
-                ["requirement_key"] = control.RequirementKey,
-                ["subjects"] = control.SubjectIds.Order().Select(id => id.ToString("D")).ToArray(),
-                ["type"] = control.Type.ToString()
-            }).ToArray();
+            .ThenBy(control => control.SubjectIds.Order().FirstOrDefault())
+            .Select(CanonicalizeControl)
+            .ToArray();
         var canonicalScopes = scopes
             .OrderBy(scope => scope.Scope)
             .ThenBy(scope => scope.SubjectIds.Order().FirstOrDefault())
             .Select(scope => new SortedDictionary<string, object?>(StringComparer.Ordinal)
             {
-                ["controls"] = scope.Controls,
+                ["controls"] = scope.Controls.OrderBy(control => control.RequirementKey, StringComparer.Ordinal)
+                    .ThenBy(control => control.Type).Select(CanonicalizeControl).ToArray(),
                 ["matched_rules"] = scope.MatchedRuleCodes.Order(StringComparer.Ordinal).ToArray(),
                 ["result"] = scope.Result.ToString(),
                 ["scope"] = scope.Scope.ToString(),
@@ -227,11 +241,25 @@ public static class PolicyCanonicalizer
         {
             ["canonicalization_version"] = Version,
             ["combined_controls"] = canonicalControls,
+            ["combined_result"] = combinedResult.ToString(),
             ["diff"] = diff,
             ["evaluation_input_digest"] = inputDigest,
             ["scope_evaluations"] = canonicalScopes
         }, CanonicalJsonOptions);
     }
+
+    private static object CanonicalizeControl(PolicyGeneratedControl control) =>
+        new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["approval"] = control.Approval,
+            ["minimum_quotations"] = control.MinimumQuotations,
+            ["origin_rules"] = control.OriginRuleCodes.Order(StringComparer.Ordinal).ToArray(),
+            ["origin_scopes"] = control.OriginScopes.Order().Select(scope => scope.ToString()).ToArray(),
+            ["phase"] = control.Phase,
+            ["requirement_key"] = control.RequirementKey,
+            ["subjects"] = control.SubjectIds.Order().Select(id => id.ToString("D")).ToArray(),
+            ["type"] = control.Type.ToString()
+        };
 
     public static string CanonicalizeRequest(PolicyRequestInput request, DateTimeOffset evaluatedAt)
     {
@@ -239,7 +267,8 @@ public static class PolicyCanonicalizer
         var root = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
             ["canonicalization_version"] = Version,
-            ["evaluated_at_utc"] = evaluatedAt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+            ["evaluated_at_utc"] = evaluatedAt.ToUniversalTime().ToString(
+                "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture),
             ["subject"] = Subject(request.Subject),
             ["organization_id"] = request.OrganizationId.ToString("D"),
             ["legal_entity_id"] = request.LegalEntityId.ToString("D"),
@@ -414,7 +443,6 @@ public static class PolicyEvaluator
         var scopeEvaluations = lineEvaluations.Concat(requestEvaluations).ToArray();
         var controls = Combine(scopeEvaluations);
         var result = ResolveResult(scopeEvaluations, controls);
-        var requestCanonical = PolicyCanonicalizer.CanonicalizeRequest(request, evaluatedAt);
         var inputCanonical = PolicyCanonicalizer.CanonicalizeEvaluationInput(
             evaluatedAt,
             "PURCHASE_REQUEST",
@@ -423,12 +451,11 @@ public static class PolicyEvaluator
             null,
             null,
             null,
-            null,
-            requestCanonical);
+            null);
         var inputDigest = PolicyCanonicalizer.Hash(inputCanonical);
         var policyDigest = policy.ContentDigest!;
         var resultCanonical = PolicyCanonicalizer.CanonicalizeEvaluationResult(
-            inputDigest, scopeEvaluations, controls, null);
+            inputDigest, scopeEvaluations, controls, result, null);
 
         return new PolicyEvaluationBundle(
             evaluationId ?? Guid.NewGuid(),
@@ -470,16 +497,6 @@ public static class PolicyEvaluator
 
         var subjectIds = coveredLineReferences.Select(line => line.Id).ToImmutableHashSet();
         var scope = EvaluateScope(policy, PolicyScope.SourcingPo, sourcing.Subject, sourcing.Facts, subjectIds);
-        var input = new SortedDictionary<string, object?>(StringComparer.Ordinal)
-        {
-            ["canonicalization_version"] = PolicyCanonicalizer.Version,
-            ["covered_lines"] = subjectIds.OrderBy(id => id).Select(id => id.ToString("D")).ToArray(),
-            ["facts"] = sourcing.Facts.OrderBy(pair => pair.Key, StringComparer.Ordinal)
-                .ToDictionary(pair => pair.Key, pair => pair.Value.Value, StringComparer.Ordinal),
-            ["previous_bundle_id"] = sourcing.CurrentRequestEvaluation.Id.ToString("D"),
-            ["subject"] = sourcing.Subject.Id.ToString("D")
-        };
-        var requestCanonical = JsonSerializer.Serialize(input);
         var inputCanonical = PolicyCanonicalizer.CanonicalizeEvaluationInput(
             evaluatedAt,
             "SOURCING_PO",
@@ -487,14 +504,13 @@ public static class PolicyEvaluator
             policy.ContentDigest!,
             null,
             sourcing.CurrentRequestEvaluation.FactsDigest,
-            sourcing.CurrentRequestEvaluation.ManifestDigest,
             sourcing.CurrentRequestEvaluation.Id,
-            requestCanonical);
+            sourcing.CurrentRequestEvaluation.ResultDigest);
         var inputDigest = PolicyCanonicalizer.Hash(inputCanonical);
         var controls = scope.Controls;
         var result = scope.Result;
         var resultDigest = PolicyCanonicalizer.Hash(
-            PolicyCanonicalizer.CanonicalizeEvaluationResult(inputDigest, [scope], controls, null));
+            PolicyCanonicalizer.CanonicalizeEvaluationResult(inputDigest, [scope], controls, result, null));
         return new PolicyEvaluationBundle(
             evaluationId ?? Guid.NewGuid(),
             evaluationKey,

@@ -23,7 +23,8 @@ public sealed record PolicyEvaluationMetadata(
     string SubjectType,
     string FactsDigest,
     string ManifestDigest,
-    string InputCanonicalJson);
+    string InputCanonicalJson,
+    Guid? ActivationId = null);
 public sealed record PolicyFactRequest(string SubjectType, Guid SubjectId, int SubjectVersion,
     string Operation, DateTimeOffset RequestedAtUtc, PolicyWorkloadPrincipal Workload,
     string CorrelationReference);
@@ -115,10 +116,19 @@ public sealed class PolicyEvaluationService(
             throw new DomainConflictException("The evaluation key is already bound to a different request.");
         }
         var replay = PolicyEvaluationBundleReplay.FromJson(existing.BundleJson);
+        var recomputedInputDigest = string.IsNullOrWhiteSpace(replay.InputCanonicalJson)
+            ? string.Empty
+            : PolicyCanonicalizer.Hash(replay.InputCanonicalJson);
+        var recomputedResultDigest = string.IsNullOrWhiteSpace(replay.InputCanonicalJson)
+            ? string.Empty
+            : PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
+                recomputedInputDigest, replay.ScopeEvaluations, replay.Controls, replay.Result, null));
         if (replay.Id != existing.Id || replay.Subject.Id != existing.SubjectId ||
             replay.Subject.Version != existing.SubjectVersion ||
             !string.Equals(replay.InputDigest, existing.InputDigest, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(replay.ResultDigest, existing.ResultDigest, StringComparison.OrdinalIgnoreCase))
+            !string.Equals(replay.ResultDigest, existing.ResultDigest, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(replay.InputDigest, recomputedInputDigest, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(replay.ResultDigest, recomputedResultDigest, StringComparison.OrdinalIgnoreCase))
         {
             throw new PolicyDependencyUnavailableException("Persisted policy evaluation integrity check failed.");
         }
@@ -439,7 +449,8 @@ public sealed class PolicyEvaluationService(
             throw new PolicyDependencyUnavailableException("The active policy digest is corrupted.");
         }
         return await EvaluatePurchaseRequestAsync(
-            policySnapshot, request, workload, evaluationKey, evaluatedAt, correlationReference, cancellationToken, metadata);
+            policySnapshot, request, workload, evaluationKey, evaluatedAt, correlationReference, cancellationToken,
+            metadata is null ? null : metadata with { ActivationId = active.Id });
     }
 
     public async Task<PolicyEvaluationBundle> EvaluatePurchaseRequestAsync(
@@ -458,13 +469,36 @@ public sealed class PolicyEvaluationService(
         }
 
         var bundle = PolicyEvaluator.EvaluateRequest(policy, request, evaluationKey, evaluatedAt);
+        var operation = metadata?.Operation ?? "PURCHASE_REQUEST";
+        var inputCanonical = PolicyCanonicalizer.CanonicalizeEvaluationInput(
+            evaluatedAt,
+            operation,
+            request.Subject,
+            policy.ContentDigest!,
+            metadata?.ActivationId,
+            metadata?.FactsDigest,
+            bundle.PreviousBundleId,
+            null);
+        var inputDigest = PolicyCanonicalizer.Hash(inputCanonical);
+        var resultDigest = PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
+            inputDigest, bundle.ScopeEvaluations, bundle.Controls, bundle.Result, null));
+        bundle = bundle with
+        {
+            Operation = operation,
+            ActivationId = metadata?.ActivationId,
+            FactsDigest = metadata?.FactsDigest,
+            ManifestDigest = metadata?.ManifestDigest,
+            InputCanonicalJson = inputCanonical,
+            InputDigest = inputDigest,
+            ResultDigest = resultDigest
+        };
         var persisted = await persistenceService.AppendEvaluationAsync(
             bundle,
             new PolicyEvaluationCaller(
                 request.OrganizationId,
                 workload.Issuer,
                 workload.ClientId,
-                metadata?.Operation ?? "PURCHASE_REQUEST",
+                operation,
                 evaluationKey,
                 policy.Id,
                 correlationReference)

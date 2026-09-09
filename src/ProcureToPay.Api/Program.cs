@@ -2,6 +2,7 @@ using Asp.Versioning;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using ProcureToPay.Api.ExceptionHandling;
@@ -165,7 +166,21 @@ app.MapHealthChecks("/health/bootstrap", new HealthCheckOptions
 });
 app.MapHealthChecks("/health/policy", new HealthCheckOptions
 {
-    Predicate = registration => registration.Name == "policy-configuration"
+    Predicate = registration => registration.Name == "policy-configuration",
+    ResponseWriter = async (context, report) =>
+    {
+        var entry = report.Entries.Values.Single();
+        var code = report.Status == HealthStatus.Healthy
+            ? "POLICY_CONFIGURATION_OK"
+            : entry.Exception is not null
+                ? "POLICY_CONFIGURATION_UNAVAILABLE"
+                : entry.Description ?? "POLICY_CONFIGURATION_CORRUPT";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            status = report.Status.ToString().ToUpperInvariant(),
+            code
+        });
+    }
 });
 
 app.MapControllers();
