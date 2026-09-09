@@ -14,7 +14,7 @@
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
 > **Actualizado:** 2026-09-09 10:00 -05
-> **HEAD verificado:** `b892c76`
+> **HEAD verificado:** `068092f`
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -103,7 +103,7 @@
 
 ## Cierre
 
-- HEAD verificado: `b892c76`.
+- HEAD verificado: `068092f`.
 - Estrategia de integración: Pendiente.
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.

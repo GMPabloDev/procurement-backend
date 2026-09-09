@@ -300,15 +300,6 @@ public sealed class PolicyEvaluationService(
         }
 
         var bundle = PolicyEvaluator.EvaluateRequest(policy, request, evaluationKey, evaluatedAt);
-        if (metadata is not null)
-        {
-            bundle = PolicyCanonicalizer.WithEvaluationMetadata(
-                bundle,
-                metadata.Operation,
-                metadata.FactsDigest,
-                metadata.ManifestDigest,
-                metadata.InputCanonicalJson);
-        }
         var persisted = await persistenceService.AppendEvaluationAsync(
             bundle,
             new PolicyEvaluationCaller(
@@ -321,7 +312,10 @@ public sealed class PolicyEvaluationService(
                 correlationReference)
             {
                 SubjectType = metadata?.SubjectType ?? "PURCHASE_REQUEST",
-                Cause = metadata is null ? "INITIAL" : "FACT_PROVIDER_EVALUATION"
+                Cause = metadata is null ? "INITIAL" : "FACT_PROVIDER_EVALUATION",
+                FactsDigest = metadata?.FactsDigest,
+                ManifestDigest = metadata?.ManifestDigest,
+                InputCanonicalJson = metadata?.InputCanonicalJson
             },
             cancellationToken);
         return bundle with { Id = persisted.Id };

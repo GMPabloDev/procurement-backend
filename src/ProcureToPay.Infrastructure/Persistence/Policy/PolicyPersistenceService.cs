@@ -34,6 +34,9 @@ public sealed record PolicyEvaluationCaller(
     public string? ExceptionTargetRequirementKey { get; init; }
     public int? ExceptionFrom { get; init; }
     public int? ExceptionTo { get; init; }
+    public string? FactsDigest { get; init; }
+    public string? ManifestDigest { get; init; }
+    public string? InputCanonicalJson { get; init; }
 }
 
 public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
@@ -391,7 +394,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
                                       evaluation.SubjectId == bundle.Subject.Id &&
                                       evaluation.SubjectVersion == bundle.Subject.Version,
                 cancellationToken);
-        var bundleJson = SerializeBundleWithMetadata(bundle, nextSequence + 1, caller.Operation);
+        var bundleJson = SerializeBundleWithMetadata(bundle, nextSequence + 1, caller);
 
         var record = new PolicyEvaluationBundleRecord
         {
@@ -623,11 +626,14 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
     private static string SerializeBundleWithMetadata(
         PolicyEvaluationBundle bundle,
         long sequence,
-        string operation)
+        PolicyEvaluationCaller caller)
     {
         var json = JsonNode.Parse(SerializeBundle(bundle))!.AsObject();
         json["evaluationSequence"] = sequence;
-        json["operation"] = operation;
+        json["operation"] = caller.Operation;
+        json["factsDigest"] = caller.FactsDigest;
+        json["manifestDigest"] = caller.ManifestDigest;
+        json["inputCanonicalJson"] = caller.InputCanonicalJson;
         return json.ToJsonString(JsonOptions);
     }
 
