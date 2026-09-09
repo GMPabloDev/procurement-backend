@@ -461,6 +461,27 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         dbContext.PolicyEvaluationBundles.AsNoTracking()
             .SingleOrDefaultAsync(record => record.Id == evaluationId, cancellationToken);
 
+    public async Task<PolicyEvaluationBundleRecord?> FindByWorkloadEvaluationKeyAsync(
+        string issuer,
+        string clientId,
+        string operation,
+        string evaluationKey,
+        CancellationToken cancellationToken = default)
+    {
+        var matches = await dbContext.PolicyEvaluationBundles.AsNoTracking()
+            .Where(record => record.WorkloadIssuer == issuer &&
+                             record.WorkloadClientId == clientId &&
+                             record.Operation == operation &&
+                             record.EvaluationKey == evaluationKey)
+            .Take(2)
+            .ToArrayAsync(cancellationToken);
+        if (matches.Length > 1)
+        {
+            throw new PolicyDependencyUnavailableException("The evaluation key is ambiguous across organizations.");
+        }
+        return matches.SingleOrDefault();
+    }
+
     public async Task<PolicyExceptionVerificationRecord> AppendExceptionVerificationAsync(
         Guid evaluationBundleId,
         QuotationWaiverRequest request,
@@ -642,13 +663,17 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         var json = JsonNode.Parse(SerializeBundle(bundle))!.AsObject();
         json["evaluationSequence"] = sequence;
         json["operation"] = caller.Operation;
+        json["subjectType"] = caller.SubjectType;
         json["factsDigest"] = caller.FactsDigest;
         json["manifestDigest"] = caller.ManifestDigest;
         json["inputCanonicalJson"] = caller.InputCanonicalJson;
         return json.ToJsonString(JsonOptions);
     }
 
-    private static string ComputeFingerprint(PolicyEvaluationCaller caller, PolicyEvaluationBundle bundle)
+    public static string ComputeCommandFingerprint(
+        PolicyEvaluationCaller caller,
+        PolicySubjectReference subject,
+        Guid? previousBundleId = null)
     {
         var command = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -658,13 +683,15 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             ["exception_from"] = caller.ExceptionFrom,
             ["exception_to"] = caller.ExceptionTo,
             ["operation"] = caller.Operation,
-            ["previous_bundle_id"] = bundle.PreviousBundleId?.ToString("D"),
+            ["previous_bundle_id"] = previousBundleId?.ToString("D"),
             ["previous_result_digest"] = caller.PreviousResultDigest,
-            ["subject_id"] = bundle.Subject.Id.ToString("D"),
+            ["subject_id"] = subject.Id.ToString("D"),
             ["subject_type"] = caller.SubjectType,
-            ["subject_version"] = bundle.Subject.Version
+            ["subject_version"] = subject.Version
         };
-        var canonical = JsonSerializer.Serialize(command);
-        return PolicyCanonicalizer.Hash(canonical);
+        return PolicyCanonicalizer.Hash(JsonSerializer.Serialize(command));
     }
+
+    private static string ComputeFingerprint(PolicyEvaluationCaller caller, PolicyEvaluationBundle bundle) =>
+        ComputeCommandFingerprint(caller, bundle.Subject, bundle.PreviousBundleId);
 }

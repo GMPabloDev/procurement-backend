@@ -119,6 +119,33 @@ public sealed class PolicyEvaluationService(
             throw new DomainForbiddenException("The workload is not allowlisted for policy evaluation.");
         }
 
+        var existing = await persistenceService.FindByWorkloadEvaluationKeyAsync(
+            workload.Issuer, workload.ClientId, factRequest.Operation, evaluationKey, cancellationToken);
+        if (existing is not null)
+        {
+            var replayCaller = new PolicyEvaluationCaller(
+                existing.OrganizationId,
+                workload.Issuer,
+                workload.ClientId,
+                factRequest.Operation,
+                evaluationKey,
+                existing.PolicySetVersionId,
+                string.Empty)
+            {
+                SubjectType = factRequest.SubjectType,
+                Cause = "FACT_PROVIDER_EVALUATION"
+            };
+            var replayFingerprint = PolicyPersistenceService.ComputeCommandFingerprint(
+                replayCaller,
+                new PolicySubjectReference(factRequest.SubjectId, factRequest.SubjectVersion));
+            if (!string.Equals(existing.IdempotencyFingerprint, replayFingerprint, StringComparison.Ordinal))
+            {
+                throw new DomainConflictException("The evaluation key is already bound to a different request.");
+            }
+            logger.LogInformation("Policy evaluation replayed from persistence. EvaluationId={EvaluationId}", existing.Id);
+            return PolicyEvaluationBundleRehydrator.FromJson(existing.BundleJson);
+        }
+
         var provider = factProviderRegistry.Resolve(factRequest.SubjectType, factRequest.Operation);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(5));

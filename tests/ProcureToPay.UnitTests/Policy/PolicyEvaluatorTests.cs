@@ -1,5 +1,6 @@
 #pragma warning disable CS0246, CS0103
 
+using System.Text.Json;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.SharedKernel;
@@ -107,6 +108,31 @@ public sealed class PolicyEvaluatorTests
         Assert.Single(result.ScopeEvaluations);
         Assert.Equal(PolicyScope.SourcingPo, result.ScopeEvaluations[0].Scope);
         Assert.Equal(requestEvaluation.Id, result.PreviousBundleId);
+    }
+
+    [Fact]
+    public void Persisted_bundle_json_rehydrates_without_changing_contract_fields()
+    {
+        var organizationId = Guid.NewGuid();
+        var policy = CreatePublishedPolicy(organizationId, reverse: false);
+        var line = new PolicyLineInput(
+            new PolicySubjectReference(Guid.NewGuid(), 1),
+            new Dictionary<string, PolicyValue>
+            {
+                ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(100),
+                ["DATA_RISK"] = PolicyValue.Code("LOW")
+            });
+        var request = new PolicyRequestInput(
+            new PolicySubjectReference(Guid.NewGuid(), 1), organizationId, Guid.NewGuid(), "PEN", [line]);
+        var original = PolicyEvaluator.EvaluateRequest(policy, request, "rehydrate-001", DateTimeOffset.UtcNow);
+        var json = JsonSerializer.Serialize(original, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var replay = PolicyEvaluationBundleRehydrator.FromJson(json);
+
+        Assert.Equal(original.Id, replay.Id);
+        Assert.Equal(original.InputDigest, replay.InputDigest);
+        Assert.Equal(original.ResultDigest, replay.ResultDigest);
+        Assert.Equal(original.Controls.Count, replay.Controls.Count);
+        Assert.Equal(original.ScopeEvaluations.Count, replay.ScopeEvaluations.Count);
     }
 
     [Fact]
