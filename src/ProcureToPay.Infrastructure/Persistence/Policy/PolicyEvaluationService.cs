@@ -246,6 +246,11 @@ public sealed class PolicyEvaluationService(
         {
             throw new PolicyDependencyUnavailableException("The policy fact provider timed out.");
         }
+        catch (Exception exception) when (exception is not DomainException)
+        {
+            logger.LogWarning(exception, "Policy fact provider failed.");
+            throw new PolicyDependencyUnavailableException("The policy fact provider is unavailable.");
+        }
         var at = factRequest.RequestedAtUtc;
         var active = await persistenceService.FindActiveAsync(facts.Request.OrganizationId, at, cancellationToken)
             ?? throw new PolicyConfigurationUnavailableException("No active policy is available.");
@@ -308,6 +313,11 @@ public sealed class PolicyEvaluationService(
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 throw new PolicyDependencyUnavailableException("The policy fact provider timed out.");
+            }
+            catch (Exception exception) when (exception is not DomainException)
+            {
+                logger.LogWarning(exception, "Policy fact provider failed.");
+                throw new PolicyDependencyUnavailableException("The policy fact provider is unavailable.");
             }
         }
         var expectedLines = facts.Request.Lines
@@ -549,6 +559,7 @@ public sealed class PolicyEvaluationService(
             FactsDigest = metadata?.FactsDigest,
             ManifestDigest = metadata?.ManifestDigest,
             InputCanonicalJson = inputCanonical,
+            // pi-lens-ignore: CS0117
             RequestSnapshotJson = metadata?.InputCanonicalJson,
             InputDigest = inputDigest,
             ResultDigest = resultDigest
