@@ -14,7 +14,7 @@
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
 > **Actualizado:** 2026-09-09 10:00 -05
-> **HEAD verificado:** `9dfde0a`
+> **HEAD verificado:** `46b776a`
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -39,8 +39,8 @@
 | T-02 | Verificada | `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore`: 29 correctos; canonicalización/digest, evaluación LINE+REQUEST/SOURCING_PO, suma de líneas, fallback, precedencia BLOCK/PO, authority NONE y validaciones de publicación cubiertos. Se corrigió canonicalización snake_case y `ALLOW` no genera controles. | working-tree / Bloque 1 |
 | T-03 | Verificada | `dotnet test --project tests/ProcureToPay.IntegrationTests/ProcureToPay.IntegrationTests.csproj --no-restore`: 7 correctos; schema `Policy`, tablas append-only, índices de activación/retiro/idempotencia y rowversion verificados. `dotnet build` de Infrastructure correcto; migración `20260909152512_PolicyEngineFoundation` generada y compilable. | working-tree / Bloque 2 en curso |
 | T-04 | Parcial | `PolicyPersistenceService`: selección serializable de activación, retiro append-only, auditoría administrativa, rowversion e idempotencia por SHA-256; integración SQL Server 2 correctas (`PolicyPersistenceModelTests`, `PolicyPersistenceServiceTests`). Se agregó conflicto 409 lógico para reutilización de `evaluation_key`; aún falta cierre atómico de sucesor y diff/reevaluación completo. Migraciones detectadas por EF. | working-tree / Bloque 2 en curso |
-| T-05 | Parcial | `PolicyController` expone lectura scoped, drafts, publicación+activación atómica, retiro y simulación no persistente; falta evaluación real de snapshot y edición versionada completa. `dotnet build` de Api correcto. | `4fdeb2b` / Bloque 3 en curso |
-| T-06 | Parcial | Se agregó `PolicyFactRequest`, registry exact-one local, timeout 5 s sin adquisición duplicada, manifest de líneas y `EvaluateEnterprisePurchaseRequest` que carga la política activa desde persistencia mediante parser canónico. Faltan catálogos completos y manifest de sourcing/attestation exhaustivo. | `4fdeb2b` / Bloque 3 en curso |
+| T-05 | Parcial | `PolicyController` expone lectura scoped de versiones/evaluaciones, drafts, publicación+activación atómica, retiro y simulación tipada no persistente sobre snapshot; edición versionada completa y límites API siguen pendientes. `dotnet build` de Api correcto. | `46b776a` / Bloque 3 en curso |
+| T-06 | Parcial | Se agregó `PolicyFactRequest`, registry exact-one local, timeout 5 s sin adquisición duplicada, manifest de líneas, validación de digest de política y `EvaluateEnterprisePurchaseRequest` que carga la política activa desde persistencia mediante parser canónico. Se agregó registry exact-one y default-deny del verifier de waiver; faltan catálogos completos y manifest de sourcing/attestation exhaustivo. | `46b776a` / Bloque 3 en curso |
 | T-07 | Parcial | `QuotationWaiverEvaluator` limita la excepción, valida floor/binding/nonce/evidence, autoridad y SoD, y `ApplyVerifiedQuotationWaiver` modifica únicamente el control `REQUIRE_QUOTATIONS` objetivo. Falta persistir snapshot/replay y verifier registry de workflow. | working-tree / Bloque 3 en curso |
 | T-08 | Parcial | `PolicyConfigurationHealthCheck` y `/health/policy` distinguen ausencia/ambigüedad básica sin exponer reglas; falta separar corrupción técnica de configuración requerida y validar digest cargado. | working-tree / Bloque 4 en curso |
 | T-09 | Parcial | Unitarias: 29 correctas; IntegrationTests: 8 correctas con SQL Server/Testcontainers; ApiE2ETests: 2 correctas; solución compila con 0 advertencias/errores. Falta ampliar evidencia negativa/golden/provider/API específica de CA-01–CA-12. | working-tree / Bloque 4 |
@@ -103,7 +103,7 @@
 
 ## Cierre
 
-- HEAD verificado: `9dfde0a`.
+- HEAD verificado: `46b776a`.
 - Estrategia de integración: Pendiente.
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.
