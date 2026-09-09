@@ -1,7 +1,7 @@
 # RUN SPEC 01 — Organización, identidad, roles y autoridades de aprobación
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** Lista para integrar
+> **Estado del run:** Integrado
 > **Spec:** specs/01-organizacion-identidad-roles-autoridades-aprobacion.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 468f51deda013e5455c8fc477ab44edde12cbbd9
@@ -13,9 +13,9 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-08 05:56 -05
-> **Actualizado:** 2026-09-09 00:58 -05
-> **HEAD verificado:** c09580af123a59ae843ff7778bf2702060cdf1d9
-> **Commit de integración:** Pendiente
+> **Actualizado:** 2026-09-09 01:12 -05
+> **HEAD verificado:** 357597aa87e1d146a79d51956bbd666170b96a04
+> **Commit de integración:** 357597aa87e1d146a79d51956bbd666170b96a04
 
 ## Línea base
 
@@ -186,7 +186,7 @@ La revisión independiente anterior (`f114666`) fue `BLOCK` sobre un estado prev
 
 La segunda pasada confirmó middleware scoped, validación básica de referencias y transacciones del último ADMIN, pero bloqueó el estado anterior por guards de transición de usuarios, scopes compuestos, API HTTP, catálogo ISO/IANA, versionado, snapshots de auditoría y cobertura E2E. CP-15 incorpora esas correcciones: JWT Bearer firmado, lifecycle/revocación HTTP, elegibilidad exitosa, rank/versionado, catálogo vigente, snapshots before/after, errores 422 y prueba de CLI.
 
-La rama mantiene todos los commits de implementación y checkpoints administrativos; el HEAD verificable actual es `c09580a`. La revisión independiente es `PASS`; aún no se ha hecho merge a `main`.
+La implementación fue integrada en `main` mediante el merge `357597a` tras la revisión independiente `PASS`. El HEAD verificable de código previo al merge fue `c09580a`.
 
 ## Resumen de cambios
 
@@ -231,8 +231,8 @@ La rama mantiene todos los commits de implementación y checkpoints administrati
 ## Cierre
 
 - HEAD verificado: c09580af123a59ae843ff7778bf2702060cdf1d9.
-- Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285`, `f14c017`, `a531e70`, `0ce1dbf`, `163832e`, `ded2410`, `1af8f04`, `aacdb57`, `61afd78`, `4298180`, `4caf221`, `42da479` y `acacfaa` y `c09580a` en rama aislada; integración aún bloqueada por revisión independiente.
-- Commit integrado en rama base: Pendiente hasta ejecutar la integración autorizada tras `PASS`.
-- Verificación ejecutada sobre rama base: Pendiente hasta completar la integración.
-- Metadatos de vigencia actualizados: Actualizados para el checkpoint `PASS`.
-- Pendientes posteriores: Integrar a `main` y repetir la verificación.
+- Estrategia de integración: checkpoints `4f6dff4`, `36df88b`, `86f3ba7`, `df33285`, `f14c017`, `a531e70`, `0ce1dbf`, `163832e`, `ded2410`, `1af8f04`, `aacdb57`, `61afd78`, `4298180`, `4caf221`, `42da479` y `acacfaa` y `c09580a` en rama aislada; integración completada tras revisión independiente `PASS`.
+- Commit integrado en rama base: `357597aa87e1d146a79d51956bbd666170b96a04`.
+- Verificación ejecutada sobre rama base `main`: build correcto (0 advertencias, 0 errores), suite 27/27, lint, `specctl check 01`, `specctl doctor`, `git diff --check` y `git fsck --full --no-dangling` correctos.
+- Metadatos de vigencia actualizados: `SPEC 01` marcada `Implementada` / `Integrada` / `Vigente`.
+- Pendientes posteriores: Ninguno.
