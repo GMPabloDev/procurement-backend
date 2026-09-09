@@ -105,15 +105,23 @@ public sealed class PolicyEvaluationService(
             active.PolicySetVersion.Sequence,
             (PolicySetStatus)active.PolicySetVersion.Status,
             active.PolicySetVersion.ContentDigest);
-        return await EvaluateEnterprisePurchaseRequestAsync(
-            policy, factRequest with { RequestedAtUtc = at }, evaluationKey, cancellationToken);
+        return await EvaluateEnterprisePurchaseRequestCoreAsync(
+            policy, factRequest with { RequestedAtUtc = at }, evaluationKey, cancellationToken, facts);
     }
 
-    public async Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestAsync(
+    public Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestAsync(
         PolicySetVersion policySnapshot,
         PolicyFactRequest factRequest,
         string evaluationKey,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        EvaluateEnterprisePurchaseRequestCoreAsync(policySnapshot, factRequest, evaluationKey, cancellationToken, null);
+
+    private async Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestCoreAsync(
+        PolicySetVersion policySnapshot,
+        PolicyFactRequest factRequest,
+        string evaluationKey,
+        CancellationToken cancellationToken,
+        PolicyFactBundle? preloadedFacts)
     {
         var workload = new PolicyWorkloadIdentity(factRequest.Workload.Issuer, factRequest.Workload.ClientId);
         if (!workloadAllowlist.IsAllowed(workload))
@@ -121,18 +129,24 @@ public sealed class PolicyEvaluationService(
             throw new DomainForbiddenException("The workload is not allowlisted for policy evaluation.");
         }
 
-        // pi-lens-ignore: CS0121
         var provider = factProviderRegistry.Resolve(factRequest.SubjectType, factRequest.Operation);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(5));
         PolicyFactBundle facts;
-        try
+        if (preloadedFacts is not null)
         {
-            facts = await provider.GetFactsAsync(factRequest, timeout.Token);
+            facts = preloadedFacts;
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        else
         {
-            throw new PolicyDependencyUnavailableException("The policy fact provider timed out.");
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            try
+            {
+                facts = await provider.GetFactsAsync(factRequest, timeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new PolicyDependencyUnavailableException("The policy fact provider timed out.");
+            }
         }
         var expectedLines = facts.Request.Lines
             .Select(line => new { id = line.Subject.Id, version = line.Subject.Version })
@@ -151,7 +165,9 @@ public sealed class PolicyEvaluationService(
             facts.Manifest.RequestId != facts.Request.Subject.Id ||
             facts.Manifest.RequestVersion != facts.Request.Subject.Version ||
             !expectedLines.SequenceEqual(manifestLines) ||
-            !string.Equals(facts.Manifest.Digest, expectedManifestDigest, StringComparison.OrdinalIgnoreCase))
+            !string.Equals(facts.Manifest.Digest, expectedManifestDigest, StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(facts.FactsDigest) || facts.FactsDigest.Length != 64 ||
+            !facts.FactsDigest.All(Uri.IsHexDigit))
         {
             throw new DomainValidationException("The policy fact bundle or completeness manifest is invalid.");
         }
