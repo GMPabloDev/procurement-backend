@@ -330,6 +330,12 @@ public sealed class OrganizationController(
             throw new DomainConflictException("The authority level version is stale.");
         }
 
+        var previousLevelBefore = previousLevel is null ? (object?)null : new
+        {
+            type = OrganizationContractCodes.Authority(type), previousLevel.Code,
+            previousLevel.Rank, previousLevel.LevelVersion, previousLevel.IsActive
+        };
+        var previousLevelVersion = previousLevel?.LevelVersion;
         var rankAlreadyActive = await dbContext.AuthorityLevels.AnyAsync(
             item => item.Type == (int)type && item.Rank == rank && item.IsActive,
             cancellationToken);
@@ -360,17 +366,18 @@ public sealed class OrganizationController(
             JsonSerializer.Serialize(new
             {
                 type = OrganizationContractCodes.Authority(type), code, rank, version,
+                after = new { active = true, type = OrganizationContractCodes.Authority(type), code, rank, version },
                 subchanges = previousLevel is null ? [] : new[]
                 {
                     new { targetType = "AuthorityLevel", targetId = previousLevel.Id,
                         previousVersion = previousLevel.LevelVersion, newVersion = previousLevel.LevelVersion,
-                        retired = true }
+                        before = previousLevelBefore,
+                        after = new { previousLevel.Code, previousLevel.Rank,
+                            previousLevel.LevelVersion, active = false }, retired = true }
                 }
-            }), scopeJson: GlobalScopeJson,
-            beforeJson: previousLevel is null ? null : JsonSerializer.Serialize(new
-            {
-                previousLevel.Id, previousLevel.Rank, previousLevel.LevelVersion, previousLevel.IsActive
-            }));
+            }), previousVersion: previousLevelVersion, newVersion: level.LevelVersion,
+            scopeJson: GlobalScopeJson,
+            beforeJson: previousLevelBefore is null ? null : JsonSerializer.Serialize(previousLevelBefore));
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return Created($"/api/v1/authority-levels/{level.Id}",
@@ -718,8 +725,13 @@ public sealed class OrganizationController(
         }
         dbContext.AuthorityGrants.Add(grant);
         AddAudit(actor, "AUTHORITY_GRANTED", "AuthorityGrant", grant.Id, request.Reason,
-            JsonSerializer.Serialize(new { userId = user.Id, authorityLevelId = level.Id }),
-            null, grant.Version, scopeJson);
+            JsonSerializer.Serialize(new
+            {
+                userId = user.Id, authorityLevelId = level.Id, grant.MaxAmountBase,
+                grant.BaseCurrency, grant.ScopeJson, grant.ValidFrom, grant.ValidTo,
+                grant.Version
+            }), previousVersion: null, newVersion: grant.Version,
+            scopeJson: scopeJson, beforeJson: null);
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return Created($"/api/v1/users/{user.Id}/grants/{grant.Id}",
@@ -1174,7 +1186,7 @@ public sealed class OrganizationController(
 
     private static readonly JsonSerializerOptions ScopeJsonOptions = new(JsonSerializerDefaults.Web);
 
-    private const string GlobalScopeJson = "[{\"dimension\":\"Organization\",\"reference\":null}]";
+    private const string GlobalScopeJson = "[{\"dimension\":\"ORGANIZATION\",\"reference\":null}]";
 }
 
 public sealed record MeResponse(Guid Id, string Issuer, string Subject, string? Email, string? DisplayName,

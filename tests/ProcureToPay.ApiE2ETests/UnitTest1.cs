@@ -158,6 +158,16 @@ public sealed class UnitTest1
         Assert.Equal(HttpStatusCode.OK, deactivate.StatusCode);
         using var revokedBusiness = await pendingClient.GetAsync("/api/v1/organization", cancellationToken);
         Assert.Equal(HttpStatusCode.Forbidden, revokedBusiness.StatusCode);
+        using var returnToSetup = await adminClient.PostAsJsonAsync(
+            $"/api/v1/users/{pendingProfileId}/return-to-setup",
+            new { reason = "return without restoring privileges", expectedVersion = 4 }, cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, returnToSetup.StatusCode);
+        using var reactivate = await adminClient.PostAsJsonAsync(
+            $"/api/v1/users/{pendingProfileId}/activate",
+            new { reason = "reactivate", expectedVersion = 5 }, cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, reactivate.StatusCode);
+        using var restoredPrivileges = await pendingClient.GetAsync("/api/v1/users", cancellationToken);
+        Assert.Equal(HttpStatusCode.Forbidden, restoredPrivileges.StatusCode);
         using var deactivationAuditResponse = await adminClient.GetAsync("/api/v1/audit", cancellationToken);
         Assert.Equal(HttpStatusCode.OK, deactivationAuditResponse.StatusCode);
         var deactivationAudit = await deactivationAuditResponse.Content.ReadFromJsonAsync<JsonElement[]>(cancellationToken);
@@ -259,6 +269,7 @@ public sealed class UnitTest1
             "not-a-jwt",
             TestApiFactory.CreateToken("invalid-issuer", "https://wrong-issuer"),
             TestApiFactory.CreateToken("invalid-audience", audience: "wrong-audience"),
+            TestApiFactory.CreateToken("missing-sub", includeSubject: false),
             TestApiFactory.CreateToken("expired", expiresAt: DateTime.UtcNow.AddMinutes(-10))
         };
         foreach (var (token, index) in invalidTokens.Select((token, index) => (token, index)))
@@ -317,12 +328,13 @@ public sealed class UnitTest1
             string subject,
             string issuer = "https://keycloak.test/realms/procure-to-pay",
             string audience = "procure-to-pay-tests",
-            DateTime? expiresAt = null)
+            DateTime? expiresAt = null,
+            bool includeSubject = true)
         {
             var token = new JwtSecurityToken(
                 issuer,
                 audience,
-                claims: [new Claim(JwtRegisteredClaimNames.Sub, subject)],
+                claims: includeSubject ? [new Claim(JwtRegisteredClaimNames.Sub, subject)] : [],
                 expires: expiresAt ?? DateTime.UtcNow.AddMinutes(5),
                 signingCredentials: new SigningCredentials(SigningKey, SecurityAlgorithms.HmacSha256));
             return new JwtSecurityTokenHandler().WriteToken(token);

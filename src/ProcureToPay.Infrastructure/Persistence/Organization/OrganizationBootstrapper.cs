@@ -374,5 +374,5 @@ public sealed class OrganizationBootstrapper(
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
     }
 
-    private const string GlobalScopeJson = "[{\"dimension\":\"Organization\",\"reference\":null}]";
+    private const string GlobalScopeJson = "[{\"dimension\":\"ORGANIZATION\",\"reference\":null}]";
 }

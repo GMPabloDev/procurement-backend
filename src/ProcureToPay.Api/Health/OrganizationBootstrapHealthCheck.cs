@@ -20,7 +20,7 @@ public sealed class OrganizationBootstrapHealthCheck(ProcureToPayDbContext dbCon
             var effectiveAdministratorCount = await dbContext.RoleAssignments
                 .Where(assignment => assignment.Role == (int)SystemRole.Admin &&
                                      assignment.Status == (int)AssignmentStatus.Active &&
-                                     assignment.ScopeJson == "[{\"dimension\":\"Organization\",\"reference\":null}]")
+                                     assignment.ScopeJson == "[{\"dimension\":\"ORGANIZATION\",\"reference\":null}]")
                 .Join(dbContext.UserProfiles.Where(user => user.Status == (int)UserProfileStatus.Active),
                     assignment => assignment.UserProfileId, user => user.Id, (_, _) => 1)
                 .Distinct()

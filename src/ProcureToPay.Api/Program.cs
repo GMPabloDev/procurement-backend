@@ -77,6 +77,15 @@ builder.Services
         options.RequireHttpsMetadata = requireHttpsMetadata;
         options.Events = new JwtBearerEvents
         {
+            OnTokenValidated = context =>
+            {
+                if (context.Principal?.FindFirst("iss") is null ||
+                    context.Principal.FindFirst("sub") is null)
+                {
+                    context.Fail("The token must contain issuer and subject.");
+                }
+                return Task.CompletedTask;
+            },
             OnChallenge = async context =>
             {
                 context.HandleResponse();

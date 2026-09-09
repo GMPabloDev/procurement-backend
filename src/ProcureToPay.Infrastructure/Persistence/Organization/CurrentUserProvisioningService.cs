@@ -118,5 +118,5 @@ public sealed class CurrentUserProvisioningService(
     private static string Pseudonym(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..16].ToLowerInvariant();
 
-    private const string GlobalScopeJson = "[{\"dimension\":\"Organization\",\"reference\":null}]";
+    private const string GlobalScopeJson = "[{\"dimension\":\"ORGANIZATION\",\"reference\":null}]";
 }
