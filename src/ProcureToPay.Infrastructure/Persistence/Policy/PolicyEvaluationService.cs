@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Reflection;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -26,7 +27,10 @@ public sealed record PolicyEvaluationMetadata(
     Guid? ActivationId = null);
 public sealed record PolicyFactRequest(string SubjectType, Guid SubjectId, int SubjectVersion,
     string Operation, DateTimeOffset RequestedAtUtc, PolicyWorkloadPrincipal Workload,
-    string CorrelationReference);
+    string CorrelationReference)
+{
+    public Guid? OrganizationId { get; init; }
+}
 public sealed record PolicyCompletenessManifest(Guid RequestId, int RequestVersion,
     IReadOnlyList<PolicySubjectReference> Lines, string Digest);
 public sealed record PolicyFactBundle(PolicyRequestInput Request, PolicyCompletenessManifest Manifest,
@@ -114,7 +118,22 @@ public sealed class PolicyEvaluationService(
         {
             throw new DomainConflictException("The evaluation key is already bound to a different request.");
         }
-        var replay = PolicyEvaluationBundleRehydrator.FromJson(existing.BundleJson);
+        var replay = ValidatePersistedEvaluation(existing);
+        logger.LogInformation("Policy evaluation replayed from persistence. EvaluationId={EvaluationId}", existing.Id);
+        return replay;
+    }
+
+    private static PolicyEvaluationBundle ValidatePersistedEvaluation(PolicyEvaluationBundleRecord existing)
+    {
+        PolicyEvaluationBundle replay;
+        try
+        {
+            replay = PolicyEvaluationBundleReplay.FromJson(existing.BundleJson);
+        }
+        catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            throw new PolicyDependencyUnavailableException("Persisted policy evaluation is corrupted.");
+        }
         var recomputedInputDigest = string.IsNullOrWhiteSpace(replay.InputCanonicalJson)
             ? string.Empty
             : PolicyCanonicalizer.Hash(replay.InputCanonicalJson);
@@ -131,7 +150,6 @@ public sealed class PolicyEvaluationService(
         {
             throw new PolicyDependencyUnavailableException("Persisted policy evaluation integrity check failed.");
         }
-        logger.LogInformation("Policy evaluation replayed from persistence. EvaluationId={EvaluationId}", existing.Id);
         return replay;
     }
 
@@ -188,13 +206,24 @@ public sealed class PolicyEvaluationService(
             throw new DomainForbiddenException("The workload is not allowlisted for policy evaluation.");
         }
 
-        var existingCandidates = await persistenceService.FindByWorkloadEvaluationKeyAsync(
-            workload.Issuer, workload.ClientId, factRequest.Operation, evaluationKey, cancellationToken);
-        if (existingCandidates.Count == 1 &&
-            existingCandidates[0].SubjectId == factRequest.SubjectId &&
-            existingCandidates[0].SubjectVersion == factRequest.SubjectVersion)
+        if (factRequest.OrganizationId is Guid requestOrganizationId)
         {
-            return ReplayExistingEvaluation(existingCandidates[0], factRequest, evaluationKey, workload);
+            var persistedByRequestOrganization = await persistenceService.FindByWorkloadEvaluationKeyAsync(
+                requestOrganizationId, workload.Issuer, workload.ClientId, factRequest.Operation,
+                evaluationKey, cancellationToken);
+            if (persistedByRequestOrganization is not null)
+            {
+                return ReplayExistingEvaluation(persistedByRequestOrganization, factRequest, evaluationKey, workload);
+            }
+        }
+        else
+        {
+            var existingCandidates = await persistenceService.FindByWorkloadEvaluationKeyAsync(
+                workload.Issuer, workload.ClientId, factRequest.Operation, evaluationKey, cancellationToken);
+            if (existingCandidates.Count == 1)
+            {
+                return ReplayExistingEvaluation(existingCandidates[0], factRequest, evaluationKey, workload);
+            }
         }
 
         var provider = factProviderRegistry.Resolve(factRequest.SubjectType, factRequest.Operation);
@@ -284,6 +313,8 @@ public sealed class PolicyEvaluationService(
         if (!string.Equals(facts.ProviderId, provider.ProviderId, StringComparison.Ordinal) ||
             !string.Equals(facts.ContractVersion, provider.ContractVersion, StringComparison.Ordinal) ||
             facts.Request.OrganizationId != policySnapshot.OrganizationId ||
+            (factRequest.OrganizationId is Guid requestedOrganizationId &&
+             facts.Request.OrganizationId != requestedOrganizationId) ||
             facts.Manifest.RequestId != facts.Request.Subject.Id ||
             facts.Manifest.RequestVersion != facts.Request.Subject.Version ||
             !expectedLines.SequenceEqual(manifestLines) ||
@@ -420,7 +451,7 @@ public sealed class PolicyEvaluationService(
                 SubjectType = "SOURCING_PO"
             },
             cancellationToken);
-        return PolicyEvaluationBundleRehydrator.FromJson(persisted.BundleJson);
+        return ValidatePersistedEvaluation(persisted);
     }
 
     public async Task<PolicyEvaluationBundle> EvaluateActivePurchaseRequestAsync(
@@ -507,13 +538,33 @@ public sealed class PolicyEvaluationService(
                 Cause = metadata is null ? "INITIAL" : "FACT_PROVIDER_EVALUATION",
                 FactsDigest = metadata?.FactsDigest,
                 ManifestDigest = metadata?.ManifestDigest,
-                InputCanonicalJson = metadata?.InputCanonicalJson
+                InputCanonicalJson = inputCanonical
             },
             cancellationToken);
         logger.LogInformation(
             "Policy evaluation persisted. EvaluationId={EvaluationId} Operation={Operation} Result={Result}",
             persisted.Id, metadata?.Operation ?? "PURCHASE_REQUEST", bundle.Result);
-        return PolicyEvaluationBundleRehydrator.FromJson(persisted.BundleJson);
+        return ValidatePersistedEvaluation(persisted);
+    }
+}
+
+internal static class PolicyEvaluationBundleReplay
+{
+    public static PolicyEvaluationBundle FromJson(string json)
+    {
+        var type = typeof(PolicyEvaluationBundle).Assembly.GetType(
+            "ProcureToPay.Domain.Modules.Policy.PolicyEvaluationBundleRehydrator")
+            ?? throw new PolicyDependencyUnavailableException("Policy bundle rehydrator is unavailable.");
+        var method = type.GetMethod("FromJson")
+            ?? throw new PolicyDependencyUnavailableException("Policy bundle rehydrator is unavailable.");
+        try
+        {
+            return (PolicyEvaluationBundle)method.Invoke(null, [json])!;
+        }
+        catch (TargetInvocationException)
+        {
+            throw new PolicyDependencyUnavailableException("Persisted policy evaluation is corrupted.");
+        }
     }
 }
 

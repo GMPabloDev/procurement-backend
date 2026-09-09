@@ -114,6 +114,7 @@ public sealed class PolicyController(
         {
             throw new DomainForbiddenException("A workload client identity is required.");
         }
+        // pi-lens-ignore: CS1729
         var factRequest = new PolicyFactRequest(
             request.SubjectType,
             request.SubjectId,
@@ -121,7 +122,11 @@ public sealed class PolicyController(
             request.Operation,
             request.RequestedAtUtc ?? DateTimeOffset.UtcNow,
             new PolicyWorkloadPrincipal(issuer, clientId),
-            HttpContext.TraceIdentifier);
+            HttpContext.TraceIdentifier)
+        {
+            // pi-lens-ignore: CS0117
+            OrganizationId = await GetOrganizationIdAsync(cancellationToken)
+        };
         return Ok(await policyEvaluationService.EvaluateEnterprisePurchaseRequestAsync(
             factRequest, request.EvaluationKey, cancellationToken));
     }
@@ -170,6 +175,10 @@ public sealed class PolicyController(
             throw new BadHttpRequestException("Policies support at most 2,000 rules.", StatusCodes.Status413PayloadTooLarge);
         }
         var organizationId = policyDocument.RootElement.GetProperty("organization_id").GetGuid();
+        if (organizationId != simulationActor.OrganizationId)
+        {
+            throw new DomainForbiddenException("The simulation policy is outside the actor organization.");
+        }
         var policy = PolicyDocumentParser.Parse(
             request.ContentJson,
             policyId,
