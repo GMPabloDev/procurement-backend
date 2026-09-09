@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Reflection;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -115,7 +114,7 @@ public sealed class PolicyEvaluationService(
         {
             throw new DomainConflictException("The evaluation key is already bound to a different request.");
         }
-        var replay = PolicyEvaluationBundleReplay.FromJson(existing.BundleJson);
+        var replay = PolicyEvaluationBundleRehydrator.FromJson(existing.BundleJson);
         var recomputedInputDigest = string.IsNullOrWhiteSpace(replay.InputCanonicalJson)
             ? string.Empty
             : PolicyCanonicalizer.Hash(replay.InputCanonicalJson);
@@ -421,7 +420,7 @@ public sealed class PolicyEvaluationService(
                 SubjectType = "SOURCING_PO"
             },
             cancellationToken);
-        return PolicyEvaluationBundleReplay.FromJson(persisted.BundleJson);
+        return PolicyEvaluationBundleRehydrator.FromJson(persisted.BundleJson);
     }
 
     public async Task<PolicyEvaluationBundle> EvaluateActivePurchaseRequestAsync(
@@ -514,27 +513,7 @@ public sealed class PolicyEvaluationService(
         logger.LogInformation(
             "Policy evaluation persisted. EvaluationId={EvaluationId} Operation={Operation} Result={Result}",
             persisted.Id, metadata?.Operation ?? "PURCHASE_REQUEST", bundle.Result);
-        return PolicyEvaluationBundleReplay.FromJson(persisted.BundleJson);
-    }
-}
-
-internal static class PolicyEvaluationBundleReplay
-{
-    public static PolicyEvaluationBundle FromJson(string json)
-    {
-        var type = typeof(PolicyEvaluationBundle).Assembly.GetType(
-            "ProcureToPay.Domain.Modules.Policy.PolicyEvaluationBundleRehydrator")
-            ?? throw new PolicyDependencyUnavailableException("Policy bundle rehydrator is unavailable.");
-        var method = type.GetMethod("FromJson")
-            ?? throw new PolicyDependencyUnavailableException("Policy bundle rehydrator is unavailable.");
-        try
-        {
-            return (PolicyEvaluationBundle)method.Invoke(null, [json])!;
-        }
-        catch (TargetInvocationException exception) when (exception.InnerException is not null)
-        {
-            throw new PolicyDependencyUnavailableException("Persisted policy evaluation is corrupted.");
-        }
+        return PolicyEvaluationBundleRehydrator.FromJson(persisted.BundleJson);
     }
 }
 

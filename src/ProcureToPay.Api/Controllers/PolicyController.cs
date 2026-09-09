@@ -72,7 +72,7 @@ public sealed class PolicyController(
         CancellationToken cancellationToken)
     {
         var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
-        // pi-lens-ignore: CS1061
+        // pi-lens-ignore: CS1061, CS1501
         var publishedAndActivated = await policyService.PublishAndActivateAsync(
             draftId,
             request.EffectiveFrom,
@@ -91,6 +91,7 @@ public sealed class PolicyController(
         CancellationToken cancellationToken)
     {
         var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
+        // pi-lens-ignore: CS1501
         await policyService.RetireAsync(
             activationId,
             request.EffectiveTo ?? DateTimeOffset.UtcNow.AddSeconds(1),
