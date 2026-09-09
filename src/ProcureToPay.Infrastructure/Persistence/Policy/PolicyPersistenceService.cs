@@ -124,7 +124,8 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         PolicyActor actor,
         string reason,
         string correlationReference,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? organizationId = null)
     {
         if (effectiveFrom < DateTimeOffset.UtcNow)
         {
@@ -139,6 +140,10 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         if (draft.Status != (int)PolicySetStatus.Draft)
         {
             throw new DomainConflictException("Only a draft policy can be published.");
+        }
+        if (organizationId.HasValue && draft.OrganizationId != organizationId.Value)
+        {
+            throw new DomainForbiddenException("The policy draft is outside the actor organization.");
         }
         ValidateDocument(new PolicyDraftDocument(draft.OrganizationId, draft.ScopesJson,
             draft.ContentJson, draft.ContentDigest));
@@ -321,7 +326,8 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         PolicyActor actor,
         string reason,
         string correlationReference,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? organizationId = null)
     {
         if (effectiveTo < DateTimeOffset.UtcNow)
         {
@@ -333,6 +339,10 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         var activation = await dbContext.PolicyActivations
             .SingleOrDefaultAsync(candidate => candidate.Id == activationId, cancellationToken)
             ?? throw new DomainNotFoundException("The policy activation does not exist.");
+        if (organizationId.HasValue && activation.OrganizationId != organizationId.Value)
+        {
+            throw new DomainForbiddenException("The policy activation is outside the actor organization.");
+        }
         if (effectiveTo <= activation.EffectiveFrom)
         {
             throw new DomainValidationException("A retirement must occur after activation.");

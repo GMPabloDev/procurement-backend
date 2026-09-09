@@ -54,7 +54,7 @@ public sealed class PolicyController(
             throw new BadHttpRequestException("Policy content exceeds the 10 MiB limit.", StatusCodes.Status413PayloadTooLarge);
         }
         var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
-        var organizationId = await GetOrganizationIdAsync(cancellationToken);
+        var organizationId = actor.OrganizationId;
         var draft = await policyService.AppendDraftAsync(
             new PolicyDraftDocument(organizationId, request.ScopesJson, request.ContentJson, request.ContentDigest),
             DateTimeOffset.UtcNow,
@@ -79,7 +79,8 @@ public sealed class PolicyController(
             new PolicyActor("USER", actor.Id),
             request.Reason,
             HttpContext.TraceIdentifier,
-            cancellationToken);
+            cancellationToken,
+            actor.OrganizationId);
         return Ok(ToResponse(publishedAndActivated.Version));
     }
 
@@ -96,7 +97,8 @@ public sealed class PolicyController(
             new PolicyActor("USER", actor.Id),
             request.Reason,
             HttpContext.TraceIdentifier,
-            cancellationToken);
+            cancellationToken,
+            actor.OrganizationId);
         return NoContent();
     }
 
@@ -274,7 +276,7 @@ public sealed class PolicyController(
     }
 
     private async Task<Guid> GetOrganizationIdAsync(CancellationToken cancellationToken) =>
-        await dbContext.Organizations.Select(organization => organization.Id).SingleAsync(cancellationToken);
+        (await provisioningService.EnsureProfileAsync(User, cancellationToken)).OrganizationId;
 
     private static PolicyVersionResponse ToResponse(PolicySetVersionRecord record) => new(
         record.Id, record.OrganizationId, record.Sequence,

@@ -191,7 +191,6 @@ public static class PolicyCanonicalizer
         return JsonSerializer.Serialize(input, CanonicalJsonOptions);
     }
 
-    [Obsolete("Use the contractual evaluation input preimage overload.")]
     public static string CanonicalizeEvaluationInput(
         DateTimeOffset evaluatedAt,
         string operation,
@@ -210,7 +209,11 @@ public static class PolicyCanonicalizer
         IReadOnlyList<PolicyScopeEvaluation> scopes,
         IReadOnlyList<PolicyGeneratedControl> controls,
         object? diff) =>
-        CanonicalizeEvaluationResult(inputDigest, scopes, controls, PolicyResult.Passed, diff);
+        CanonicalizeEvaluationResult(inputDigest, scopes, controls,
+            scopes.Any(scope => scope.Result == PolicyResult.Blocked) || controls.Any(control => control.Type == PolicyEffectType.Block)
+                ? PolicyResult.Blocked
+                : controls.Count > 0 ? PolicyResult.RequirementsGenerated : PolicyResult.Passed,
+            diff);
 
     public static string CanonicalizeEvaluationResult(
         string inputDigest,

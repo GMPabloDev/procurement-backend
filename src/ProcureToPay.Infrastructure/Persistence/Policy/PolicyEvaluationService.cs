@@ -122,7 +122,7 @@ public sealed class PolicyEvaluationService(
         var recomputedResultDigest = string.IsNullOrWhiteSpace(replay.InputCanonicalJson)
             ? string.Empty
             : PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
-                recomputedInputDigest, replay.ScopeEvaluations, replay.Controls, replay.Result, null));
+                recomputedInputDigest, replay.ScopeEvaluations, replay.Controls, null));
         if (replay.Id != existing.Id || replay.Subject.Id != existing.SubjectId ||
             replay.Subject.Version != existing.SubjectVersion ||
             !string.Equals(replay.InputDigest, existing.InputDigest, StringComparison.OrdinalIgnoreCase) ||
@@ -477,11 +477,12 @@ public sealed class PolicyEvaluationService(
             policy.ContentDigest!,
             metadata?.ActivationId,
             metadata?.FactsDigest,
+            metadata?.ManifestDigest,
             bundle.PreviousBundleId,
-            null);
+            metadata?.InputCanonicalJson ?? string.Empty);
         var inputDigest = PolicyCanonicalizer.Hash(inputCanonical);
         var resultDigest = PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
-            inputDigest, bundle.ScopeEvaluations, bundle.Controls, bundle.Result, null));
+            inputDigest, bundle.ScopeEvaluations, bundle.Controls, null));
         bundle = bundle with
         {
             Operation = operation,
