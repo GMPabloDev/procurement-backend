@@ -73,6 +73,43 @@ public sealed class PolicyEvaluationService(
     PolicyFactProviderRegistry factProviderRegistry) : IPolicyEvaluationPort
 {
     public async Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestAsync(
+        PolicyFactRequest factRequest,
+        string evaluationKey,
+        CancellationToken cancellationToken = default)
+    {
+        var workload = new PolicyWorkloadIdentity(factRequest.Workload.Issuer, factRequest.Workload.ClientId);
+        if (!workloadAllowlist.IsAllowed(workload))
+        {
+            throw new DomainForbiddenException("The workload is not allowlisted for policy evaluation.");
+        }
+
+        var provider = factProviderRegistry.Resolve(factRequest.SubjectType, factRequest.Operation);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        PolicyFactBundle facts;
+        try
+        {
+            facts = await provider.GetFactsAsync(factRequest, timeout.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new PolicyDependencyUnavailableException("The policy fact provider timed out.");
+        }
+        var at = DateTimeOffset.UtcNow;
+        var active = await persistenceService.FindActiveAsync(facts.Request.OrganizationId, at, cancellationToken)
+            ?? throw new PolicyConfigurationUnavailableException("No active policy is available.");
+        var policy = PolicyDocumentParser.Parse(
+            active.PolicySetVersion.ContentJson,
+            active.PolicySetVersion.Id,
+            active.PolicySetVersion.OrganizationId,
+            active.PolicySetVersion.Sequence,
+            (PolicySetStatus)active.PolicySetVersion.Status,
+            active.PolicySetVersion.ContentDigest);
+        return await EvaluateEnterprisePurchaseRequestAsync(
+            policy, factRequest with { RequestedAtUtc = at }, evaluationKey, cancellationToken);
+    }
+
+    public async Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestAsync(
         PolicySetVersion policySnapshot,
         PolicyFactRequest factRequest,
         string evaluationKey,

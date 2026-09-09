@@ -136,6 +136,7 @@ public sealed class PolicyController(
         var allowed = await dbContext.RoleAssignments.AnyAsync(assignment =>
             assignment.UserProfileId == profile.Id &&
             assignment.Status == (int)AssignmentStatus.Active &&
+            assignment.ScopeJson == "[{\"dimension\":\"ORGANIZATION\",\"reference\":null}]" &&
             (assignment.Role == (int)SystemRole.Admin || assignment.Role == (int)SystemRole.Auditor),
             cancellationToken);
         if (!allowed)
