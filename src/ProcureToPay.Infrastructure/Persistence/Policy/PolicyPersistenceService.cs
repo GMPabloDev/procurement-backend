@@ -365,6 +365,8 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(bundle);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            System.Data.IsolationLevel.Serializable, cancellationToken);
         if (caller.PolicySetVersionId == Guid.Empty || bundle.Subject.Id == Guid.Empty)
         {
             throw new InvalidOperationException("Policy evaluations require a policy and subject reference.");
@@ -423,9 +425,11 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         try
         {
             await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
         catch (DbUpdateException)
         {
+            await transaction.RollbackAsync(cancellationToken);
             dbContext.Entry(record).State = EntityState.Detached;
             var duplicate = await dbContext.PolicyEvaluationBundles
                 .SingleOrDefaultAsync(evaluation =>
@@ -450,6 +454,12 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
 
         return record;
     }
+
+    public Task<PolicyEvaluationBundleRecord?> FindEvaluationAsync(
+        Guid evaluationId,
+        CancellationToken cancellationToken = default) =>
+        dbContext.PolicyEvaluationBundles.AsNoTracking()
+            .SingleOrDefaultAsync(record => record.Id == evaluationId, cancellationToken);
 
     public async Task<PolicyExceptionVerificationRecord> AppendExceptionVerificationAsync(
         Guid evaluationBundleId,
@@ -543,6 +553,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
                 root.GetProperty("organization_id").GetGuid() != document.OrganizationId ||
                 root.GetProperty("scopes").GetArrayLength() == 0 ||
                 root.GetProperty("rules").GetArrayLength() == 0 ||
+                root.GetProperty("rules").GetArrayLength() > 2000 ||
                 root.GetProperty("rules").EnumerateArray().Any(rule => !IsTypedRule(rule)))
             {
                 throw new DomainValidationException("Policy content does not match the typed policy schema.");

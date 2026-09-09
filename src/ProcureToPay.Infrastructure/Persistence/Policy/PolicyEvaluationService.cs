@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.SharedKernel;
 
@@ -81,7 +82,8 @@ public sealed class PolicyEvaluationService(
     PolicyWorkloadAllowlist workloadAllowlist,
     PolicyFactProviderRegistry factProviderRegistry,
     PolicyExceptionVerifierRegistry exceptionVerifierRegistry,
-    PolicyReferenceCatalogRegistry referenceCatalogRegistry) : IPolicyEvaluationPort
+    PolicyReferenceCatalogRegistry referenceCatalogRegistry,
+    ILogger<PolicyEvaluationService> logger) : IPolicyEvaluationPort
 {
     public async Task<PolicyEvaluationBundle> ApplyQuotationWaiverAsync(
         PolicyEvaluationBundle bundle,
@@ -187,7 +189,7 @@ public sealed class PolicyEvaluationService(
             .OrderBy(line => line.id)
             .ThenBy(line => line.version)
             .ToArray();
-        var expectedManifestDigest = PolicyCanonicalizer.Hash(JsonSerializer.Serialize(expectedLines));
+        var expectedManifestDigest = ComputeManifestDigest(facts.Manifest);
         var manifestLines = facts.Manifest.Lines
             .Select(line => new { id = line.Id, version = line.Version })
             .OrderBy(line => line.id)
@@ -201,8 +203,7 @@ public sealed class PolicyEvaluationService(
             facts.Manifest.RequestVersion != facts.Request.Subject.Version ||
             !expectedLines.SequenceEqual(manifestLines) ||
             !string.Equals(facts.Manifest.Digest, expectedManifestDigest, StringComparison.OrdinalIgnoreCase) ||
-            string.IsNullOrWhiteSpace(facts.FactsDigest) || facts.FactsDigest.Length != 64 ||
-            !facts.FactsDigest.All(Uri.IsHexDigit))
+            !string.Equals(facts.FactsDigest, ComputeFactsDigest(facts, factRequest.RequestedAtUtc), StringComparison.OrdinalIgnoreCase))
         {
             throw new DomainValidationException("The policy fact bundle or completeness manifest is invalid.");
         }
@@ -222,6 +223,46 @@ public sealed class PolicyEvaluationService(
                 facts.FactsDigest,
                 facts.Manifest.Digest,
                 PolicyCanonicalizer.CanonicalizeRequest(facts.Request, evaluatedAt)));
+    }
+
+    private static string ComputeManifestDigest(PolicyCompletenessManifest manifest)
+    {
+        var preimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["canonicalization_version"] = PolicyCanonicalizer.Version,
+            ["line_count"] = manifest.Lines.Count,
+            ["lines"] = manifest.Lines.OrderBy(line => line.Id).ThenBy(line => line.Version)
+                .Select(line => new { id = line.Id.ToString("D"), version = line.Version }).ToArray(),
+            ["request_id"] = manifest.RequestId.ToString("D"),
+            ["request_version"] = manifest.RequestVersion
+        };
+        return PolicyCanonicalizer.Hash(JsonSerializer.Serialize(preimage));
+    }
+
+    private static string ComputeFactsDigest(PolicyFactBundle bundle, DateTimeOffset requestedAt)
+    {
+        var preimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["canonicalization_version"] = PolicyCanonicalizer.Version,
+            ["completeness_manifest"] = new
+            {
+                request_id = bundle.Manifest.RequestId.ToString("D"),
+                request_version = bundle.Manifest.RequestVersion,
+                lines = bundle.Manifest.Lines.OrderBy(line => line.Id).ThenBy(line => line.Version)
+                    .Select(line => new { id = line.Id.ToString("D"), version = line.Version }).ToArray(),
+                digest = bundle.Manifest.Digest
+            },
+            ["facts"] = PolicyCanonicalizer.CanonicalizeRequest(bundle.Request, requestedAt),
+            ["provenance"] = bundle.Provenance.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
+            ["provider_contract_version"] = bundle.ContractVersion,
+            ["provider_id"] = bundle.ProviderId,
+            ["subject_ref"] = new { id = bundle.Request.Subject.Id.ToString("D"), version = bundle.Request.Subject.Version },
+            ["organization_id"] = bundle.Request.OrganizationId.ToString("D"),
+            ["legal_entity_id"] = bundle.Request.LegalEntityId.ToString("D"),
+            ["base_currency"] = bundle.Request.BaseCurrency
+        };
+        return PolicyCanonicalizer.Hash(JsonSerializer.Serialize(preimage));
     }
 
     private async Task ValidateReferenceCatalogsAsync(
@@ -254,6 +295,47 @@ public sealed class PolicyEvaluationService(
                 throw new DomainValidationException("A policy reference could not be verified by its catalog.");
             }
         }
+    }
+
+    public async Task<PolicyEvaluationBundle> EvaluateSourcingAsync(
+        PolicySetVersion policy,
+        PolicySourcingInput sourcing,
+        PolicyWorkloadIdentity workload,
+        string evaluationKey,
+        DateTimeOffset evaluatedAt,
+        string correlationReference,
+        CancellationToken cancellationToken = default)
+    {
+        if (sourcing.CurrentRequestEvaluation is null)
+        {
+            throw new DomainConflictException("Sourcing evaluation requires a request evaluation.");
+        }
+        var current = await persistenceService.FindEvaluationAsync(
+            sourcing.CurrentRequestEvaluation.Id, cancellationToken);
+        if (current is null || current.SubjectId != sourcing.Request.Subject.Id ||
+            current.SubjectVersion != sourcing.Request.Subject.Version ||
+            !string.Equals(current.InputDigest, sourcing.CurrentRequestEvaluation.InputDigest, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(current.PolicyContentDigest, sourcing.CurrentRequestEvaluation.PolicyContentDigest,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainConflictException("The request evaluation is not current or persisted.");
+        }
+        var bundle = PolicyEvaluator.EvaluateSourcing(policy, sourcing, evaluationKey, evaluatedAt);
+        var persisted = await persistenceService.AppendEvaluationAsync(
+            bundle,
+            new PolicyEvaluationCaller(
+                sourcing.Request.OrganizationId,
+                workload.Issuer,
+                workload.ClientId,
+                "SOURCING_PO",
+                evaluationKey,
+                policy.Id,
+                correlationReference)
+            {
+                SubjectType = "SOURCING_PO"
+            },
+            cancellationToken);
+        return bundle with { Id = persisted.Id };
     }
 
     public async Task<PolicyEvaluationBundle> EvaluateActivePurchaseRequestAsync(
@@ -312,9 +394,15 @@ public sealed class PolicyEvaluationService(
                 correlationReference)
             {
                 SubjectType = metadata?.SubjectType ?? "PURCHASE_REQUEST",
-                Cause = metadata is null ? "INITIAL" : "FACT_PROVIDER_EVALUATION"
+                Cause = metadata is null ? "INITIAL" : "FACT_PROVIDER_EVALUATION",
+                FactsDigest = metadata?.FactsDigest,
+                ManifestDigest = metadata?.ManifestDigest,
+                InputCanonicalJson = metadata?.InputCanonicalJson
             },
             cancellationToken);
+        logger.LogInformation(
+            "Policy evaluation persisted. EvaluationId={EvaluationId} Operation={Operation} Result={Result}",
+            persisted.Id, metadata?.Operation ?? "PURCHASE_REQUEST", bundle.Result);
         return bundle with { Id = persisted.Id };
     }
 }

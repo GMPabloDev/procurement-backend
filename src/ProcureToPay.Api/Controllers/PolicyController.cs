@@ -146,7 +146,7 @@ public sealed class PolicyController(
         PolicySimulationRequest request,
         CancellationToken cancellationToken)
     {
-        _ = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
+        var simulationActor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
         if (request.ContentJson.Length > 10 * 1024 * 1024 ||
             (request.InputSnapshot is not null && request.InputSnapshot.Value.GetRawText().Length > 5 * 1024 * 1024))
         {
@@ -162,6 +162,10 @@ public sealed class PolicyController(
 
         using var policyDocument = JsonDocument.Parse(request.ContentJson);
         var policyId = request.PolicyId ?? Guid.NewGuid();
+        if (policyDocument.RootElement.GetProperty("rules").GetArrayLength() > 2000)
+        {
+            throw new BadHttpRequestException("Policies support at most 2,000 rules.", StatusCodes.Status413PayloadTooLarge);
+        }
         var organizationId = policyDocument.RootElement.GetProperty("organization_id").GetGuid();
         var policy = PolicyDocumentParser.Parse(
             request.ContentJson,
@@ -182,6 +186,21 @@ public sealed class PolicyController(
         }
         var evaluatedAt = request.EvaluatedAt ?? DateTimeOffset.UtcNow;
         var bundle = PolicyEvaluator.EvaluateRequest(policy, input, request.EvaluationKey, evaluatedAt);
+        dbContext.AdministrativeAuditRecords.Add(new AdministrativeAuditRecord
+        {
+            Id = Guid.NewGuid(),
+            ActorType = "USER",
+            ActorUserId = simulationActor.Id,
+            OccurredAt = DateTimeOffset.UtcNow,
+            Action = "POLICY_SIMULATED",
+            TargetType = "POLICY",
+            TargetId = policyId,
+            ScopeJson = "[\"POLICY\"]",
+            AfterJson = JsonSerializer.Serialize(new { request.EvaluationKey, inputHash = PolicyCanonicalizer.Hash(request.InputSnapshot.Value.GetRawText()) }),
+            Reason = "Policy simulation",
+            CorrelationReference = HttpContext.TraceIdentifier
+        });
+        await dbContext.SaveChangesAsync(cancellationToken);
         return Ok(new PolicySimulationResponse(
             policyId, request.EvaluationKey, false, bundle.Result, bundle.ResultDigest,
             "Simulation is non-enterprise and does not persist an evaluation bundle."));
@@ -220,7 +239,12 @@ public sealed class PolicyController(
         static IReadOnlyDictionary<string, PolicyValue> ParseFacts(JsonElement facts) =>
             facts.EnumerateObject().ToDictionary(property => property.Name, property => ParseValue(property.Value), StringComparer.Ordinal);
 
-        var lines = root.GetProperty("lines").EnumerateArray()
+        var lineElements = root.GetProperty("lines").EnumerateArray().ToArray();
+        if (lineElements.Length > 500)
+        {
+            throw new BadHttpRequestException("Simulation requests support at most 500 lines.", StatusCodes.Status413PayloadTooLarge);
+        }
+        var lines = lineElements
             .Select(line => new PolicyLineInput(
                 ParseSubject(line.GetProperty("subject")),
                 ParseFacts(line.GetProperty("facts"))))

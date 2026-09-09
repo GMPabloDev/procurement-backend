@@ -187,6 +187,10 @@ public sealed record PolicyPredicate
     public PolicyPredicate(string factKey, PolicyOperator @operator, PolicyValue value)
     {
         FactKey = PolicyValue.NormalizeCode(factKey, "Policy fact key");
+        if (!AllowedFactKeys.Contains(FactKey))
+        {
+            throw new DomainValidationException($"Unknown policy fact '{FactKey}'.");
+        }
         Operator = @operator;
         Value = value ?? throw new ArgumentNullException(nameof(value));
         ValidateCompatibility();
@@ -195,6 +199,16 @@ public sealed record PolicyPredicate
     public string FactKey { get; }
     public PolicyOperator Operator { get; }
     public PolicyValue Value { get; }
+
+    private static readonly IReadOnlySet<string> AllowedFactKeys = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "GROSS_AMOUNT_BASE", "PURCHASE_TYPE", "SPEND_CATEGORY", "BENEFICIARY_DEPARTMENT",
+        "COST_CENTER", "COST_CENTER_DEPARTMENT", "SUPPLIER", "PREFERRED_PRODUCT",
+        "REQUIRED_PRODUCT", "COST_CENTER_ACTIVE", "COST_CENTER_DEPARTMENT_ACTIVE",
+        "PREFERRED_SUPPLIER", "CONTRACT_REQUIRED", "NON_STANDARD_TERMS",
+        "EXTERNAL_AGREEMENT_STATUS", "DATA_RISK", "RISK_ANSWER", "LEGAL_ENTITY_ID",
+        "BASE_CURRENCY"
+    };
 
     private void ValidateCompatibility()
     {
