@@ -65,6 +65,28 @@ public sealed class PolicyController(
         return Created($"/api/v1/policies/{draft.Id}", ToResponse(draft));
     }
 
+    [HttpPut("drafts/{draftId:guid}")]
+    public async Task<ActionResult<PolicyVersionResponse>> UpdateDraft(
+        Guid draftId,
+        PolicyDraftUpdateRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.ContentJson.Length > 10 * 1024 * 1024)
+        {
+            throw new BadHttpRequestException("Policy content exceeds the 10 MiB limit.", StatusCodes.Status413PayloadTooLarge);
+        }
+        var actor = await provisioningService.RequireRoleAsync(User, SystemRole.Admin, cancellationToken);
+        var draft = await policyService.UpdateDraftAsync(
+            draftId,
+            new PolicyDraftDocument(actor.OrganizationId, request.ScopesJson, request.ContentJson, request.ContentDigest),
+            request.ExpectedContentDigest,
+            new PolicyActor("USER", actor.Id),
+            request.Reason,
+            HttpContext.TraceIdentifier,
+            cancellationToken);
+        return Ok(ToResponse(draft));
+    }
+
     [HttpPost("{draftId:guid}/publish")]
     public async Task<ActionResult<PolicyVersionResponse>> Publish(
         Guid draftId,
@@ -306,6 +328,13 @@ public sealed record PolicyDraftRequest(
     string ScopesJson,
     string ContentJson,
     string ContentDigest,
+    string Reason);
+
+public sealed record PolicyDraftUpdateRequest(
+    string ScopesJson,
+    string ContentJson,
+    string ContentDigest,
+    string ExpectedContentDigest,
     string Reason);
 
 public sealed record PolicyActionRequest(string Reason, DateTimeOffset EffectiveFrom);

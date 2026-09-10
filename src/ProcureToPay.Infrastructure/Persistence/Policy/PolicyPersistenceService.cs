@@ -118,6 +118,45 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         return record;
     }
 
+    public async Task<PolicySetVersionRecord> UpdateDraftAsync(
+        Guid draftId,
+        PolicyDraftDocument document,
+        string expectedContentDigest,
+        PolicyActor actor,
+        string reason,
+        string correlationReference,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateDocument(document);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            System.Data.IsolationLevel.Serializable, cancellationToken);
+        var record = await dbContext.PolicySetVersions
+            .SingleOrDefaultAsync(version => version.Id == draftId, cancellationToken)
+            ?? throw new DomainNotFoundException("The policy draft was not found.");
+        if (record.OrganizationId != document.OrganizationId)
+        {
+            throw new DomainForbiddenException("The policy draft is not visible to this organization.");
+        }
+        if ((PolicySetStatus)record.Status != PolicySetStatus.Draft)
+        {
+            throw new DomainConflictException("Only draft policies can be edited.");
+        }
+        if (!string.Equals(record.ContentDigest, expectedContentDigest, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainConflictException("The policy draft was modified by another request.");
+        }
+
+        var beforeJson = record.ContentJson;
+        record.ScopesJson = document.ScopesJson;
+        record.ContentJson = document.ContentJson;
+        record.ContentDigest = document.ContentDigest;
+        AddAudit("POLICY_DRAFT_UPDATED", record.Id, beforeJson, (int)record.Sequence,
+            record.ContentJson, actor, reason, correlationReference);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return record;
+    }
+
     public async Task<(PolicySetVersionRecord Version, PolicyActivationRecord Activation)> PublishAndActivateAsync(
         Guid draftId,
         DateTimeOffset effectiveFrom,

@@ -235,6 +235,30 @@ public sealed class UnitTest1
             }, cancellationToken);
         Assert.Equal(HttpStatusCode.Created, draftResponse.StatusCode);
         var draftBody = await draftResponse.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        var draftId = draftBody.GetProperty("id").GetGuid();
+        var draftDigest = draftBody.GetProperty("contentDigest").GetString();
+        using var updateDraftResponse = await adminClient.PutAsJsonAsync(
+            $"/api/v1/policies/drafts/{draftId}",
+            new
+            {
+                scopesJson = "[\"LINE\"]",
+                contentJson = apiPolicyContent,
+                contentDigest = PolicyCanonicalizer.Hash(apiPolicyContent),
+                expectedContentDigest = draftDigest,
+                reason = "update API policy draft"
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, updateDraftResponse.StatusCode);
+        using var staleDraftResponse = await adminClient.PutAsJsonAsync(
+            $"/api/v1/policies/drafts/{draftId}",
+            new
+            {
+                scopesJson = "[\"LINE\"]",
+                contentJson = apiPolicyContent,
+                contentDigest = PolicyCanonicalizer.Hash(apiPolicyContent),
+                expectedContentDigest = "stale-digest",
+                reason = "reject stale API policy draft"
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, staleDraftResponse.StatusCode);
         using var publishResponse = await adminClient.PostAsJsonAsync(
             $"/api/v1/policies/{draftBody.GetProperty("id").GetGuid()}/publish",
             new { effectiveFrom = DateTimeOffset.UtcNow.AddMinutes(1), reason = "publish API policy" },
