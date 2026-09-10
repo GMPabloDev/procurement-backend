@@ -53,7 +53,25 @@ public static class DependencyInjection
             throw new InvalidOperationException("Policy exception workflow base address is invalid.");
         }
         services.AddScoped<PolicyExceptionVerifierRegistry>();
-        services.AddScoped<IPolicyReferenceCatalog, DefaultDenyPolicyReferenceCatalog>();
+        var catalogUrl = configuration["Policy:ReferenceCatalog:BaseUrl"];
+        if (string.IsNullOrWhiteSpace(catalogUrl))
+        {
+            services.AddScoped<IPolicyReferenceCatalog, DefaultDenyPolicyReferenceCatalog>();
+        }
+        else if (Uri.TryCreate(catalogUrl, UriKind.Absolute, out var catalogBaseAddress))
+        {
+            services.AddHttpClient<HttpPolicyReferenceCatalog>(client =>
+            {
+                client.BaseAddress = catalogBaseAddress;
+                client.Timeout = TimeSpan.FromSeconds(5);
+            });
+            services.AddScoped<IPolicyReferenceCatalog>(provider =>
+                provider.GetRequiredService<HttpPolicyReferenceCatalog>());
+        }
+        else
+        {
+            throw new InvalidOperationException("Policy reference catalog base address is invalid.");
+        }
         services.AddScoped<PolicyReferenceCatalogRegistry>();
         services.AddScoped<PolicyEvaluationService>();
         services.AddScoped<IOrganizationEligibilityService>(provider =>
