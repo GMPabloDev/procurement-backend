@@ -13,10 +13,9 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ProcureToPayDbContext))]
     [Migration("20260910034056_PolicyEvaluationSequenceUnique")]
-    partial class PolicyEvaluationSequenceUniqueMigration
+    partial class PolicyEvaluationSequenceUniqueMigration : Migration
     {
         /// <inheritdoc />
-        // pi-lens-ignore: CS0115 (partial migration base is declared in companion file)
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618

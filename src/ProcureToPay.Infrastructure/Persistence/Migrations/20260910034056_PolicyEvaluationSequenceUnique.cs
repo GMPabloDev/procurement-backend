@@ -5,7 +5,7 @@
 namespace ProcureToPay.Infrastructure.Persistence.Migrations
 {
     /// <inheritdoc />
-    public partial class PolicyEvaluationSequenceUniqueMigration : Migration
+    public partial class PolicyEvaluationSequenceUniqueMigration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
