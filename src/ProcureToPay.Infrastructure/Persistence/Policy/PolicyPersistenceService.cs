@@ -659,6 +659,73 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         return record;
     }
 
+    public async Task<PolicyEvaluationBundleRecord> AppendQuotationWaiverReevaluationAsync(
+        PolicyEvaluationBundle baseBundle,
+        PolicyEvaluationBundle reducedBundle,
+        QuotationWaiverRequest request,
+        QuotationWaiverEvidence evidence,
+        Guid exceptionVerificationId,
+        CancellationToken cancellationToken = default)
+    {
+        var baseRecord = await dbContext.PolicyEvaluationBundles
+            .AsNoTracking()
+            .SingleOrDefaultAsync(record => record.Id == baseBundle.Id, cancellationToken)
+            ?? throw new DomainConflictException("The quotation waiver base evaluation is not persisted.");
+        var evaluationKey = $"{baseRecord.EvaluationKey}:waiver:{evidence.EvidenceDigest[..16]}";
+        if (evaluationKey.Length > 128)
+        {
+            evaluationKey = evaluationKey[..128];
+        }
+        var inputCanonical = PolicyCanonicalizer.CanonicalizeEvaluationInput(
+            DateTimeOffset.UtcNow,
+            "PURCHASE_REQUEST_WAIVER",
+            reducedBundle.Subject,
+            reducedBundle.PolicyContentDigest,
+            reducedBundle.ActivationId,
+            reducedBundle.FactsDigest,
+            baseRecord.Id,
+            baseRecord.ResultDigest,
+            [evidence.EvidenceDigest]);
+        var inputDigest = PolicyCanonicalizer.Hash(inputCanonical);
+        var resultDigest = PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
+            inputDigest,
+            reducedBundle.ScopeEvaluations,
+            reducedBundle.Controls,
+            reducedBundle.Result,
+            null));
+        var reevaluated = reducedBundle with
+        {
+            Id = Guid.NewGuid(),
+            EvaluationKey = evaluationKey,
+            EvaluatedAt = DateTimeOffset.UtcNow,
+            InputDigest = inputDigest,
+            InputCanonicalJson = inputCanonical,
+            Operation = "PURCHASE_REQUEST_WAIVER",
+            PreviousBundleId = baseRecord.Id,
+            ResultDigest = resultDigest
+        };
+        return await AppendEvaluationAsync(
+            reevaluated,
+            new PolicyEvaluationCaller(
+                baseRecord.OrganizationId,
+                "QUOTATION_WAIVER",
+                "WORKFLOW",
+                "PURCHASE_REQUEST_WAIVER",
+                evaluationKey,
+                baseRecord.PolicySetVersionId,
+                evidence.VerifierReference)
+            {
+                SubjectType = baseBundle.Operation,
+                Cause = "QUOTATION_WAIVER",
+                ExceptionReferenceIds = [exceptionVerificationId.ToString("D")],
+                ExceptionTargetRequirementKey = request.TargetRequirementKey,
+                ExceptionFrom = request.From,
+                ExceptionTo = request.To,
+                PreviousResultDigest = baseRecord.ResultDigest
+            },
+            cancellationToken);
+    }
+
     private static void ValidateDocument(PolicyDraftDocument document)
     {
         if (document.OrganizationId == Guid.Empty || string.IsNullOrWhiteSpace(document.ScopesJson) ||

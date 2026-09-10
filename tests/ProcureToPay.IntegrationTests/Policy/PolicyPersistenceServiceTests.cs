@@ -241,7 +241,7 @@ public sealed class PolicyPersistenceServiceTests
                     digest = manifest.Digest
                 },
                 ["facts"] = factPayload,
-                ["provenance"] = new Dictionary<string, string>(), 
+                ["provenance"] = new Dictionary<string, string>(),
                 ["provider_contract_version"] = ContractVersion,
                 ["provider_id"] = ProviderId,
                 ["subject_ref"] = new { id = request.Subject.Id.ToString("D"), version = request.Subject.Version },

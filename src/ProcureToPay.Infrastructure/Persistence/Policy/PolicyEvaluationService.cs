@@ -202,9 +202,11 @@ public sealed class PolicyEvaluationService(
             throw new DomainConflictException("The quotation waiver evaluation does not match persisted evidence.");
         }
         var reduced = QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(persistedBundle, request, evidence);
-        await persistenceService.AppendExceptionVerificationAsync(
+        var verification = await persistenceService.AppendExceptionVerificationAsync(
             persistedBundle.Id, request, evidence, reduced, cancellationToken);
-        return reduced;
+        var reevaluation = await persistenceService.AppendQuotationWaiverReevaluationAsync(
+            persistedBundle, reduced, request, evidence, verification.Id, cancellationToken);
+        return ValidatePersistedEvaluation(reevaluation);
     }
 
     public async Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestAsync(
