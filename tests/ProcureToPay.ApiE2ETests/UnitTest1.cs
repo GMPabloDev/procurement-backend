@@ -186,6 +186,10 @@ public sealed class UnitTest1
             item.GetProperty("afterJson").GetString()!.Contains("\"before\"", StringComparison.Ordinal));
         using var health = await adminClient.GetAsync("/health/bootstrap", cancellationToken);
         Assert.Equal(HttpStatusCode.OK, health.StatusCode);
+        using var policyHealth = await adminClient.GetAsync("/health/policy", cancellationToken);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, policyHealth.StatusCode);
+        var policyHealthBody = await policyHealth.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        Assert.Equal("POLICY_CONFIGURATION_REQUIRED", policyHealthBody.GetProperty("code").GetString());
 
         using var malformed = await adminClient.PostAsync("/api/v1/departments",
             new StringContent("{", System.Text.Encoding.UTF8, "application/json"), cancellationToken);
