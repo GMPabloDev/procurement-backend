@@ -38,7 +38,10 @@ public static class PolicyEvaluationBundleRehydrator
             InputCanonicalJson = NullableString(root, "inputCanonicalJson"),
             RequestSnapshotJson = NullableString(root, "requestSnapshotJson"),
             ActivationId = NullableGuid(root, "activationId"),
-            PreviousBundleId = NullableGuid(root, "previousBundleId")
+            PreviousBundleId = NullableGuid(root, "previousBundleId"),
+            Diff = root.TryGetProperty("diff", out var diff) && diff.ValueKind == JsonValueKind.Array
+                ? diff.EnumerateArray().Select(ParseDiff).ToArray()
+                : []
         };
         return bundle;
     }
@@ -85,6 +88,19 @@ public static class PolicyEvaluationBundleRehydrator
         {
             MinimumAllowedQuotations = NullableInt(value, "minimumAllowedQuotations")
         };
+    }
+
+    private static PolicyEvaluationDiffEntry ParseDiff(JsonElement value)
+    {
+        var subjectIds = value.GetProperty("subjectIds").EnumerateArray()
+            .Select(item => item.GetGuid()).ToHashSet();
+        return new PolicyEvaluationDiffEntry(
+            value.GetProperty("change").GetString()!,
+            value.GetProperty("requirementKey").GetString()!,
+            ParseEnum<PolicyEffectType>(value.GetProperty("type")),
+            subjectIds,
+            NullableInt(value, "previousMinimumQuotations"),
+            NullableInt(value, "currentMinimumQuotations"));
     }
 
     private static PolicyApprovalDescriptor ParseApproval(JsonElement value)

@@ -555,6 +555,31 @@ public sealed class PolicySetVersion
 
             ValidateEffects(rule);
         }
+
+        foreach (var group in rules.SelectMany(rule => rule.Effects)
+                     .GroupBy(effect => effect.RequirementKey, StringComparer.Ordinal))
+        {
+            var types = group.Select(effect => effect.Type).Distinct().ToArray();
+            var directAndPoOnly = types.Length == 2 &&
+                types.Contains(PolicyEffectType.RequirePo) &&
+                types.Contains(PolicyEffectType.AllowDirectPurchase);
+            if (types.Length > 1 && !directAndPoOnly)
+            {
+                throw new DomainConflictException(
+                    $"Requirement key '{group.Key}' combines incompatible effect types.");
+            }
+
+            var approvals = group.Where(effect => effect.Type == PolicyEffectType.RequireApproval)
+                .Select(effect => effect.Approval!)
+                .ToArray();
+            if (approvals.Any(approval => approval.Role != approvals[0].Role ||
+                approval.AuthorityType != approvals[0].AuthorityType ||
+                approval.DecisionScope != approvals[0].DecisionScope))
+            {
+                throw new DomainConflictException(
+                    $"Approval requirement key '{group.Key}' has incompatible authority descriptors.");
+            }
+        }
     }
 
     private static void ValidateEffects(PolicyRule rule)

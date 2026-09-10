@@ -61,6 +61,23 @@ public sealed class PolicyModelTests
     }
 
     [Fact]
+    public void Publication_rejects_incompatible_effect_types_for_the_same_requirement_key()
+    {
+        var policy = CreatePolicy(PolicyScope.Line);
+        policy.AddRule(new PolicyRule(
+            "BLOCK_RULE", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.Block, "SHARED_KEY", "blocked")]));
+        policy.AddRule(new PolicyRule(
+            "PO_RULE", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.RequirePo, "SHARED_KEY")]));
+        policy.AddRule(new PolicyRule(
+            "DEFAULT", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.Allow, "DEFAULT")], isFallback: true));
+
+        Assert.Throws<DomainConflictException>(() => policy.ValidateForPublication());
+    }
+
+    [Fact]
     public void Approval_descriptor_requires_versioned_authority_except_for_it_and_legal()
     {
         var none = new PolicyApprovalDescriptor(

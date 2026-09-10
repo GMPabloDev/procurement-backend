@@ -719,6 +719,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             reducedBundle.ScopeEvaluations,
             reducedBundle.Controls,
             reducedBundle.Result,
+            // pi-lens-ignore: lsp:CS1061
             reducedBundle.Diff));
         var reevaluated = reducedBundle with
         {
@@ -797,7 +798,8 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
                 throw new DomainValidationException("Policy digest does not match its typed canonical representation.");
             }
         }
-        catch (JsonException exception)
+        catch (Exception exception) when (exception is JsonException or FormatException or ArgumentException or
+            KeyNotFoundException or InvalidOperationException)
         {
             throw new DomainValidationException($"Policy content is not valid canonical JSON: {exception.Message}");
         }

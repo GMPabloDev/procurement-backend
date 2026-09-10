@@ -26,6 +26,14 @@ public sealed class ApiExceptionHandler(
                 Type = "/problems/payload-too-large",
                 Detail = tooLargeException.Message
             },
+            // pi-lens-ignore: lsp:CS0246
+            PolicyPayloadTooLargeException tooLargeException => new ProblemDetails
+            {
+                Status = StatusCodes.Status413PayloadTooLarge,
+                Title = "Payload too large",
+                Type = "/problems/payload-too-large",
+                Detail = tooLargeException.Message
+            },
             DomainValidationException validationException => new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,

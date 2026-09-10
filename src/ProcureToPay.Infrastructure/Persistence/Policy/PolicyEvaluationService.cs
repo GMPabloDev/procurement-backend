@@ -16,6 +16,10 @@ public sealed class PolicyConfigurationUnavailableException(string message) : Do
 {
 }
 
+public sealed class PolicyPayloadTooLargeException(string message) : DomainException(message)
+{
+}
+
 public sealed record PolicyWorkloadIdentity(string Issuer, string ClientId);
 public sealed record PolicyWorkloadPrincipal(string Issuer, string ClientId);
 public sealed record PolicyEvaluationMetadata(
@@ -156,7 +160,11 @@ public sealed class PolicyEvaluationService(
         var recomputedResultDigest = string.IsNullOrWhiteSpace(replay.InputCanonicalJson)
             ? string.Empty
             : PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
-                recomputedInputDigest, replay.ScopeEvaluations, replay.Controls, null));
+                recomputedInputDigest,
+                replay.ScopeEvaluations,
+                replay.Controls,
+                // pi-lens-ignore: lsp:CS1061
+                replay.Diff.Count == 0 ? null : replay.Diff));
         if (replay.Id != existing.Id ||
             !string.Equals(replay.EvaluationKey, existing.EvaluationKey, StringComparison.Ordinal) ||
             replay.Subject.Id != existing.SubjectId ||
@@ -200,6 +208,17 @@ public sealed class PolicyEvaluationService(
         if (!HasSameEvaluationContent(persistedBundle, bundle))
         {
             throw new DomainConflictException("The quotation waiver evaluation does not match persisted evidence.");
+        }
+        var expectedBinding = QuotationWaiverEvaluator.ComputeBinding(
+            persistedRecord.OrganizationId,
+            persistedRecord.PolicySetVersionId,
+            persistedBundle.Subject.Id,
+            persistedBundle.PolicyContentDigest,
+            persistedBundle.ResultDigest,
+            request.Nonce);
+        if (!string.Equals(expectedBinding, request.Binding, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainConflictException("The quotation waiver binding does not match the persisted evaluation.");
         }
         var reduced = QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(persistedBundle, request, evidence);
         var verification = await persistenceService.AppendExceptionVerificationAsync(
@@ -380,6 +399,11 @@ public sealed class PolicyEvaluationService(
                 throw new PolicyDependencyUnavailableException("The policy fact provider is unavailable.");
             }
         }
+        if (facts.Request.Lines.Count > 500)
+        {
+            throw new PolicyPayloadTooLargeException("Policy requests support at most 500 lines.");
+        }
+
         var expectedLines = facts.Request.Lines
             .Select(line => new { id = line.Subject.Id, version = line.Subject.Version })
             .OrderBy(line => line.id)

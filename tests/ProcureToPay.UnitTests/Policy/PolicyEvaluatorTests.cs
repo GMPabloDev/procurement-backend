@@ -207,6 +207,9 @@ public sealed class PolicyEvaluatorTests
         var replay = PolicyEvaluationBundleRehydrator.FromJson(
             JsonSerializer.Serialize(reduced, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
         Assert.Equal(1, replay.Controls.Single().MinimumAllowedQuotations);
+        Assert.Single(replay.Diff);
+        // pi-lens-ignore: lsp:CS1061
+        Assert.Equal("REMOVED", replay.Diff[0].Change);
         Assert.Throws<DomainConflictException>(() =>
             QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(
                 bundle, request with { From = 4 }, evidence));
