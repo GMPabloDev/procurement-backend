@@ -14,7 +14,7 @@
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
 > **Actualizado:** 2026-09-09 23:04 -05
-> **HEAD verificado:** `ad97c4f`
+> **HEAD de implementación verificado:** `ad97c4f`
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -62,7 +62,7 @@
 - Persistencia: la primera respuesta y los replays se rehidratan desde el mismo `BundleJson`; `PolicyEvaluationBundleRecord.ResultDigest` conserva el `evaluation_result_digest` contractual; la prueba SQL Server verifica JSON, secuencia y digest.
 - Tests/checks: build 0/0; UnitTests 31/31; IntegrationTests 8/8; ApiE2ETests 2/2; `git diff --check` limpio; diagnósticos blocking del turno resueltos.
 - Resultado: el replay secuencial y distribuido dispone de reserva persistente previa al provider con organización obligatoria, validación temprana de `evaluation_key`, lease de 5 minutos y el overload de snapshot del puerto ya delega en la ruta scoped; snapshots separados (`inputCanonicalJson` contractual + `requestSnapshotJson`) y serialización; no se declara PASS contractual: faltan pruebas HTTP del servicio real sin provider, corrupción 503 y CA-01–CA-12.
-- HEAD: `ad97c4f`.
+- HEAD de implementación: `ad97c4f`.
 
 ## Evidencia de aceptación
 
@@ -116,7 +116,7 @@
 
 ## Cierre
 
-- HEAD verificado: `ad97c4f`.
+- HEAD de implementación: `ad97c4f`.
 - Estrategia de integración: Pendiente.
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.
