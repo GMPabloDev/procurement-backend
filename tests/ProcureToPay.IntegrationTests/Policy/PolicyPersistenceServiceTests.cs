@@ -171,6 +171,13 @@ public sealed class PolicyPersistenceServiceTests
             .EvaluateEnterprisePurchaseRequestAsync(
                 factRequest with { SubjectId = Guid.NewGuid() }, "policy-service-replay", cancellationToken));
         Assert.Equal(1, provider.Calls);
+        var persistedServiceEvaluation = await context.PolicyEvaluationBundles.SingleAsync(
+            item => item.EvaluationKey == "policy-service-replay", cancellationToken);
+        persistedServiceEvaluation.BundleJson = "{";
+        await context.SaveChangesAsync(cancellationToken);
+        await Assert.ThrowsAsync<PolicyDependencyUnavailableException>(() => evaluationService
+            .EvaluateEnterprisePurchaseRequestAsync(factRequest, "policy-service-replay", cancellationToken));
+        Assert.Equal(1, provider.Calls);
 
         await service.RetireAsync(
             activation.Id,
