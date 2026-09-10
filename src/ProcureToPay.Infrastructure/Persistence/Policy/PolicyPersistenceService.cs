@@ -841,9 +841,9 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         json["evaluationSequence"] = sequence;
         json["operation"] = caller.Operation;
         json["subjectType"] = caller.SubjectType;
-        json["factsDigest"] = caller.FactsDigest;
-        json["manifestDigest"] = caller.ManifestDigest;
-        json["inputCanonicalJson"] = caller.InputCanonicalJson;
+        json["factsDigest"] = caller.FactsDigest ?? bundle.FactsDigest;
+        json["manifestDigest"] = caller.ManifestDigest ?? bundle.ManifestDigest;
+        json["inputCanonicalJson"] = caller.InputCanonicalJson ?? bundle.InputCanonicalJson;
         json["requestSnapshotJson"] = bundle.RequestSnapshotJson;
         return json.ToJsonString(JsonOptions);
     }
