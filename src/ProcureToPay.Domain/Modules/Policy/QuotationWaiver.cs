@@ -35,6 +35,32 @@ public sealed record QuotationWaiverEvidence(
     DateTimeOffset ExpiresAt,
     string VerifierReference);
 
+public sealed record PolicyExceptionVerificationInput(
+    string VerifierId,
+    string VerifierContractVersion,
+    string WorkflowDecisionId,
+    int WorkflowDecisionVersion,
+    string WorkflowDecisionDigest,
+    Guid BaseBundleId,
+    string BaseResultDigest,
+    Guid PolicyVersionId,
+    string PolicyContentDigest,
+    PolicySubjectReference Subject,
+    string ManifestDigest,
+    string TargetRequirementKey,
+    int From,
+    int To,
+    Guid RequesterId,
+    DateTimeOffset VerifiedAtUtc,
+    string Nonce,
+    Guid ApproverId,
+    string AuthorityEvidenceDigest,
+    bool SegregationSatisfied,
+    string Scope,
+    DateTimeOffset ValidFrom,
+    DateTimeOffset ValidTo,
+    string Binding);
+
 public interface IQuotationWaiverVerifier
 {
     Task<QuotationWaiverEvidence?> VerifyAsync(

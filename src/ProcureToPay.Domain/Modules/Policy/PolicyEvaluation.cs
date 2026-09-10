@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using ProcureToPay.Domain.SharedKernel;
 
@@ -138,19 +139,65 @@ public static class PolicyCanonicalizer
             ["canonicalization_version"] = Version,
             ["policy_schema_version"] = "policy-schema/v1",
             ["organization_id"] = policy.OrganizationId.ToString("D"),
-            ["scopes"] = policy.Scopes.OrderBy(scope => scope).Select(CanonicalName).ToArray(),
-            ["rules"] = policy.Rules
-                .OrderBy(rule => rule.Scope)
-                .ThenBy(rule => rule.Code, StringComparer.Ordinal)
-                .ThenBy(rule => rule.Revision)
-                .Select(CanonicalizeRule)
-                .ToArray()
+            ["scopes"] = policy.Scopes
+                .Select(CanonicalName)
+                .OrderBy(scope => scope, StringComparer.Ordinal)
+                .ToArray(),
+            ["rules"] = SortCanonical(policy.Rules.Select(CanonicalizeRule))
         };
 
         return JsonSerializer.Serialize(root, CanonicalJsonOptions);
     }
 
     public static string ComputePolicyDigest(PolicySetVersion policy) => Hash(CanonicalizePolicy(policy));
+
+    public static string CanonicalizeExceptionVerification(PolicyExceptionVerificationInput input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        var root = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["authority_evidence"] = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["approver_id"] = CanonicalGuid(input.ApproverId),
+                ["evidence_digest"] = input.AuthorityEvidenceDigest
+            },
+            ["bindings"] = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["base_bundle_id"] = CanonicalGuid(input.BaseBundleId),
+                ["base_result_digest"] = input.BaseResultDigest,
+                ["binding"] = input.Binding,
+                ["manifest_digest"] = input.ManifestDigest,
+                ["policy_content_digest"] = input.PolicyContentDigest,
+                ["policy_version_id"] = CanonicalGuid(input.PolicyVersionId),
+                ["requester_id"] = CanonicalGuid(input.RequesterId),
+                ["subject_ref"] = Subject(input.Subject),
+                ["target_requirement_key"] = input.TargetRequirementKey,
+                ["from"] = input.From,
+                ["to"] = input.To
+            },
+            ["canonicalization_version"] = Version,
+            ["nonce"] = input.Nonce,
+            ["scope"] = CanonicalString(input.Scope),
+            ["segregation_satisfied"] = input.SegregationSatisfied,
+            ["validity"] = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["valid_from"] = FormatUtc(input.ValidFrom),
+                ["valid_to"] = FormatUtc(input.ValidTo)
+            },
+            ["verifier_contract_version"] = input.VerifierContractVersion,
+            ["verifier_id"] = input.VerifierId,
+            ["workflow_decision"] = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["digest"] = input.WorkflowDecisionDigest,
+                ["id"] = input.WorkflowDecisionId,
+                ["version"] = input.WorkflowDecisionVersion
+            }
+        };
+        return SerializeCanonical(root);
+    }
+
+    public static string ComputeExceptionVerificationDigest(PolicyExceptionVerificationInput input) =>
+        Hash(CanonicalizeExceptionVerification(input));
 
     public static PolicyEvaluationBundle WithEvaluationMetadata(
         PolicyEvaluationBundle bundle,
@@ -180,8 +227,7 @@ public static class PolicyCanonicalizer
         {
             ["activation_id"] = activationId?.ToString("D"),
             ["canonicalization_version"] = Version,
-            ["evaluated_at_utc"] = evaluatedAt.ToUniversalTime().ToString(
-                "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture),
+            ["evaluated_at_utc"] = FormatUtc(evaluatedAt),
             ["exception_verification_digests"] = (exceptionVerificationDigests ?? []).Order(StringComparer.Ordinal).ToArray(),
             ["fact_manifest_digest"] = factsDigest,
             ["operation"] = operation,
@@ -224,24 +270,18 @@ public static class PolicyCanonicalizer
         PolicyResult combinedResult,
         object? diff)
     {
-        var canonicalControls = controls
-            .OrderBy(control => control.RequirementKey, StringComparer.Ordinal)
-            .ThenBy(control => control.Type)
-            .ThenBy(control => control.SubjectIds.Order().FirstOrDefault())
-            .Select(CanonicalizeControl)
-            .ToArray();
-        var canonicalScopes = scopes
-            .OrderBy(scope => scope.Scope)
-            .ThenBy(scope => scope.SubjectIds.Order().FirstOrDefault())
-            .Select(scope => new SortedDictionary<string, object?>(StringComparer.Ordinal)
-            {
-                ["controls"] = scope.Controls.OrderBy(control => control.RequirementKey, StringComparer.Ordinal)
-                    .ThenBy(control => control.Type).Select(CanonicalizeControl).ToArray(),
-                ["matched_rules"] = scope.MatchedRuleCodes.Order(StringComparer.Ordinal).ToArray(),
-                ["result"] = CanonicalName(scope.Result),
-                ["scope"] = CanonicalName(scope.Scope),
-                ["subjects"] = scope.SubjectIds.Order().Select(id => id.ToString("D")).ToArray()
-            }).ToArray();
+        var canonicalControls = SortCanonical(controls.Select(CanonicalizeControl));
+        var canonicalScopes = SortCanonical(scopes.Select(scope => new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["controls"] = SortCanonical(scope.Controls.Select(CanonicalizeControl)),
+            ["matched_rules"] = scope.MatchedRuleCodes.Order(StringComparer.Ordinal).ToArray(),
+            ["result"] = CanonicalName(scope.Result),
+            ["scope"] = CanonicalName(scope.Scope),
+            ["subjects"] = scope.SubjectIds
+                .Select(CanonicalGuid)
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToArray()
+        }));
         return JsonSerializer.Serialize(new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
             ["canonicalization_version"] = Version,
@@ -260,12 +300,18 @@ public static class PolicyCanonicalizer
             ["minimum_quotations"] = control.MinimumQuotations,
             ["minimum_allowed_quotations"] = control.MinimumAllowedQuotations,
             ["origin_rules"] = control.OriginRuleCodes.Order(StringComparer.Ordinal).ToArray(),
-            ["origin_scopes"] = control.OriginScopes.Order().Select(CanonicalName).ToArray(),
+            ["origin_scopes"] = control.OriginScopes
+                .Select(CanonicalName)
+                .OrderBy(scope => scope, StringComparer.Ordinal)
+                .ToArray(),
             ["supporting_document_types"] = control.SupportingDocumentTypes.Order(StringComparer.Ordinal).ToArray(),
-            ["reason"] = control.Reason,
-            ["phase"] = control.Phase,
-            ["requirement_key"] = control.RequirementKey,
-            ["subjects"] = control.SubjectIds.Order().Select(id => id.ToString("D")).ToArray(),
+            ["reason"] = CanonicalString(control.Reason),
+            ["phase"] = CanonicalString(control.Phase),
+            ["requirement_key"] = CanonicalString(control.RequirementKey),
+            ["subjects"] = control.SubjectIds
+                .Select(CanonicalGuid)
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToArray(),
             ["type"] = CanonicalName(control.Type)
         };
 
@@ -296,8 +342,7 @@ public static class PolicyCanonicalizer
         var root = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
             ["canonicalization_version"] = Version,
-            ["evaluated_at_utc"] = evaluatedAt.ToUniversalTime().ToString(
-                "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture),
+            ["evaluated_at_utc"] = FormatUtc(evaluatedAt),
             ["subject"] = Subject(request.Subject),
             ["organization_id"] = request.OrganizationId.ToString("D"),
             ["legal_entity_id"] = request.LegalEntityId.ToString("D"),
@@ -316,29 +361,55 @@ public static class PolicyCanonicalizer
         return JsonSerializer.Serialize(root, CanonicalJsonOptions);
     }
 
+    public static string SerializeCanonical(object value) =>
+        JsonSerializer.Serialize(value, CanonicalJsonOptions);
+
     public static string Hash(string canonicalJson) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalJson))).ToLowerInvariant();
+
+    private static T[] SortCanonical<T>(IEnumerable<T> values) => values
+        .OrderBy(value => JsonSerializer.Serialize(value, CanonicalJsonOptions), CanonicalByteComparer)
+        .ToArray();
+
+    public static int CompareCanonical(string left, string right) =>
+        CompareBytes(Encoding.UTF8.GetBytes(left), Encoding.UTF8.GetBytes(right));
+
+    private static int CompareBytes(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
+    {
+        var length = Math.Min(left.Length, right.Length);
+        for (var index = 0; index < length; index++)
+        {
+            var comparison = left[index].CompareTo(right[index]);
+            if (comparison != 0)
+            {
+                return comparison;
+            }
+        }
+
+        return left.Length.CompareTo(right.Length);
+    }
+
+    private static readonly IComparer<string> CanonicalByteComparer = Comparer<string>.Create(CompareCanonical);
+
+    private static string CanonicalString(string value) => value.Normalize(NormalizationForm.FormC);
+
+    private static string FormatUtc(DateTimeOffset value) => value.ToUniversalTime().ToString(
+        "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture);
+
+    private static string CanonicalGuid(Guid value) => value.ToString("D");
 
     private static SortedDictionary<string, object?> CanonicalizeRule(PolicyRule rule) =>
         new(StringComparer.Ordinal)
         {
             ["code"] = rule.Code,
-            ["effects"] = rule.Effects
-                .OrderBy(effect => effect.RequirementKey, StringComparer.Ordinal)
-                .ThenBy(effect => effect.Type)
-                .Select(CanonicalizeEffect)
-                .ToArray(),
+            ["effects"] = SortCanonical(rule.Effects.Select(CanonicalizeEffect)),
             ["fallback"] = rule.IsFallback,
-            ["predicates"] = rule.Predicates
-                .OrderBy(predicate => predicate.FactKey, StringComparer.Ordinal)
-                .ThenBy(predicate => predicate.Operator)
-                .ThenBy(predicate => predicate.Value.Value, StringComparer.Ordinal)
-                .Select(predicate => new SortedDictionary<string, object?>(StringComparer.Ordinal)
-                {
-                    ["fact_key"] = predicate.FactKey,
-                    ["operator"] = CanonicalOperator(predicate.Operator),
-                    ["value"] = CanonicalizeValue(predicate.Value)
-                }).ToArray(),
+            ["predicates"] = SortCanonical(rule.Predicates.Select(predicate => new SortedDictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["fact_key"] = predicate.FactKey,
+                ["operator"] = CanonicalOperator(predicate.Operator),
+                ["value"] = CanonicalizeValue(predicate.Value)
+            })),
             ["revision"] = rule.Revision,
             ["scope"] = CanonicalName(rule.Scope)
         };
@@ -350,8 +421,8 @@ public static class PolicyCanonicalizer
             ["documents"] = effect.SupportingDocumentTypes?.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
             ["exception_floor"] = effect.MinimumExceptionQuotations,
             ["minimum_quotations"] = effect.MinimumQuotations,
-            ["reason"] = effect.Reason,
-            ["requirement_key"] = effect.RequirementKey,
+            ["reason"] = effect.Reason is null ? null : CanonicalString(effect.Reason),
+            ["requirement_key"] = CanonicalString(effect.RequirementKey),
             ["type"] = CanonicalName(effect.Type)
         };
 
@@ -408,7 +479,7 @@ public static class PolicyCanonicalizer
                 .ToDictionary(pair => pair.Key, pair => (object?)CanonicalizeValue(pair.Value), StringComparer.Ordinal),
             StringComparer.Ordinal);
 
-    private static object CanonicalizeValue(PolicyValue value) =>
+    internal static object CanonicalizeValue(PolicyValue value) =>
         new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
             ["kind"] = value.Kind.ToString().ToUpperInvariant(),
@@ -421,10 +492,26 @@ public static class PolicyCanonicalizer
             ["value"] = value.Value
         };
 
+    private sealed class NfcStringConverter : JsonConverter<string>
+    {
+        public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            reader.GetString();
+
+        public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(CanonicalString(value));
+
+        public override void WriteAsPropertyName(Utf8JsonWriter writer, string value, JsonSerializerOptions options) =>
+            writer.WritePropertyName(CanonicalString(value));
+
+        public override string ReadAsPropertyName(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            reader.GetString() ?? string.Empty;
+    }
+
     private static readonly JsonSerializerOptions CanonicalJsonOptions = new()
     {
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        WriteIndented = false
+        WriteIndented = false,
+        Converters = { new NfcStringConverter() }
     };
 }
 

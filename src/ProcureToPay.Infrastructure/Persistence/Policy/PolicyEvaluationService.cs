@@ -423,18 +423,25 @@ public sealed class PolicyEvaluationService(
                 PolicyCanonicalizer.CanonicalizeRequest(facts.Request, evaluatedAt)));
     }
 
-    private static string ComputeManifestDigest(PolicyCompletenessManifest manifest)
+    public static string ComputeManifestDigest(PolicyCompletenessManifest manifest)
     {
         var preimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
             ["canonicalization_version"] = PolicyCanonicalizer.Version,
             ["line_count"] = manifest.Lines.Count,
-            ["lines"] = manifest.Lines.OrderBy(line => line.Id).ThenBy(line => line.Version)
-                .Select(line => new { id = line.Id.ToString("D"), version = line.Version }).ToArray(),
+            ["lines"] = manifest.Lines
+                .Select(line => new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["id"] = line.Id.ToString("D"),
+                    ["version"] = line.Version
+                })
+                .OrderBy(line => PolicyCanonicalizer.SerializeCanonical(line),
+                    Comparer<string>.Create(PolicyCanonicalizer.CompareCanonical))
+                .ToArray(),
             ["request_id"] = manifest.RequestId.ToString("D"),
             ["request_version"] = manifest.RequestVersion
         };
-        return PolicyCanonicalizer.Hash(JsonSerializer.Serialize(preimage));
+        return PolicyCanonicalizer.Hash(PolicyCanonicalizer.SerializeCanonical(preimage));
     }
 
     private static object CanonicalizeFactPayload(PolicyRequestInput request)
@@ -482,30 +489,42 @@ public sealed class PolicyEvaluationService(
             },
             new PolicySubjectReference(factRequest.SubjectId, factRequest.SubjectVersion));
 
-    private static string ComputeFactsDigest(PolicyFactBundle bundle)
+    public static string ComputeFactsDigest(PolicyFactBundle bundle)
     {
         var preimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
             ["canonicalization_version"] = PolicyCanonicalizer.Version,
-            ["completeness_manifest"] = new
+            ["completeness_manifest"] = new SortedDictionary<string, object?>(StringComparer.Ordinal)
             {
-                request_id = bundle.Manifest.RequestId.ToString("D"),
-                request_version = bundle.Manifest.RequestVersion,
-                lines = bundle.Manifest.Lines.OrderBy(line => line.Id).ThenBy(line => line.Version)
-                    .Select(line => new { id = line.Id.ToString("D"), version = line.Version }).ToArray(),
-                digest = bundle.Manifest.Digest
+                ["digest"] = bundle.Manifest.Digest,
+                ["lines"] = bundle.Manifest.Lines
+                    .Select(line => new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["id"] = line.Id.ToString("D"),
+                        ["version"] = line.Version
+                    })
+                    .OrderBy(line => PolicyCanonicalizer.SerializeCanonical(line),
+                        Comparer<string>.Create(PolicyCanonicalizer.CompareCanonical))
+                    .ToArray(),
+                ["request_id"] = bundle.Manifest.RequestId.ToString("D"),
+                ["request_version"] = bundle.Manifest.RequestVersion
             },
             ["facts"] = CanonicalizeFactPayload(bundle.Request),
-            ["provenance"] = bundle.Provenance.OrderBy(pair => pair.Key, StringComparer.Ordinal)
-                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
+            ["provenance"] = new SortedDictionary<string, object?>(
+                bundle.Provenance.ToDictionary(pair => pair.Key, pair => (object?)pair.Value, StringComparer.Ordinal),
+                StringComparer.Ordinal),
             ["provider_contract_version"] = bundle.ContractVersion,
             ["provider_id"] = bundle.ProviderId,
-            ["subject_ref"] = new { id = bundle.Request.Subject.Id.ToString("D"), version = bundle.Request.Subject.Version },
+            ["subject_ref"] = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["id"] = bundle.Request.Subject.Id.ToString("D"),
+                ["version"] = bundle.Request.Subject.Version
+            },
             ["organization_id"] = bundle.Request.OrganizationId.ToString("D"),
             ["legal_entity_id"] = bundle.Request.LegalEntityId.ToString("D"),
             ["base_currency"] = bundle.Request.BaseCurrency
         };
-        return PolicyCanonicalizer.Hash(JsonSerializer.Serialize(preimage));
+        return PolicyCanonicalizer.Hash(PolicyCanonicalizer.SerializeCanonical(preimage));
     }
 
     private async Task ValidateReferenceCatalogsAsync(

@@ -137,7 +137,17 @@ public sealed record PolicyValue
             throw new DomainValidationException("Policy value sets must contain one non-empty value kind.");
         }
 
-        var members = values.OrderBy(value => value.Value, StringComparer.Ordinal).ToArray();
+        var members = values
+            .Select(value => (value, key: PolicyCanonicalizer.SerializeCanonical(PolicyCanonicalizer.CanonicalizeValue(value))))
+            .GroupBy(item => item.key, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .OrderBy(item => item.key, Comparer<string>.Create(PolicyCanonicalizer.CompareCanonical))
+            .Select(item => item.value)
+            .ToArray();
+        if (members.Length != values.Length)
+        {
+            throw new DomainConflictException("Policy value sets cannot contain duplicates.");
+        }
         return new PolicyValue(
             PolicyValueKind.Set,
             string.Join("|", members.Select(value => value.Value)),

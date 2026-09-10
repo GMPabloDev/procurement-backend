@@ -208,50 +208,12 @@ public sealed class PolicyPersistenceServiceTests
             var manifest = new PolicyCompletenessManifest(
                 request.Subject.Id, request.Subject.Version,
                 request.Lines.Select(line => line.Subject).ToArray(), string.Empty);
-            var manifestPreimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+            manifest = manifest with { Digest = PolicyEvaluationService.ComputeManifestDigest(manifest) };
+            var facts = new PolicyFactBundle(request, manifest, ProviderId, ContractVersion, string.Empty)
             {
-                ["canonicalization_version"] = PolicyCanonicalizer.Version,
-                ["line_count"] = manifest.Lines.Count,
-                ["lines"] = manifest.Lines.OrderBy(line => line.Id).ThenBy(line => line.Version)
-                    .Select(line => new { id = line.Id.ToString("D"), version = line.Version }).ToArray(),
-                ["request_id"] = manifest.RequestId.ToString("D"),
-                ["request_version"] = manifest.RequestVersion
+                Provenance = new Dictionary<string, string>(StringComparer.Ordinal)
             };
-            manifest = manifest with { Digest = PolicyCanonicalizer.Hash(JsonSerializer.Serialize(manifestPreimage)) };
-            using var requestDocument = JsonDocument.Parse(PolicyCanonicalizer.CanonicalizeRequest(
-                request, DateTimeOffset.UnixEpoch));
-            var factPayload = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal);
-            foreach (var property in requestDocument.RootElement.EnumerateObject())
-            {
-                if (!string.Equals(property.Name, "evaluated_at_utc", StringComparison.Ordinal))
-                {
-                    factPayload[string.Equals(property.Name, "subject", StringComparison.Ordinal)
-                        ? "subject_ref" : property.Name] = property.Value.Clone();
-                }
-            }
-            var factsPreimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
-            {
-                ["canonicalization_version"] = PolicyCanonicalizer.Version,
-                ["completeness_manifest"] = new
-                {
-                    request_id = manifest.RequestId.ToString("D"),
-                    request_version = manifest.RequestVersion,
-                    lines = manifest.Lines.OrderBy(line => line.Id).ThenBy(line => line.Version)
-                        .Select(line => new { id = line.Id.ToString("D"), version = line.Version }).ToArray(),
-                    digest = manifest.Digest
-                },
-                ["facts"] = factPayload,
-                ["provenance"] = new Dictionary<string, string>(),
-                ["provider_contract_version"] = ContractVersion,
-                ["provider_id"] = ProviderId,
-                ["subject_ref"] = new { id = request.Subject.Id.ToString("D"), version = request.Subject.Version },
-                ["organization_id"] = request.OrganizationId.ToString("D"),
-                ["legal_entity_id"] = request.LegalEntityId.ToString("D"),
-                ["base_currency"] = request.BaseCurrency
-            };
-            var facts = new PolicyFactBundle(
-                request, manifest, ProviderId, ContractVersion,
-                PolicyCanonicalizer.Hash(JsonSerializer.Serialize(factsPreimage)));
+            facts = facts with { FactsDigest = PolicyEvaluationService.ComputeFactsDigest(facts) };
             return Task.FromResult(facts);
         }
     }

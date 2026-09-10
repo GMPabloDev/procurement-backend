@@ -676,8 +676,35 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         {
             evaluationKey = evaluationKey[..128];
         }
+        var verifiedAt = DateTimeOffset.UtcNow;
+        var exceptionVerification = new PolicyExceptionVerificationInput(
+            "APPROVAL_WORKFLOW",
+            "policy-exception-verifier/v1",
+            evidence.VerifierReference,
+            1,
+            evidence.EvidenceDigest,
+            baseRecord.Id,
+            baseRecord.ResultDigest,
+            baseRecord.PolicySetVersionId,
+            reducedBundle.PolicyContentDigest,
+            reducedBundle.Subject,
+            reducedBundle.ManifestDigest ?? string.Empty,
+            request.TargetRequirementKey!,
+            request.From,
+            request.To,
+            request.OriginatorId,
+            verifiedAt,
+            request.Nonce,
+            request.ApproverId,
+            evidence.EvidenceDigest,
+            true,
+            "REQUEST",
+            verifiedAt,
+            evidence.ExpiresAt,
+            request.Binding);
+        var exceptionVerificationDigest = PolicyCanonicalizer.ComputeExceptionVerificationDigest(exceptionVerification);
         var inputCanonical = PolicyCanonicalizer.CanonicalizeEvaluationInput(
-            DateTimeOffset.UtcNow,
+            verifiedAt,
             "PURCHASE_REQUEST_WAIVER",
             reducedBundle.Subject,
             reducedBundle.PolicyContentDigest,
@@ -685,7 +712,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             reducedBundle.FactsDigest,
             baseRecord.Id,
             baseRecord.ResultDigest,
-            [evidence.EvidenceDigest]);
+            [exceptionVerificationDigest]);
         var inputDigest = PolicyCanonicalizer.Hash(inputCanonical);
         var resultDigest = PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
             inputDigest,
