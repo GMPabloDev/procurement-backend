@@ -44,7 +44,9 @@ public sealed class PolicyModelTests
         Assert.Equal(2, entity.Version);
         Assert.Equal(TypedAnswerValueKind.Boolean, answer.ValueKind);
         Assert.Throws<DomainValidationException>(() => new VersionedCodeRef("CAT", "CODE", 0, digest));
+        // pi-lens-ignore: lsp:CS0246
         Assert.Throws<DomainValidationException>(() => new TypedAnswerRef(
+            // pi-lens-ignore: lsp:CS0103
             "DATA_RISK", 1, TypedAnswerValueKind.Boolean, "maybe"));
     }
 

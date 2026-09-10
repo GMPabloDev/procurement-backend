@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
-> **Actualizado:** 2026-09-10 02:40 -05
-> **HEAD de implementación verificado:** `bb582bf`
+> **Actualizado:** 2026-09-10 02:50 -05
+> **HEAD de implementación verificado:** `811cdf5`
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -111,6 +111,13 @@
 - Tests/checks: build de solución 0/0; las suites anteriores permanecen en 51/51; no se expone contenido de políticas ni datos personales en las etiquetas.
 - Resultado: se cubre la instrumentación mínima del flujo principal; faltan exportador OpenTelemetry, dashboards/alertas y validación operacional del despliegue.
 - HEAD de implementación: `bb582bf`.
+
+### CP-10 — 2026-09-10 02:50 - Referencias versionadas tipadas
+
+- Cambios: se añadieron `VersionedCodeRef`, `VersionedEntityRef` y `TypedAnswerRef` con validación de versión, digest SHA-256, identidad estable y tipo de respuesta. Esto establece el contrato de dominio para facts versionados sin convertirlos en strings libres.
+- Tests/checks: UnitTests 40/40; build de solución 0/0.
+- Resultado: cerrado el modelo explícito de referencias; falta proyectarlo en los payloads reales de providers/catalogs, canonicalización de estos campos y attestation completa de sourcing.
+- HEAD de implementación: `811cdf5`.
 
 ## Evidencia de aceptación
 
