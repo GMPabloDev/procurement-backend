@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence;
@@ -38,7 +39,22 @@ public sealed class PolicyPersistenceServiceTests
             FiscalYearStartMonth = 1,
             Version = 1
         });
+        var departmentId = Guid.NewGuid();
+        context.Departments.Add(new DepartmentRecord
+        {
+            Id = departmentId,
+            OrganizationId = organizationId,
+            Code = "IT",
+            Name = "Information Technology",
+            Status = (int)EntityStatus.Active,
+            Version = 1
+        });
         await context.SaveChangesAsync(cancellationToken);
+        var departmentCatalog = new DatabasePolicyReferenceCatalog(context, "DEPARTMENT");
+        Assert.True(await departmentCatalog.ExistsAsync(
+            new PolicyReferenceLookup("DEPARTMENT", departmentId, 1, string.Empty), cancellationToken));
+        Assert.False(await departmentCatalog.ExistsAsync(
+            new PolicyReferenceLookup("DEPARTMENT", departmentId, 2, string.Empty), cancellationToken));
 
         var policy = new PolicySetVersion(Guid.NewGuid(), organizationId, 1, [PolicyScope.Line]);
         policy.AddRule(new PolicyRule(

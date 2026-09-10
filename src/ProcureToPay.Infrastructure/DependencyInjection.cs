@@ -60,6 +60,7 @@ public static class DependencyInjection
         }
         else if (Uri.TryCreate(catalogUrl, UriKind.Absolute, out var catalogBaseAddress))
         {
+            // pi-lens-ignore: lsp:CS1061
             services.AddHttpClient<HttpPolicyReferenceCatalog>(client =>
             {
                 client.BaseAddress = catalogBaseAddress;
