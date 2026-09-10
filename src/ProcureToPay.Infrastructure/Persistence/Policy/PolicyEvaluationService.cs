@@ -529,13 +529,28 @@ public sealed class PolicyEvaluationService(
         }
         var current = await persistenceService.FindEvaluationAsync(
             sourcing.CurrentRequestEvaluation.Id, cancellationToken);
-        if (current is null || current.SubjectId != sourcing.Request.Subject.Id ||
+        var latest = await persistenceService.FindLatestEvaluationAsync(
+            sourcing.Request.OrganizationId, sourcing.Request.Subject.Id, sourcing.Request.Subject.Version,
+            cancellationToken);
+        if (current is null || latest is null || latest.Id != current.Id ||
+            current.SubjectId != sourcing.Request.Subject.Id ||
             current.SubjectVersion != sourcing.Request.Subject.Version ||
+            current.EvaluationSequence != sourcing.CurrentRequestEvaluation.EvaluationSequence ||
             !string.Equals(current.InputDigest, sourcing.CurrentRequestEvaluation.InputDigest, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(current.PolicyContentDigest, sourcing.CurrentRequestEvaluation.PolicyContentDigest,
                 StringComparison.OrdinalIgnoreCase))
         {
             throw new DomainConflictException("The request evaluation is not current or persisted.");
+        }
+        var persistedCurrent = ValidatePersistedEvaluation(current);
+        if (!string.Equals(persistedCurrent.ResultDigest, sourcing.CurrentRequestEvaluation.ResultDigest,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(persistedCurrent.FactsDigest, sourcing.CurrentRequestEvaluation.FactsDigest,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(persistedCurrent.ManifestDigest, sourcing.CurrentRequestEvaluation.ManifestDigest,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainConflictException("The request evaluation evidence is not current.");
         }
         var bundle = PolicyEvaluator.EvaluateSourcing(policy, sourcing, evaluationKey, evaluatedAt);
         var persisted = await persistenceService.AppendEvaluationAsync(

@@ -416,6 +416,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             WorkloadIssuer = caller.WorkloadIssuer,
             WorkloadClientId = caller.WorkloadClientId,
             Operation = caller.Operation,
+            EvaluationSequence = nextSequence + 1,
             SubjectId = bundle.Subject.Id,
             SubjectVersion = bundle.Subject.Version,
             PolicySetVersionId = caller.PolicySetVersionId,
@@ -470,6 +471,18 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         CancellationToken cancellationToken = default) =>
         dbContext.PolicyEvaluationBundles.AsNoTracking()
             .SingleOrDefaultAsync(record => record.Id == evaluationId, cancellationToken);
+
+    public Task<PolicyEvaluationBundleRecord?> FindLatestEvaluationAsync(
+        Guid organizationId,
+        Guid subjectId,
+        int subjectVersion,
+        CancellationToken cancellationToken = default) =>
+        dbContext.PolicyEvaluationBundles.AsNoTracking()
+            .Where(record => record.OrganizationId == organizationId &&
+                             record.SubjectId == subjectId &&
+                             record.SubjectVersion == subjectVersion)
+            .OrderByDescending(record => record.EvaluationSequence)
+            .SingleOrDefaultAsync(cancellationToken);
 
     public Task<IReadOnlyList<PolicyEvaluationBundleRecord>> FindByWorkloadEvaluationKeyAsync(
         string issuer,

@@ -257,6 +257,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.Property(record => record.WorkloadIssuer).HasMaxLength(320).IsRequired();
         entity.Property(record => record.WorkloadClientId).HasMaxLength(128).IsRequired();
         entity.Property(record => record.Operation).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.EvaluationSequence).IsRequired();
         entity.Property(record => record.PolicyContentDigest).HasMaxLength(64).IsRequired();
         entity.Property(record => record.InputDigest).HasMaxLength(64).IsRequired();
         entity.Property(record => record.Result).HasMaxLength(32).IsRequired();

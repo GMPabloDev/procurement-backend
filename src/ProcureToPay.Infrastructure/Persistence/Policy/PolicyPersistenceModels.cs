@@ -55,6 +55,7 @@ public sealed class PolicyEvaluationBundleRecord
     public string WorkloadIssuer { get; set; } = null!;
     public string WorkloadClientId { get; set; } = null!;
     public string Operation { get; set; } = null!;
+    public long EvaluationSequence { get; set; }
     public Guid SubjectId { get; set; }
     public int SubjectVersion { get; set; }
     public Guid PolicySetVersionId { get; set; }
