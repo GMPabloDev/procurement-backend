@@ -194,7 +194,8 @@ public sealed class PolicyEvaluationService(
             !string.Equals(replay.ResultDigest, existing.ResultDigest, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(replay.InputDigest, recomputedInputDigest, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(replay.ResultDigest, recomputedResultDigest, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(replay.ManifestDigest, recomputedManifestDigest, StringComparison.OrdinalIgnoreCase))
+            (replay.ManifestCanonicalJson is not null &&
+             !string.Equals(replay.ManifestDigest, recomputedManifestDigest, StringComparison.OrdinalIgnoreCase)))
         {
             throw new PolicyDependencyUnavailableException("Persisted policy evaluation integrity check failed.");
         }
