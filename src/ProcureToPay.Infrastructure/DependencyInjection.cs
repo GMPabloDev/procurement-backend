@@ -56,7 +56,12 @@ public static class DependencyInjection
         var catalogUrl = configuration["Policy:ReferenceCatalog:BaseUrl"];
         if (string.IsNullOrWhiteSpace(catalogUrl))
         {
-            services.AddScoped<IPolicyReferenceCatalog, DefaultDenyPolicyReferenceCatalog>();
+            services.AddScoped<IPolicyReferenceCatalog>(provider =>
+                new DatabasePolicyReferenceCatalog(
+                    provider.GetRequiredService<ProcureToPayDbContext>(), "DEPARTMENT"));
+            services.AddScoped<IPolicyReferenceCatalog>(provider =>
+                new DatabasePolicyReferenceCatalog(
+                    provider.GetRequiredService<ProcureToPayDbContext>(), "LEGAL_ENTITY"));
         }
         else if (Uri.TryCreate(catalogUrl, UriKind.Absolute, out var catalogBaseAddress))
         {
