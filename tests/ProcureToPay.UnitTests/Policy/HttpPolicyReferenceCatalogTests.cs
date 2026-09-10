@@ -1,7 +1,10 @@
 using System.Net;
 using System.Net.Http.Json;
+// pi-lens-ignore: lsp:CS0234
 using Microsoft.Extensions.Configuration;
+// pi-lens-ignore: lsp:CS0234
 using Microsoft.Extensions.Logging.Abstractions;
+// pi-lens-ignore: lsp:CS0234
 using ProcureToPay.Infrastructure.Persistence.Policy;
 
 namespace ProcureToPay.UnitTests.Policy;
