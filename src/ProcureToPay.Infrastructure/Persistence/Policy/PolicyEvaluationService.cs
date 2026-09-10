@@ -212,6 +212,11 @@ public sealed class PolicyEvaluationService(
         {
             throw new DomainForbiddenException("The workload is not allowlisted for policy evaluation.");
         }
+        ValidateEvaluationKey(evaluationKey);
+        if (factRequest.OrganizationId is null)
+        {
+            throw new DomainValidationException("Policy evaluation requires an organization scope.");
+        }
         factRequest = factRequest with { RequestedAtUtc = DateTimeOffset.UtcNow };
 
         if (factRequest.OrganizationId is Guid requestOrganizationId)
@@ -224,16 +229,6 @@ public sealed class PolicyEvaluationService(
                 return ReplayExistingEvaluation(persistedByRequestOrganization, factRequest, evaluationKey, workload);
             }
         }
-        else
-        {
-            var existingCandidates = await persistenceService.FindByWorkloadEvaluationKeyAsync(
-                workload.Issuer, workload.ClientId, factRequest.Operation, evaluationKey, cancellationToken);
-            if (existingCandidates.Count == 1)
-            {
-                return ReplayExistingEvaluation(existingCandidates[0], factRequest, evaluationKey, workload);
-            }
-        }
-
         var provider = factProviderRegistry.Resolve(factRequest.SubjectType, factRequest.Operation);
         PolicyEvaluationReservationRecord? reservation = null;
         if (factRequest.OrganizationId is Guid organizationId)
@@ -320,6 +315,11 @@ public sealed class PolicyEvaluationService(
         }
 
         var provider = factProviderRegistry.Resolve(factRequest.SubjectType, factRequest.Operation);
+        ValidateEvaluationKey(evaluationKey);
+        if (factRequest.OrganizationId is null)
+        {
+            throw new DomainValidationException("Policy evaluation requires an organization scope.");
+        }
         if (preloadedFacts is null)
         {
             factRequest = factRequest with { RequestedAtUtc = DateTimeOffset.UtcNow };
@@ -419,6 +419,16 @@ public sealed class PolicyEvaluationService(
             }
         }
         return properties;
+    }
+
+    private static void ValidateEvaluationKey(string evaluationKey)
+    {
+        if (string.IsNullOrWhiteSpace(evaluationKey) || evaluationKey.Length > 128 ||
+            !evaluationKey.All(character => character is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or
+                >= '0' and <= '9' or '.' or '_' or ':' or '-'))
+        {
+            throw new DomainValidationException("Evaluation key is invalid.");
+        }
     }
 
     private static string ComputePreProviderFingerprint(

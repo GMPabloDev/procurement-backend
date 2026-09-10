@@ -513,7 +513,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         string idempotencyFingerprint,
         CancellationToken cancellationToken = default)
     {
-        for (var attempt = 0; attempt < 120; attempt++)
+        for (var attempt = 0; attempt < 6000; attempt++)
         {
             var now = DateTimeOffset.UtcNow;
             if (await FindByWorkloadEvaluationKeyAsync(
@@ -548,7 +548,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
                 WorkloadIssuer = issuer, WorkloadClientId = clientId, Operation = operation,
                 EvaluationKey = evaluationKey, SubjectId = subjectId, SubjectVersion = subjectVersion,
                 IdempotencyFingerprint = idempotencyFingerprint, ReservedAt = now,
-                ExpiresAt = now.AddSeconds(30)
+                ExpiresAt = now.AddMinutes(5)
             };
             dbContext.PolicyEvaluationReservations.Add(created);
             try
