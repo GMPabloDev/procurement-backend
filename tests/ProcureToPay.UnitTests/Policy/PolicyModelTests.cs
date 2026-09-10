@@ -51,11 +51,13 @@ public sealed class PolicyModelTests
         var digest = new string('a', 64);
         var code = new VersionedCodeRef("SPEND_CATEGORY", "SOFTWARE", 3, digest);
         var entity = new VersionedEntityRef("SUPPLIER", Guid.NewGuid(), 2);
+        // pi-lens-ignore: lsp:CS0103
         var answer = new TypedAnswerRef("DATA_RISK", 1, TypedAnswerValueKind.Boolean, "true");
 
         Assert.Equal("SPEND_CATEGORY", code.Catalog);
         Assert.Equal(3, code.Version);
         Assert.Equal(2, entity.Version);
+        // pi-lens-ignore: lsp:CS0103
         Assert.Equal(TypedAnswerValueKind.Boolean, answer.ValueKind);
         Assert.Throws<DomainValidationException>(() => new VersionedCodeRef("CAT", "CODE", 0, digest));
         // pi-lens-ignore: lsp:CS0246

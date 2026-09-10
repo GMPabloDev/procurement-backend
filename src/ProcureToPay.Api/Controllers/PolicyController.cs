@@ -153,6 +153,49 @@ public sealed class PolicyController(
             factRequest, request.EvaluationKey, cancellationToken));
     }
 
+    [HttpPost("evaluations/{evaluationId:guid}/quotation-waiver")]
+    public async Task<ActionResult<PolicyEvaluationBundle>> ApplyQuotationWaiver(
+        Guid evaluationId,
+        PolicyQuotationWaiverRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await provisioningService.EnsureProfileAsync(User, cancellationToken);
+        if (actor.Status != (int)UserProfileStatus.Active)
+        {
+            throw new DomainForbiddenException("The local user profile is not active.");
+        }
+        if (request.OriginatorId != actor.Id)
+        {
+            throw new DomainForbiddenException("The waiver originator must be the authenticated user.");
+        }
+        if (!Enum.TryParse<PolicyExceptionType>(request.Type, ignoreCase: false, out var type))
+        {
+            throw new DomainValidationException("The quotation waiver type is invalid.");
+        }
+        var waiver = new QuotationWaiverRequest(
+            type,
+            request.From,
+            request.To,
+            request.Floor,
+            request.PolicyDigest,
+            request.EvaluationDigest,
+            request.Binding,
+            request.Nonce,
+            request.EvidenceDigest,
+            request.ApproverRole,
+            request.AuthorityType,
+            request.ApproverId,
+            request.WorkloadSubjectId,
+            request.OriginatorId)
+        {
+            TargetRequirementKey = request.TargetRequirementKey
+        };
+        return Ok(await policyEvaluationService.ApplyQuotationWaiverAsync(
+            await LoadEvaluationBundleAsync(evaluationId, actor.OrganizationId, cancellationToken),
+            waiver,
+            cancellationToken));
+    }
+
     [HttpGet("evaluations/{evaluationId:guid}")]
     public async Task<ActionResult<PolicyEvaluationResponse>> GetEvaluation(
         Guid evaluationId,
@@ -292,6 +335,18 @@ public sealed class PolicyController(
             root.TryGetProperty("facts", out var facts) ? ParseFacts(facts) : null);
     }
 
+    private async Task<PolicyEvaluationBundle> LoadEvaluationBundleAsync(
+        Guid evaluationId,
+        Guid organizationId,
+        CancellationToken cancellationToken)
+    {
+        var evaluation = await dbContext.PolicyEvaluationBundles
+            .AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == evaluationId && item.OrganizationId == organizationId, cancellationToken)
+            ?? throw new DomainNotFoundException("The policy evaluation is not visible.");
+        return PolicyEvaluationBundleRehydrator.FromJson(evaluation.BundleJson);
+    }
+
     private async Task EnsurePolicyReadAsync(CancellationToken cancellationToken)
     {
         var profile = await provisioningService.EnsureProfileAsync(User, cancellationToken);
@@ -336,6 +391,23 @@ public sealed record PolicyDraftUpdateRequest(
     string ContentDigest,
     string ExpectedContentDigest,
     string Reason);
+
+public sealed record PolicyQuotationWaiverRequest(
+    string Type,
+    int From,
+    int To,
+    int Floor,
+    string PolicyDigest,
+    string EvaluationDigest,
+    string Binding,
+    string Nonce,
+    string EvidenceDigest,
+    string ApproverRole,
+    string AuthorityType,
+    Guid ApproverId,
+    Guid WorkloadSubjectId,
+    Guid OriginatorId,
+    string TargetRequirementKey);
 
 public sealed record PolicyActionRequest(string Reason, DateTimeOffset EffectiveFrom);
 

@@ -639,6 +639,7 @@ public sealed class PolicyEvaluationService(
             throw new DomainConflictException("Sourcing evaluation requires a request evaluation.");
         }
         if (sourcing.Manifest is not null &&
+            // pi-lens-ignore: lsp:CS1061
             !sourcing.Manifest.CoveredLines.ToHashSet().SetEquals(sourcing.CoveredLines))
         {
             throw new DomainConflictException("The sourcing attestation does not cover the requested line set.");

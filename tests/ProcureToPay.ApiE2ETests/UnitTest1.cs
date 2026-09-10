@@ -298,6 +298,28 @@ public sealed class UnitTest1
         Assert.False(simulationBody.GetProperty("persisted").GetBoolean());
         Assert.Equal(0, await context.PolicyEvaluationBundles.CountAsync(cancellationToken));
 
+        using var invalidWaiver = await adminClient.PostAsJsonAsync(
+            $"/api/v1/policies/evaluations/{Guid.NewGuid()}/quotation-waiver",
+            new
+            {
+                type = "UNKNOWN_EXCEPTION",
+                from = 3,
+                to = 2,
+                floor = 1,
+                policyDigest = new string('a', 64),
+                evaluationDigest = new string('b', 64),
+                binding = "binding",
+                nonce = "nonce",
+                evidenceDigest = new string('c', 64),
+                approverRole = "PROCUREMENT_APPROVER",
+                authorityType = "PROCUREMENT",
+                approverId = Guid.NewGuid(),
+                workloadSubjectId = Guid.NewGuid(),
+                originatorId = bootstrapAdmin.Id,
+                targetRequirementKey = "RFQ"
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidWaiver.StatusCode);
+
         using var malformed = await adminClient.PostAsync("/api/v1/departments",
             new StringContent("{", System.Text.Encoding.UTF8, "application/json"), cancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
