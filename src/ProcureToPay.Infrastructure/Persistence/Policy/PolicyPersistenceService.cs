@@ -719,7 +719,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             reducedBundle.ScopeEvaluations,
             reducedBundle.Controls,
             reducedBundle.Result,
-            null));
+            reducedBundle.Diff));
         var reevaluated = reducedBundle with
         {
             Id = Guid.NewGuid(),

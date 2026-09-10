@@ -151,9 +151,24 @@ public static class QuotationWaiverEvaluator
                 targets.Any(targetControl => IsTarget(control, targetControl))
                     ? control with { MinimumQuotations = request.To } : control).ToArray()
         }).ToArray();
+        var diff = targets
+            .Select(target => new PolicyEvaluationDiffEntry(
+                "REMOVED",
+                target.RequirementKey,
+                target.Type,
+                target.SubjectIds,
+                target.MinimumQuotations,
+                request.To))
+            .ToArray();
         var resultDigest = PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
-            bundle.InputDigest, scopes, controls, bundle.Result, null));
-        return bundle with { ScopeEvaluations = scopes, Controls = controls, ResultDigest = resultDigest };
+            bundle.InputDigest, scopes, controls, bundle.Result, diff));
+        return bundle with
+        {
+            ScopeEvaluations = scopes,
+            Controls = controls,
+            Diff = diff,
+            ResultDigest = resultDigest
+        };
     }
 
     public static string ComputeBinding(

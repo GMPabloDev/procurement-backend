@@ -200,6 +200,10 @@ public sealed class PolicyEvaluatorTests
         Assert.All(reduced.ScopeEvaluations, value =>
             Assert.Equal(2, value.Controls.Single().MinimumQuotations));
         Assert.NotEqual(bundle.ResultDigest, reduced.ResultDigest);
+        Assert.Single(reduced.Diff);
+        Assert.Equal("REMOVED", reduced.Diff[0].Change);
+        Assert.Equal(3, reduced.Diff[0].PreviousMinimumQuotations);
+        Assert.Equal(2, reduced.Diff[0].CurrentMinimumQuotations);
         var replay = PolicyEvaluationBundleRehydrator.FromJson(
             JsonSerializer.Serialize(reduced, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
         Assert.Equal(1, replay.Controls.Single().MinimumAllowedQuotations);

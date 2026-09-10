@@ -105,6 +105,14 @@ public sealed record PolicyScopeEvaluation(
     public IReadOnlyList<PolicySubjectReference> SubjectReferences { get; init; } = [];
 }
 
+public sealed record PolicyEvaluationDiffEntry(
+    string Change,
+    string RequirementKey,
+    PolicyEffectType Type,
+    IReadOnlySet<Guid> SubjectIds,
+    int? PreviousMinimumQuotations,
+    int? CurrentMinimumQuotations);
+
 public sealed record PolicyEvaluationBundle(
     Guid Id,
     string EvaluationKey,
@@ -117,6 +125,7 @@ public sealed record PolicyEvaluationBundle(
     PolicyResult Result,
     string ResultDigest)
 {
+    public IReadOnlyList<PolicyEvaluationDiffEntry> Diff { get; init; } = [];
     public long EvaluationSequence { get; init; }
     public string Operation { get; init; } = string.Empty;
     public string? FactsDigest { get; init; }
@@ -287,7 +296,9 @@ public static class PolicyCanonicalizer
             ["canonicalization_version"] = Version,
             ["combined_controls"] = canonicalControls,
             ["combined_result"] = CanonicalName(combinedResult),
-            ["diff"] = diff,
+            ["diff"] = diff is IReadOnlyList<PolicyEvaluationDiffEntry> entries
+                ? CanonicalizeDiff(entries)
+                : diff,
             ["evaluation_input_digest"] = inputDigest,
             ["scope_evaluations"] = canonicalScopes
         }, CanonicalJsonOptions);
@@ -335,6 +346,20 @@ public static class PolicyCanonicalizer
             ["subject_ref"] = Subject(request.Subject)
         };
     }
+
+    public static object CanonicalizeDiff(IReadOnlyList<PolicyEvaluationDiffEntry> diff) =>
+        SortCanonical(diff.Select(entry => new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["change"] = entry.Change,
+            ["current_minimum_quotations"] = entry.CurrentMinimumQuotations,
+            ["previous_minimum_quotations"] = entry.PreviousMinimumQuotations,
+            ["requirement_key"] = entry.RequirementKey,
+            ["subject_ids"] = entry.SubjectIds
+                .Select(CanonicalGuid)
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToArray(),
+            ["type"] = CanonicalName(entry.Type)
+        }));
 
     public static string CanonicalizeSourcingManifest(PolicySourcingInput sourcing) =>
         SerializeCanonical(new SortedDictionary<string, object?>(StringComparer.Ordinal)
