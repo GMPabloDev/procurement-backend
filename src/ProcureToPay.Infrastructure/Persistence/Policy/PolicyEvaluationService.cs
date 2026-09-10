@@ -638,6 +638,11 @@ public sealed class PolicyEvaluationService(
         {
             throw new DomainConflictException("Sourcing evaluation requires a request evaluation.");
         }
+        if (sourcing.Manifest is not null &&
+            !sourcing.Manifest.CoveredLines.ToHashSet().SetEquals(sourcing.CoveredLines))
+        {
+            throw new DomainConflictException("The sourcing attestation does not cover the requested line set.");
+        }
         var current = await persistenceService.FindEvaluationAsync(
             sourcing.CurrentRequestEvaluation.Id, cancellationToken);
         var latest = await persistenceService.FindLatestEvaluationAsync(

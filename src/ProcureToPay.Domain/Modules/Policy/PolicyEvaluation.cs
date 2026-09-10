@@ -76,7 +76,8 @@ public sealed record PolicySourcingInput(
     PolicyRequestInput Request,
     IReadOnlyList<PolicySubjectReference> CoveredLines,
     IReadOnlyDictionary<string, PolicyValue> Facts,
-    PolicyEvaluationBundle? CurrentRequestEvaluation = null);
+    PolicyEvaluationBundle? CurrentRequestEvaluation = null,
+    PolicySourcingManifest? Manifest = null);
 
 public sealed record PolicyGeneratedControl(
     string RequirementKey,
@@ -367,7 +368,15 @@ public static class PolicyCanonicalizer
             ["canonicalization_version"] = Version,
             ["covered_lines"] = SortCanonical(sourcing.CoveredLines.Select(Subject)),
             ["request_subject_ref"] = Subject(sourcing.Request.Subject),
-            ["sourcing_subject_ref"] = Subject(sourcing.Subject)
+            ["sourcing_subject_ref"] = Subject(sourcing.Subject),
+            ["provider_attestation"] = sourcing.Manifest is null ? null :
+                new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["attestation_digest"] = sourcing.Manifest.AttestationDigest,
+                    ["contract_version"] = sourcing.Manifest.ContractVersion,
+                    ["covered_lines"] = SortCanonical(sourcing.Manifest.CoveredLines.Select(Subject)),
+                    ["provider_id"] = sourcing.Manifest.ProviderId
+                }
         });
 
     public static string ComputeSourcingManifestDigest(PolicySourcingInput sourcing) =>

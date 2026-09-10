@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
-> **Actualizado:** 2026-09-10 03:00 -05
-> **HEAD de implementación verificado:** `0666aa1`
+> **Actualizado:** 2026-09-10 03:10 -05
+> **HEAD de implementación verificado:** `working-tree`
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -40,7 +40,7 @@
 | T-03 | Verificada | `dotnet test --project tests/ProcureToPay.IntegrationTests/ProcureToPay.IntegrationTests.csproj --no-restore`: 7 correctos; schema `Policy`, tablas append-only, índices de activación/retiro/idempotencia y rowversion verificados. `dotnet build` de Infrastructure correcto; migración `20260909152512_PolicyEngineFoundation` generada y compilable. | working-tree / Bloque 2 en curso |
 | T-04 | Parcial | `PolicyPersistenceService`: selección serializable de activación, retiro append-only, auditoría administrativa, rowversion e idempotencia por SHA-256; reserva persistente `PolicyEvaluationReservations` con índice scoped y lease de 5 min antes del provider; `EvaluationSequence` persistida con índice único y latest lookup para sourcing; `PolicyPersistenceServiceTests` verifica reserva/liberación, espera concurrente, provider único, replay, conflicto, sucesor atómico y retirement append-only. El diff completo para reevaluaciones distintas sigue pendiente. | `562b9d9` / Bloque 2 en curso |
 | T-05 | Parcial | `PolicyController` expone lectura scoped de versiones/evaluaciones, drafts, publicación+activación atómica, retiro y simulación tipada no persistente sobre snapshot; mutaciones validan pertenencia de draft/activation a `actor.OrganizationId`; `PUT /api/v1/policies/drafts/{draftId}` permite editar drafts con digest esperado y conflicto optimista, probado por E2E; faltan límites/matriz API completa. | `ea63c22` / Bloque 3 en curso |
-| T-06 | Parcial | Se agregó `PolicyFactRequest`, registry exact-one local, timeout 5 s, manifest de líneas, validación de digest de política y `EvaluateEnterprisePurchaseRequest` que carga la política activa desde persistencia mediante parser canónico. Replay: lookup scoped antes del provider, reserva distribuida por lease/índice único, lock local, fingerprint e integridad; sourcing exige workload allowlisted, key válida, snapshot policy canónico publicado y activación vigente, latest `EvaluationSequence`, result/facts/manifest digests y contenido canónico persistido; los digests de manifest/facts ahora comparten serializer canónico y el sourcing liga sus facts y líneas al `InputDigest`, además de rechazar cambio material sin nueva versión; faltan catálogos completos y manifest de attestation exhaustivo. | `353c192` / Bloque 3 en curso |
+| T-06 | Parcial | Se agregó `PolicyFactRequest`, registry exact-one local, timeout 5 s, manifest de líneas, validación de digest de política y `EvaluateEnterprisePurchaseRequest` que carga la política activa desde persistencia mediante parser canónico. Replay: lookup scoped antes del provider, reserva distribuida por lease/índice único, lock local, fingerprint e integridad; sourcing exige workload allowlisted, key válida, snapshot policy canónico publicado y activación vigente, latest `EvaluationSequence`, result/facts/manifest digests y contenido canónico persistido; los digests de manifest/facts ahora comparten serializer canónico y el sourcing liga sus facts y líneas al `InputDigest`, además de rechazar cambio material sin nueva versión; se añadió `PolicySourcingManifest` con attestation y binding exacto de líneas; faltan catálogos completos y providers reales. | working-tree / Bloque 3 en curso |
 | T-07 | Parcial | `QuotationWaiverEvaluator` valida `PolicyDigest/EvaluationDigest`, `from/to/floor` y allowance publicado, binding/nonce/evidence, autoridad y SoD; actualiza controles/scopes por identidad contractual (incluyendo controles lineales derivados de un combinado) y recalcula digest canónico. El servicio rehidrata y valida el bundle persistido antes de aplicar, conserva verification snapshot, calcula el `exception_verification_digest` contractual y apendea una reevaluación con `PreviousBundleId`/input digest de excepción y diff `REMOVED`; el rehidratador/validador conserva ese diff. El registry usa default-deny cuando no hay workflow; falta evidencia integrada de replay/NOT_EXCEPTIONABLE y HTTP. | `1e7700d` / Bloque 3 en curso |
 | T-08 | Parcial | `PolicyConfigurationHealthCheck` y `/health/policy` distinguen ausencia/ambigüedad, corrupción y validan estado publicado + digest SHA-256 del contenido cargado sin exponer reglas; `ApiE2ETests` verifica por HTTP `503` + `POLICY_CONFIGURATION_REQUIRED` y `POLICY_CONFIGURATION_CORRUPT`; evaluación empresarial rechaza payloads de más de 500 líneas con `413`; faltan indisponibilidad HTTP y telemetría completa. | `1e7700d` / Bloque 4 en curso |
 | T-09 | Parcial | Unitarias: 40 correctas; IntegrationTests: 10 correctas con SQL Server/Testcontainers, incluyendo provider de facts, publicación sucesora atómica, default-deny y vectores golden; ApiE2ETests: 2 correctas (incluye health required/corrupt, edición optimista y ciclo draft/publicación/simulación); `dotnet test --solution ProcureToPay.sln --no-restore`: **52/52** correctas en el último commit verificado; solución compila con 0 advertencias/errores; métricas y logs estructurados básicos añadidos para evaluaciones, replays y fallos de provider. Falta ampliar evidencia negativa/golden/API específica de CA-01–CA-12. | `0666aa1` / Bloque 4 |
@@ -118,6 +118,13 @@
 - Tests/checks: `dotnet test --solution ProcureToPay.sln --no-restore`: 52/52; UnitTests 40/40; IntegrationTests 10/10; ApiE2ETests 2/2; build de solución 0/0.
 - Resultado: cerrado el modelo explícito de referencias; falta proyectarlo en los payloads reales de providers/catalogs, canonicalización de estos campos y attestation completa de sourcing.
 - HEAD de implementación: `0666aa1`.
+
+### CP-11 — 2026-09-10 03:10 - Attestation de sourcing
+
+- Cambios: `PolicySourcingManifest` representa provider, versión de contrato, digest de attestation y líneas cubiertas; `PolicySourcingInput` lo incorpora opcionalmente, lo liga al manifest digest canónico y `EvaluateSourcingAsync` rechaza una attestation cuya línea cubierta no coincide exactamente.
+- Tests/checks: UnitTests 41/41; build de solución 0/0.
+- Resultado: el contrato de attestation ya existe y está validado en dominio; falta conectarlo con un provider real, exigirlo en el flujo empresarial final y persistir/validar su preimage completo.
+- HEAD de implementación: pendiente de commit.
 
 ## Evidencia de aceptación
 

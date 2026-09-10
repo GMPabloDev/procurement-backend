@@ -7,6 +7,20 @@ namespace ProcureToPay.UnitTests.Policy;
 public sealed class PolicyModelTests
 {
     [Fact]
+    public void Sourcing_manifest_requires_attestation_and_unique_covered_lines()
+    {
+        var line = new PolicySubjectReference(Guid.NewGuid(), 1);
+        var manifest = new PolicySourcingManifest("sourcing-provider", "v1", new string('b', 64), [line]);
+
+        Assert.Equal("sourcing-provider", manifest.ProviderId);
+        Assert.Equal(line, manifest.CoveredLines.Single());
+        Assert.Throws<DomainValidationException>(() => new PolicySourcingManifest(
+            "sourcing-provider", "v1", "not-a-digest", [line]));
+        Assert.Throws<DomainConflictException>(() => new PolicySourcingManifest(
+            "sourcing-provider", "v1", new string('b', 64), [line, line]));
+    }
+
+    [Fact]
     public void Policy_version_requires_one_fallback_per_enabled_scope_before_publish()
     {
         var policy = CreatePolicy(PolicyScope.Line);
