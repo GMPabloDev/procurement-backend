@@ -482,7 +482,8 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
                              record.SubjectId == subjectId &&
                              record.SubjectVersion == subjectVersion)
             .OrderByDescending(record => record.EvaluationSequence)
-            .SingleOrDefaultAsync(cancellationToken);
+            .ThenByDescending(record => record.Id)
+            .FirstOrDefaultAsync(cancellationToken);
 
     public Task<IReadOnlyList<PolicyEvaluationBundleRecord>> FindByWorkloadEvaluationKeyAsync(
         string issuer,
@@ -594,6 +595,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         Guid evaluationBundleId,
         QuotationWaiverRequest request,
         QuotationWaiverEvidence evidence,
+        PolicyEvaluationBundle? reducedBundle = null,
         CancellationToken cancellationToken = default)
     {
         if (evaluationBundleId == Guid.Empty || string.IsNullOrWhiteSpace(request.TargetRequirementKey) ||
@@ -631,7 +633,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             ApproverId = request.ApproverId,
             ExpiresAt = evidence.ExpiresAt,
             VerifierReference = evidence.VerifierReference,
-            SnapshotJson = JsonSerializer.Serialize(new { request, evidence }, JsonOptions),
+            SnapshotJson = JsonSerializer.Serialize(new { request, evidence, reducedBundle }, JsonOptions),
             CreatedAt = DateTimeOffset.UtcNow
         };
         dbContext.Set<PolicyExceptionVerificationRecord>().Add(record);

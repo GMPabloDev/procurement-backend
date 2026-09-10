@@ -166,6 +166,9 @@ public sealed class PolicyPersistenceServiceTests
             factRequest with { RequestedAtUtc = DateTimeOffset.UtcNow.AddMinutes(1) },
             "policy-service-replay", cancellationToken);
         Assert.Equal(serviceFirst.Id, serviceReplay.Id);
+        var latestEvaluation = await service.FindLatestEvaluationAsync(
+            organizationId, request.Subject.Id, request.Subject.Version, cancellationToken);
+        Assert.Equal(serviceFirst.Id, latestEvaluation?.Id);
         Assert.Equal(1, provider.Calls);
         await Assert.ThrowsAsync<DomainConflictException>(() => evaluationService
             .EvaluateEnterprisePurchaseRequestAsync(

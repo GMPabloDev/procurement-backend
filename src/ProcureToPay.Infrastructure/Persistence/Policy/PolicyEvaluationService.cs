@@ -123,6 +123,22 @@ public sealed class PolicyEvaluationService(
         return replay;
     }
 
+    private static bool HasSameEvaluationContent(
+        PolicyEvaluationBundle persisted,
+        PolicyEvaluationBundle supplied)
+    {
+        if (persisted.Subject != supplied.Subject || persisted.ScopeEvaluations.Count != supplied.ScopeEvaluations.Count ||
+            persisted.Controls.Count != supplied.Controls.Count || persisted.Result != supplied.Result)
+        {
+            return false;
+        }
+        var persistedDigest = PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
+            persisted.InputDigest, persisted.ScopeEvaluations, persisted.Controls, persisted.Result, null));
+        var suppliedDigest = PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
+            supplied.InputDigest, supplied.ScopeEvaluations, supplied.Controls, supplied.Result, null));
+        return string.Equals(persistedDigest, suppliedDigest, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static PolicyEvaluationBundle ValidatePersistedEvaluation(PolicyEvaluationBundleRecord existing)
     {
         PolicyEvaluationBundle replay;
@@ -178,9 +194,10 @@ public sealed class PolicyEvaluationService(
         {
             throw new PolicyDependencyUnavailableException("The quotation waiver verifier timed out.");
         }
+        var reduced = QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(bundle, request, evidence);
         await persistenceService.AppendExceptionVerificationAsync(
-            bundle.Id, request, evidence, cancellationToken);
-        return QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(bundle, request, evidence);
+            bundle.Id, request, evidence, reduced, cancellationToken);
+        return reduced;
     }
 
     public async Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestAsync(
@@ -548,7 +565,8 @@ public sealed class PolicyEvaluationService(
             !string.Equals(persistedCurrent.FactsDigest, sourcing.CurrentRequestEvaluation.FactsDigest,
                 StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(persistedCurrent.ManifestDigest, sourcing.CurrentRequestEvaluation.ManifestDigest,
-                StringComparison.OrdinalIgnoreCase))
+                StringComparison.OrdinalIgnoreCase) ||
+            !HasSameEvaluationContent(persistedCurrent, sourcing.CurrentRequestEvaluation))
         {
             throw new DomainConflictException("The request evaluation evidence is not current.");
         }
