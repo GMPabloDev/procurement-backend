@@ -100,7 +100,8 @@ public sealed class PolicyEvaluatorTests
             request,
             [line.Subject],
             new Dictionary<string, PolicyValue>(),
-            requestEvaluation);
+            requestEvaluation,
+            new PolicySourcingManifest("sourcing-provider", "v1", new string('a', 64), [line.Subject]));
 
         // pi-lens-ignore: CS0103
         var result = PolicyEvaluator.EvaluateSourcing(
