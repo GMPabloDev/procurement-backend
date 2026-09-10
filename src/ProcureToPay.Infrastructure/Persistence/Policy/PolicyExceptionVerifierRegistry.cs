@@ -9,10 +9,23 @@ public sealed class PolicyExceptionVerifierRegistry(
 
     public IQuotationWaiverVerifier Resolve()
     {
-        return verifiers.Count == 1
-            ? verifiers[0]
-            : throw new PolicyDependencyUnavailableException(
-                $"Expected exactly one quotation waiver verifier, found {verifiers.Count}.");
+        return verifiers.Count switch
+        {
+            0 => DefaultDenyVerifier.Instance,
+            1 => verifiers[0],
+            _ => throw new PolicyDependencyUnavailableException(
+                $"Expected exactly one quotation waiver verifier, found {verifiers.Count}.")
+        };
+    }
+
+    private sealed class DefaultDenyVerifier : IQuotationWaiverVerifier
+    {
+        public static readonly DefaultDenyVerifier Instance = new();
+
+        public Task<QuotationWaiverEvidence?> VerifyAsync(
+            QuotationWaiverRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<QuotationWaiverEvidence?>(null);
     }
 }
 

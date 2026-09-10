@@ -6,6 +6,21 @@ namespace ProcureToPay.IntegrationTests.Policy;
 public sealed class PolicyCanonicalizationIntegrationTests
 {
     [Fact]
+    public async Task Missing_workflow_verifier_uses_default_deny_instead_of_dependency_failure()
+    {
+        var verifier = new PolicyExceptionVerifierRegistry([]).Resolve();
+        var evidence = await verifier.VerifyAsync(
+            new QuotationWaiverRequest(
+                PolicyExceptionType.ReduceMinValidQuotations, 3, 2, 1,
+                new string('a', 64), new string('b', 64), "binding", "nonce",
+                new string('c', 64), "PROCUREMENT_APPROVER", "PROCUREMENT",
+                Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()),
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(evidence);
+    }
+
+    [Fact]
     public void Fact_manifest_and_bundle_digests_match_contractual_golden_vectors()
     {
         var request = new PolicyRequestInput(

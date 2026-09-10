@@ -182,14 +182,47 @@ public sealed class PolicyPersistenceServiceTests
             .EvaluateEnterprisePurchaseRequestAsync(factRequest, "policy-service-replay", cancellationToken));
         Assert.Equal(1, provider.Calls);
 
+        var successor = new PolicySetVersion(Guid.NewGuid(), organizationId, 2, [PolicyScope.Line]);
+        successor.AddRule(new PolicyRule(
+            "LINE_DEFAULT", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.Allow, "DIRECT_PURCHASE")], isFallback: true));
+        var successorContent = PolicyCanonicalizer.CanonicalizePolicy(successor);
+        var successorDraft = await service.AppendDraftAsync(
+            new PolicyDraftDocument(
+                organizationId, "[\"LINE\"]", successorContent,
+                PolicyCanonicalizer.Hash(successorContent)),
+            DateTimeOffset.UtcNow,
+            actor,
+            "Create successor policy",
+            "corr-policy-successor-draft",
+            cancellationToken);
+        var successorEffectiveFrom = DateTimeOffset.UtcNow.AddMinutes(1);
+        var successorActivation = await service.PublishAndActivateAsync(
+            successorDraft.Id,
+            successorEffectiveFrom,
+            actor,
+            "Publish successor policy",
+            "corr-policy-successor-publish",
+            cancellationToken,
+            organizationId);
+        var retirement = await context.PolicyRetirements.SingleAsync(
+            item => item.PolicyActivationId == activation.Id, cancellationToken);
+        Assert.Equal(successorEffectiveFrom, retirement.EffectiveTo);
+        Assert.Equal(successorActivation.Version.Id, await context.PolicyActivations
+            .Where(item => item.Id == successorActivation.Activation.Id)
+            .Select(item => item.PolicySetVersionId)
+            .SingleAsync(cancellationToken));
+
         await service.RetireAsync(
-            activation.Id,
-            DateTimeOffset.UtcNow.AddMinutes(1),
+            successorActivation.Activation.Id,
+            successorEffectiveFrom.AddMinutes(1),
             actor,
             "Retire policy after persistence test",
             "corr-policy-4",
-            cancellationToken);
-        Assert.Null(await service.FindActiveAsync(organizationId, DateTimeOffset.UtcNow.AddHours(1), cancellationToken));
+            cancellationToken,
+            organizationId);
+        Assert.Null(await service.FindActiveAsync(
+            organizationId, successorEffectiveFrom.AddMinutes(2), cancellationToken));
     }
 
     private sealed class CountingFactProvider(PolicyRequestInput request) : IPolicyFactProvider
