@@ -336,6 +336,31 @@ public static class PolicyCanonicalizer
         };
     }
 
+    public static string CanonicalizeSourcingManifest(PolicySourcingInput sourcing) =>
+        SerializeCanonical(new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["canonicalization_version"] = Version,
+            ["covered_lines"] = SortCanonical(sourcing.CoveredLines.Select(Subject)),
+            ["request_subject_ref"] = Subject(sourcing.Request.Subject),
+            ["sourcing_subject_ref"] = Subject(sourcing.Subject)
+        });
+
+    public static string ComputeSourcingManifestDigest(PolicySourcingInput sourcing) =>
+        Hash(CanonicalizeSourcingManifest(sourcing));
+
+    public static string CanonicalizeSourcingFacts(PolicySourcingInput sourcing, string manifestDigest) =>
+        SerializeCanonical(new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["canonicalization_version"] = Version,
+            ["facts"] = CanonicalizeFacts(sourcing.Facts),
+            ["manifest_digest"] = manifestDigest,
+            ["request_subject_ref"] = Subject(sourcing.Request.Subject),
+            ["sourcing_subject_ref"] = Subject(sourcing.Subject)
+        });
+
+    public static string ComputeSourcingFactsDigest(PolicySourcingInput sourcing, string manifestDigest) =>
+        Hash(CanonicalizeSourcingFacts(sourcing, manifestDigest));
+
     public static string CanonicalizeRequest(PolicyRequestInput request, DateTimeOffset evaluatedAt)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -613,13 +638,15 @@ public static class PolicyEvaluator
 
         var subjectIds = coveredLineReferences.Select(line => line.Id).ToImmutableHashSet();
         var scope = EvaluateScope(policy, PolicyScope.SourcingPo, sourcing.Subject, sourcing.Facts, subjectIds);
+        var manifestDigest = PolicyCanonicalizer.ComputeSourcingManifestDigest(sourcing);
+        var factsDigest = PolicyCanonicalizer.ComputeSourcingFactsDigest(sourcing, manifestDigest);
         var inputCanonical = PolicyCanonicalizer.CanonicalizeEvaluationInput(
             evaluatedAt,
             "SOURCING_PO",
             sourcing.Subject,
             policy.ContentDigest!,
             null,
-            sourcing.CurrentRequestEvaluation.FactsDigest,
+            factsDigest,
             sourcing.CurrentRequestEvaluation.Id,
             sourcing.CurrentRequestEvaluation.ResultDigest);
         var inputDigest = PolicyCanonicalizer.Hash(inputCanonical);
@@ -641,6 +668,8 @@ public static class PolicyEvaluator
         {
             PreviousBundleId = sourcing.CurrentRequestEvaluation.Id,
             Operation = "SOURCING_PO",
+            FactsDigest = factsDigest,
+            ManifestDigest = manifestDigest,
             InputCanonicalJson = inputCanonical
         };
     }

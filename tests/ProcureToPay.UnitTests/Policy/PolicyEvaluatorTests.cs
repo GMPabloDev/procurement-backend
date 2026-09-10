@@ -109,6 +109,19 @@ public sealed class PolicyEvaluatorTests
         Assert.Single(result.ScopeEvaluations);
         Assert.Equal(PolicyScope.SourcingPo, result.ScopeEvaluations[0].Scope);
         Assert.Equal(requestEvaluation.Id, result.PreviousBundleId);
+
+        var changedFacts = sourcing with
+        {
+            Facts = new Dictionary<string, PolicyValue>
+            {
+                ["DATA_RISK"] = PolicyValue.Code("HIGH")
+            }
+        };
+        var changed = PolicyEvaluator.EvaluateSourcing(
+            policy, changedFacts, "sourcing-002", DateTimeOffset.Parse("2026-09-09T15:00:00Z"));
+        Assert.Equal(result.ManifestDigest, changed.ManifestDigest);
+        Assert.NotEqual(result.FactsDigest, changed.FactsDigest);
+        Assert.NotEqual(result.InputDigest, changed.InputDigest);
     }
 
     [Fact]

@@ -619,6 +619,16 @@ public sealed class PolicyEvaluationService(
             throw new DomainConflictException("The request evaluation evidence is not current.");
         }
         var bundle = PolicyEvaluator.EvaluateSourcing(policy, sourcing, evaluationKey, evaluatedAt);
+        var existingSourcing = await persistenceService.FindLatestEvaluationAsync(
+            sourcing.Request.OrganizationId, sourcing.Subject.Id, sourcing.Subject.Version,
+            cancellationToken);
+        if (existingSourcing is not null &&
+            string.Equals(existingSourcing.Operation, "SOURCING_PO", StringComparison.Ordinal) &&
+            !string.Equals(existingSourcing.InputDigest, bundle.InputDigest, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainConflictException(
+                "Sourcing facts changed without incrementing the sourcing subject version.");
+        }
         var persisted = await persistenceService.AppendEvaluationAsync(
             bundle,
             new PolicyEvaluationCaller(
