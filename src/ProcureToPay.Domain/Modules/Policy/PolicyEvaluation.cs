@@ -89,6 +89,7 @@ public sealed record PolicyGeneratedControl(
     ImmutableHashSet<string> OriginRuleCodes,
     string Reason)
 {
+    public int? MinimumAllowedQuotations { get; init; }
     public bool Covers(Guid subjectId) => SubjectIds.Contains(subjectId);
 }
 
@@ -257,6 +258,7 @@ public static class PolicyCanonicalizer
         {
             ["approval"] = control.Approval is null ? null : CanonicalizeApproval(control.Approval),
             ["minimum_quotations"] = control.MinimumQuotations,
+            ["minimum_allowed_quotations"] = control.MinimumAllowedQuotations,
             ["origin_rules"] = control.OriginRuleCodes.Order(StringComparer.Ordinal).ToArray(),
             ["origin_scopes"] = control.OriginScopes.Order().Select(CanonicalName).ToArray(),
             ["supporting_document_types"] = control.SupportingDocumentTypes.Order(StringComparer.Ordinal).ToArray(),
@@ -654,6 +656,9 @@ public static class PolicyEvaluator
             MinimumQuotations = first.Type == PolicyEffectType.RequireQuotations
                 ? group.Max(control => control.MinimumQuotations)
                 : first.MinimumQuotations,
+            MinimumAllowedQuotations = first.Type == PolicyEffectType.RequireQuotations
+                ? group.Max(control => control.MinimumAllowedQuotations)
+                : first.MinimumAllowedQuotations,
             SupportingDocumentTypes = group.SelectMany(control => control.SupportingDocumentTypes)
                 .ToImmutableHashSet(StringComparer.Ordinal),
             OriginRuleCodes = group.SelectMany(control => control.OriginRuleCodes)
@@ -700,7 +705,10 @@ public static class PolicyEvaluator
             effect.MinimumQuotations,
             effect.SupportingDocumentTypes?.ToImmutableHashSet(StringComparer.Ordinal) ?? ImmutableHashSet<string>.Empty,
             ImmutableHashSet.Create(StringComparer.Ordinal, $"{rule.Code}:{rule.Revision}"),
-            effect.Reason ?? rule.Code);
+            effect.Reason ?? rule.Code)
+        {
+            MinimumAllowedQuotations = effect.MinimumExceptionQuotations
+        };
 
     private static string PhaseFor(PolicyEffect effect) => effect.Type switch
     {

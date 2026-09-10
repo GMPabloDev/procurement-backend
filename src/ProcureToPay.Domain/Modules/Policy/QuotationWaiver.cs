@@ -102,7 +102,9 @@ public static class QuotationWaiverEvaluator
             throw new DomainConflictException("Quotation waiver target is not present in the evaluation.");
         }
         if (request.To < request.Floor || request.To >= request.From ||
-            targets.Any(control => control.MinimumQuotations != request.From))
+            targets.Any(control => control.MinimumQuotations != request.From ||
+                control.MinimumAllowedQuotations is null ||
+                request.To < control.MinimumAllowedQuotations.Value))
         {
             throw new DomainConflictException("Quotation waiver bounds do not match the published control.");
         }

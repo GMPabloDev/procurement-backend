@@ -1,5 +1,6 @@
 #pragma warning disable CS0246, CS0103
 
+using System.Collections.Immutable;
 using System.Text.Json;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
@@ -133,6 +134,49 @@ public sealed class PolicyEvaluatorTests
         Assert.Equal(original.ResultDigest, replay.ResultDigest);
         Assert.Equal(original.Controls.Count, replay.Controls.Count);
         Assert.Equal(original.ScopeEvaluations.Count, replay.ScopeEvaluations.Count);
+    }
+
+    [Fact]
+    public void Quotation_waiver_uses_published_from_and_floor_and_recomputes_result_digest()
+    {
+        var subject = new PolicySubjectReference(Guid.NewGuid(), 1);
+        var control = new PolicyGeneratedControl(
+            "QUOTATIONS",
+            PolicyEffectType.RequireQuotations,
+            ImmutableHashSet.Create(PolicyScope.Line),
+            ImmutableHashSet.Create(subject.Id),
+            "PRE_PROCUREMENT",
+            null,
+            3,
+            ImmutableHashSet<string>.Empty,
+            ImmutableHashSet.Create("RULE:1"),
+            "RULE") { MinimumAllowedQuotations = 1 };
+        var scope = new PolicyScopeEvaluation(
+            PolicyScope.Line,
+            ImmutableHashSet.Create(subject.Id),
+            ["RULE:1"],
+            [control],
+            PolicyResult.RequirementsGenerated) { SubjectReferences = [subject] };
+        var bundle = new PolicyEvaluationBundle(
+            Guid.NewGuid(), "waiver-001", subject, DateTimeOffset.UtcNow, "a".PadLeft(64, 'a'),
+            "b".PadLeft(64, 'b'), [scope], [control], PolicyResult.RequirementsGenerated,
+            "c".PadLeft(64, 'c'));
+        var request = new QuotationWaiverRequest(
+            PolicyExceptionType.ReduceMinValidQuotations, 3, 2, 1,
+            bundle.PolicyContentDigest, bundle.ResultDigest, "binding", "nonce", "evidence",
+            "PROCUREMENT_APPROVER", "PROCUREMENT", Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid())
+        { TargetRequirementKey = "QUOTATIONS" };
+        var evidence = new QuotationWaiverEvidence(
+            "evidence", "binding", "nonce", DateTimeOffset.UtcNow.AddMinutes(5), "decision-1");
+
+        var reduced = QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(bundle, request, evidence);
+
+        Assert.Equal(2, reduced.Controls.Single().MinimumQuotations);
+        Assert.Equal(2, reduced.ScopeEvaluations.Single().Controls.Single().MinimumQuotations);
+        Assert.NotEqual(bundle.ResultDigest, reduced.ResultDigest);
+        Assert.Throws<DomainConflictException>(() =>
+            QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(
+                bundle, request with { From = 4 }, evidence));
     }
 
     [Fact]
