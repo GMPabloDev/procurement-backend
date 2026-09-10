@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
-> **Actualizado:** 2026-09-10 03:25 -05
-> **HEAD de implementación verificado:** `0f7d7fe`
+> **Actualizado:** 2026-09-10 03:50 -05
+> **HEAD de implementación verificado:** `2f2d298`
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -41,7 +41,7 @@
 | T-04 | Parcial | `PolicyPersistenceService`: selección serializable de activación, retiro append-only, auditoría administrativa, rowversion e idempotencia por SHA-256; reserva persistente `PolicyEvaluationReservations` con índice scoped y lease de 5 min antes del provider; `EvaluationSequence` persistida con índice único y latest lookup para sourcing; `PolicyPersistenceServiceTests` verifica reserva/liberación, espera concurrente, provider único, replay, conflicto, sucesor atómico y retirement append-only. El diff completo para reevaluaciones distintas sigue pendiente. | `562b9d9` / Bloque 2 en curso |
 | T-05 | Parcial | `PolicyController` expone lectura scoped de versiones/evaluaciones, drafts, publicación+activación atómica, retiro y simulación tipada no persistente sobre snapshot; mutaciones validan pertenencia de draft/activation a `actor.OrganizationId`; `PUT /api/v1/policies/drafts/{draftId}` permite editar drafts con digest esperado y conflicto optimista, probado por E2E; faltan límites/matriz API completa. | `ea63c22` / Bloque 3 en curso |
 | T-06 | Parcial | Se agregó `PolicyFactRequest`, registry exact-one local, timeout 5 s, manifest de líneas, validación de digest de política y `EvaluateEnterprisePurchaseRequest` que carga la política activa desde persistencia mediante parser canónico. Replay: lookup scoped antes del provider, reserva distribuida por lease/índice único, lock local, fingerprint e integridad; sourcing exige workload allowlisted, key válida, snapshot policy canónico publicado y activación vigente, latest `EvaluationSequence`, result/facts/manifest digests y contenido canónico persistido; los digests de manifest/facts ahora comparten serializer canónico y el sourcing liga sus facts y líneas al `InputDigest`, además de rechazar cambio material sin nueva versión; se añadió `PolicySourcingManifest` con attestation y binding exacto de líneas; faltan catálogos completos y providers reales. | `0f7d7fe` / Bloque 3 en curso |
-| T-07 | Parcial | `QuotationWaiverEvaluator` valida `PolicyDigest/EvaluationDigest`, `from/to/floor` y allowance publicado, binding/nonce/evidence, autoridad y SoD; actualiza controles/scopes por identidad contractual (incluyendo controles lineales derivados de un combinado) y recalcula digest canónico. El servicio rehidrata y valida el bundle persistido antes de aplicar, conserva verification snapshot, calcula el `exception_verification_digest` contractual y apendea una reevaluación con `PreviousBundleId`/input digest de excepción y diff `REMOVED`; el rehidratador/validador conserva ese diff. El registry usa default-deny cuando no hay workflow; falta evidencia integrada de replay/NOT_EXCEPTIONABLE y HTTP. | `1e7700d` / Bloque 3 en curso |
+| T-07 | Parcial | `QuotationWaiverEvaluator` valida `PolicyDigest/EvaluationDigest`, `from/to/floor` y allowance publicado, binding/nonce/evidence, autoridad y SoD; actualiza controles/scopes por identidad contractual (incluyendo controles lineales derivados de un combinado) y recalcula digest canónico. El servicio rehidrata y valida el bundle persistido antes de aplicar, conserva verification snapshot, calcula el `exception_verification_digest` contractual y apendea una reevaluación con `PreviousBundleId`/input digest de excepción y diff `REMOVED`; el rehidratador/validador conserva ese diff. La API expone `POST /api/v1/policies/evaluations/{id}/quotation-waiver` con ownership del originador y validación de tipo; el registry usa default-deny cuando no hay workflow. Falta evidencia integrada de replay/NOT_EXCEPTIONABLE y verifier real HTTP. | `2f2d298` / Bloque 3 en curso |
 | T-08 | Parcial | `PolicyConfigurationHealthCheck` y `/health/policy` distinguen ausencia/ambigüedad, corrupción y validan estado publicado + digest SHA-256 del contenido cargado sin exponer reglas; `ApiE2ETests` verifica por HTTP `503` + `POLICY_CONFIGURATION_REQUIRED` y `POLICY_CONFIGURATION_CORRUPT`; evaluación empresarial rechaza payloads de más de 500 líneas con `413`; faltan indisponibilidad HTTP y telemetría completa. | `1e7700d` / Bloque 4 en curso |
 | T-09 | Parcial | Unitarias: 41 correctas; IntegrationTests: 10 correctas con SQL Server/Testcontainers, incluyendo provider de facts, publicación sucesora atómica, default-deny y vectores golden; ApiE2ETests: 2 correctas (incluye health required/corrupt, edición optimista y ciclo draft/publicación/simulación); `dotnet test --solution ProcureToPay.sln --no-restore`: **53/53** correctas en el último commit verificado; solución compila con 0 advertencias/errores; métricas y logs estructurados básicos añadidos para evaluaciones, replays y fallos de provider. Falta ampliar evidencia negativa/golden/API específica de CA-01–CA-12. | `0f7d7fe` / Bloque 4 |
 
@@ -126,12 +126,12 @@
 - Resultado: el contrato de attestation ya existe y está validado en dominio; falta conectarlo con un provider real, exigirlo en el flujo empresarial final y persistir/validar su preimage completo.
 - HEAD de implementación: `0f7d7fe`.
 
-### CP-11 — 2026-09-10 03:10 - Attestation de sourcing
+### CP-12 — 2026-09-10 03:45 - Endpoint de waiver
 
-- Cambios: `PolicySourcingManifest` representa provider, versión de contrato, digest de attestation y líneas cubiertas; `PolicySourcingInput` lo incorpora opcionalmente, lo liga al manifest digest canónico y `EvaluateSourcingAsync` rechaza una attestation cuya línea cubierta no coincide exactamente.
-- Tests/checks: UnitTests 41/41; build de solución 0/0.
-- Resultado: el contrato de attestation ya existe y está validado en dominio; falta conectarlo con un provider real, exigirlo en el flujo empresarial final y persistir/validar su preimage completo.
-- HEAD de implementación: pendiente de commit.
+- Cambios: se añadió `POST /api/v1/policies/evaluations/{evaluationId}/quotation-waiver`; carga el bundle scoped, exige usuario activo como originador, traduce el tipo cerrado y delega la verificación/persistencia al servicio. E2E cubre rechazo de tipo inválido con Problem Details.
+- Tests/checks: build 0/0; `ApiE2ETests` 2/2; suites anteriores 53/53.
+- Resultado: la superficie HTTP existe con ownership y default-deny; falta conectar un workflow/verifier real y probar una reevaluación válida end-to-end.
+- HEAD de implementación: `2f2d298`.
 
 ## Evidencia de aceptación
 
@@ -145,7 +145,7 @@
 | CA-06 | Pendiente | — | — |
 | CA-07 | Parcial | `EvaluateSourcingAsync` exige el bundle persistido latest por organización/subject/version, secuencia, input/policy/result/facts/manifest digests y conjunto exacto de líneas; `EvaluateSourcing` liga facts/líneas propios al input y el servicio rechaza cambio de input para el mismo sujeto/version. Faltan providers/manifests contractuales y cobertura de todos los cambios materiales. | Subagente / pendiente de PASS |
 | CA-08 | Parcial | `PolicyPersistenceServiceTests` cubre servicio real, provider instrumentado (1 llamada), replay sin provider, conflicto previo al provider, reserva scoped, espera cross-DbContext y JSON corrupto fail-closed; `ApiE2ETests` cubre por HTTP `503` tanto `POLICY_CONFIGURATION_REQUIRED` como `POLICY_CONFIGURATION_CORRUPT`, además de lifecycle API. Falta matriz completa de dependencia/idempotencia. | Subagente / pendiente de PASS |
-| CA-09 | Parcial | Waiver valida digests de policy/evaluación, floor/allowance publicado, límites `from/to`, binding, nonce, evidence digest, actualiza scopes por identidad contractual, persiste snapshot y diff `REMOVED`; registry default-deny evita bypass sin workflow. Faltan combinación NOT_EXCEPTIONABLE, reevaluación integrada completa y replay HTTP. | Subagente / pendiente de PASS |
+| CA-09 | Parcial | Waiver valida digests de policy/evaluación, floor/allowance publicado, límites `from/to`, binding, nonce, evidence digest, actualiza scopes por identidad contractual, persiste snapshot y diff `REMOVED`; registry default-deny evita bypass sin workflow; API expone aplicación scoped y rechaza tipo inválido por HTTP. Faltan combinación NOT_EXCEPTIONABLE, verifier real, reevaluación integrada completa y replay HTTP. | Subagente / pendiente de PASS |
 | CA-10 | Pendiente | — | — |
 | CA-11 | Pendiente | — | — |
 | CA-12 | Pendiente | — | — |
