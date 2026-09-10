@@ -294,12 +294,19 @@ public sealed class PolicyEvaluationService(
         }
     }
 
-    public Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestAsync(
+    public async Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestAsync(
         PolicySetVersion policySnapshot,
         PolicyFactRequest factRequest,
         string evaluationKey,
-        CancellationToken cancellationToken = default) =>
-        EvaluateEnterprisePurchaseRequestCoreAsync(policySnapshot, factRequest, evaluationKey, cancellationToken, null);
+        CancellationToken cancellationToken = default)
+    {
+        ValidateEvaluationKey(evaluationKey);
+        if (factRequest.OrganizationId != policySnapshot.OrganizationId)
+        {
+            throw new DomainConflictException("Policy and request organizations differ.");
+        }
+        return await EvaluateEnterprisePurchaseRequestAsync(factRequest, evaluationKey, cancellationToken);
+    }
 
     private async Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestCoreAsync(
         PolicySetVersion policySnapshot,
