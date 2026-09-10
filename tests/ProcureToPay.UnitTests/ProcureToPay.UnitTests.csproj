@@ -25,6 +25,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ProcureToPay.Application\ProcureToPay.Application.csproj" />
     <ProjectReference Include="..\..\src\ProcureToPay.Domain\ProcureToPay.Domain.csproj" />
+    <ProjectReference Include="..\..\src\ProcureToPay.Infrastructure\ProcureToPay.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

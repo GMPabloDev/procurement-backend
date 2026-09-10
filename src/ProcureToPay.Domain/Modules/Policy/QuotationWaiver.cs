@@ -33,7 +33,13 @@ public sealed record QuotationWaiverEvidence(
     string Binding,
     string Nonce,
     DateTimeOffset ExpiresAt,
-    string VerifierReference);
+    string VerifierReference)
+{
+    public int WorkflowDecisionVersion { get; init; }
+    public string WorkflowDecisionDigest { get; init; } = string.Empty;
+    public string AuthorityEvidenceDigest { get; init; } = string.Empty;
+    public bool SegregationSatisfied { get; init; }
+}
 
 public sealed record PolicyExceptionVerificationInput(
     string VerifierId,
@@ -98,7 +104,11 @@ public static class QuotationWaiverEvaluator
         if (evidence.ExpiresAt <= now ||
             !string.Equals(evidence.EvidenceDigest, request.EvidenceDigest, StringComparison.Ordinal) ||
             !string.Equals(evidence.Binding, request.Binding, StringComparison.Ordinal) ||
-            !string.Equals(evidence.Nonce, request.Nonce, StringComparison.Ordinal))
+            !string.Equals(evidence.Nonce, request.Nonce, StringComparison.Ordinal) ||
+            evidence.WorkflowDecisionVersion < 1 ||
+            !IsSha256(evidence.WorkflowDecisionDigest) ||
+            !IsSha256(evidence.AuthorityEvidenceDigest) ||
+            !evidence.SegregationSatisfied)
         {
             throw new DomainConflictException("Quotation waiver evidence does not match its binding.");
         }
@@ -174,6 +184,9 @@ public static class QuotationWaiverEvaluator
             ResultDigest = resultDigest
         };
     }
+
+    private static bool IsSha256(string value) =>
+        value.Length == 64 && value.All(character => Uri.IsHexDigit(character));
 
     public static string ComputeBinding(
         Guid organizationId,

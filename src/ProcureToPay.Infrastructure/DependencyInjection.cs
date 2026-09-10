@@ -32,7 +32,25 @@ public static class DependencyInjection
         services.AddSingleton<PolicyWorkloadAllowlist>();
         // pi-lens-ignore: CS0246
         services.AddScoped<PolicyFactProviderRegistry>();
-        services.AddScoped<IQuotationWaiverVerifier, DefaultDenyQuotationWaiverVerifier>();
+        var workflowUrl = configuration["Policy:ExceptionWorkflow:BaseUrl"];
+        if (string.IsNullOrWhiteSpace(workflowUrl))
+        {
+            services.AddScoped<IQuotationWaiverVerifier, DefaultDenyQuotationWaiverVerifier>();
+        }
+        else if (Uri.TryCreate(workflowUrl, UriKind.Absolute, out var workflowBaseAddress))
+        {
+            services.AddHttpClient<HttpQuotationWaiverVerifier>(client =>
+            {
+                client.BaseAddress = workflowBaseAddress;
+                client.Timeout = TimeSpan.FromSeconds(5);
+            });
+            services.AddScoped<IQuotationWaiverVerifier>(provider =>
+                provider.GetRequiredService<HttpQuotationWaiverVerifier>());
+        }
+        else
+        {
+            throw new InvalidOperationException("Policy exception workflow base address is invalid.");
+        }
         services.AddScoped<PolicyExceptionVerifierRegistry>();
         services.AddScoped<IPolicyReferenceCatalog, DefaultDenyPolicyReferenceCatalog>();
         services.AddScoped<PolicyReferenceCatalogRegistry>();

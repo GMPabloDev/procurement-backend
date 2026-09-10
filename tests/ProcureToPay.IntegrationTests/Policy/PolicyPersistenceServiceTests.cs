@@ -286,7 +286,13 @@ public sealed class PolicyPersistenceServiceTests
                 request.Binding,
                 request.Nonce,
                 DateTimeOffset.UtcNow.AddMinutes(5),
-                "workflow-decision-1"));
+                "workflow-decision-1")
+            {
+                WorkflowDecisionVersion = 1,
+                WorkflowDecisionDigest = new string('d', 64),
+                AuthorityEvidenceDigest = new string('e', 64),
+                SegregationSatisfied = true
+            });
     }
 
     private sealed class CountingFactProvider(PolicyRequestInput request) : IPolicyFactProvider
