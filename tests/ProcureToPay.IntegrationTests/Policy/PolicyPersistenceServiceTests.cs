@@ -182,7 +182,58 @@ public sealed class PolicyPersistenceServiceTests
             .EvaluateEnterprisePurchaseRequestAsync(factRequest, "policy-service-replay", cancellationToken));
         Assert.Equal(1, provider.Calls);
 
-        var successor = new PolicySetVersion(Guid.NewGuid(), organizationId, 2, [PolicyScope.Line]);
+        var quotationPolicy = new PolicySetVersion(Guid.NewGuid(), organizationId, 2, [PolicyScope.Line]);
+        quotationPolicy.AddRule(new PolicyRule(
+            "QUOTATIONS", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.RequireQuotations, "RFQ", minimumQuotations: 3,
+                minimumExceptionQuotations: 1)]));
+        quotationPolicy.AddRule(new PolicyRule(
+            "QUOTATION_DEFAULT", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.Allow, "DEFAULT")], isFallback: true));
+        quotationPolicy.Publish(PolicyCanonicalizer.ComputePolicyDigest(quotationPolicy));
+        var quotationVersion = await service.AppendVersionAsync(
+            quotationPolicy,
+            DateTimeOffset.UtcNow,
+            actor,
+            "Create quotation policy for waiver test",
+            "corr-waiver-policy",
+            cancellationToken);
+        var quotationBundle = PolicyEvaluator.EvaluateRequest(
+            quotationPolicy, request, "quotation-waiver-evaluation", DateTimeOffset.UtcNow);
+        await service.AppendEvaluationAsync(quotationBundle, caller with
+        {
+            PolicySetVersionId = quotationVersion.Id,
+            EvaluationKey = quotationBundle.EvaluationKey,
+            CorrelationReference = "corr-waiver-evaluation"
+        }, cancellationToken);
+        var nonce = "waiver-nonce-1";
+        var evidenceDigest = new string('c', 64);
+        var binding = QuotationWaiverEvaluator.ComputeBinding(
+            organizationId, quotationVersion.Id, quotationBundle.Subject.Id,
+            quotationVersion.ContentDigest, quotationBundle.ResultDigest, nonce);
+        var waiver = new QuotationWaiverRequest(
+            PolicyExceptionType.ReduceMinValidQuotations, 3, 2, 1,
+            quotationVersion.ContentDigest, quotationBundle.ResultDigest, binding, nonce,
+            evidenceDigest, "PROCUREMENT_APPROVER", "PROCUREMENT",
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid())
+        {
+            TargetRequirementKey = "RFQ"
+        };
+        var waiverService = new PolicyEvaluationService(
+            service,
+            new PolicyWorkloadAllowlist(configuration),
+            new PolicyFactProviderRegistry([provider]),
+            new PolicyExceptionVerifierRegistry([new AcceptedWaiverVerifier(evidenceDigest)]),
+            new PolicyReferenceCatalogRegistry([]),
+            NullLogger<PolicyEvaluationService>.Instance);
+        var reevaluated = await waiverService.ApplyQuotationWaiverAsync(
+            quotationBundle, waiver, cancellationToken);
+        Assert.Equal(2, reevaluated.Controls.Single(control => control.RequirementKey == "RFQ").MinimumQuotations);
+        Assert.Single(reevaluated.Diff);
+        Assert.Equal(1, await context.Set<PolicyExceptionVerificationRecord>().CountAsync(cancellationToken));
+        Assert.Equal(quotationBundle.Id, reevaluated.PreviousBundleId);
+
+        var successor = new PolicySetVersion(Guid.NewGuid(), organizationId, 3, [PolicyScope.Line]);
         successor.AddRule(new PolicyRule(
             "LINE_DEFAULT", PolicyScope.Line, [],
             [new PolicyEffect(PolicyEffectType.Allow, "DIRECT_PURCHASE")], isFallback: true));
@@ -223,6 +274,19 @@ public sealed class PolicyPersistenceServiceTests
             organizationId);
         Assert.Null(await service.FindActiveAsync(
             organizationId, successorEffectiveFrom.AddMinutes(2), cancellationToken));
+    }
+
+    private sealed class AcceptedWaiverVerifier(string evidenceDigest) : IQuotationWaiverVerifier
+    {
+        public Task<QuotationWaiverEvidence?> VerifyAsync(
+            QuotationWaiverRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<QuotationWaiverEvidence?>(new QuotationWaiverEvidence(
+                evidenceDigest,
+                request.Binding,
+                request.Nonce,
+                DateTimeOffset.UtcNow.AddMinutes(5),
+                "workflow-decision-1"));
     }
 
     private sealed class CountingFactProvider(PolicyRequestInput request) : IPolicyFactProvider

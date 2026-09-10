@@ -213,6 +213,18 @@ public sealed class PolicyEvaluatorTests
         Assert.Throws<DomainConflictException>(() =>
             QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(
                 bundle, request with { From = 4 }, evidence));
+        var notExceptionable = bundle with
+        {
+            Controls = [combinedControl with { MinimumAllowedQuotations = null }]
+        };
+        var notExceptionableRequest = request with
+        {
+            EvaluationDigest = notExceptionable.ResultDigest
+        };
+        var exception = Assert.Throws<DomainConflictException>(() =>
+            QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(
+                notExceptionable, notExceptionableRequest, evidence));
+        Assert.Contains("NOT_EXCEPTIONABLE", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
