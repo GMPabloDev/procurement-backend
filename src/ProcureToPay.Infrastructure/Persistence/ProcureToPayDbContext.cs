@@ -275,6 +275,13 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
             record.EvaluationKey
         }).IsUnique();
         entity.HasIndex(record => new { record.OrganizationId, record.SubjectId, record.SubjectVersion });
+        entity.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.SubjectId,
+            record.SubjectVersion,
+            record.EvaluationSequence
+        }).IsUnique();
         entity.HasOne(record => record.PolicySetVersion)
             .WithMany(record => record.Evaluations)
             .HasForeignKey(record => record.PolicySetVersionId)
