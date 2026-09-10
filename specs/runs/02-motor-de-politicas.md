@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
-> **Actualizado:** 2026-09-09 23:04 -05
-> **HEAD de implementación verificado:** `ad97c4f`
+> **Actualizado:** 2026-09-10 00:06 -05
+> **HEAD de implementación verificado:** `57f63fe`
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -38,12 +38,12 @@
 | T-01 | Verificada | `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore`: 24 correctos; modelo de reglas tipadas, fallback por scope, validación de efectos, snapshots de authority y publicación inmutable cubiertos. | working-tree / Bloque 1 en curso |
 | T-02 | Verificada | `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore`: 31 correctos; canonicalización/digest, evaluación LINE+REQUEST/SOURCING_PO, suma de líneas, fallback, precedencia BLOCK/PO, authority NONE y validaciones de publicación cubiertos. Se corrigió canonicalización snake_case y `ALLOW` no genera controles. | working-tree / Bloque 1 |
 | T-03 | Verificada | `dotnet test --project tests/ProcureToPay.IntegrationTests/ProcureToPay.IntegrationTests.csproj --no-restore`: 7 correctos; schema `Policy`, tablas append-only, índices de activación/retiro/idempotencia y rowversion verificados. `dotnet build` de Infrastructure correcto; migración `20260909152512_PolicyEngineFoundation` generada y compilable. | working-tree / Bloque 2 en curso |
-| T-04 | Parcial | `PolicyPersistenceService`: selección serializable de activación, retiro append-only, auditoría administrativa, rowversion e idempotencia por SHA-256; reserva persistente `PolicyEvaluationReservations` con índice scoped y lease de 5 min antes del provider; `EvaluationSequence` persistida con índice único y latest lookup para sourcing; `PolicyPersistenceServiceTests` verifica reserva/liberación, espera concurrente, provider único, replay y conflicto. Aún falta cierre atómico de sucesor y diff/reevaluación completo. | `ad97c4f` / Bloque 2 en curso |
-| T-05 | Parcial | `PolicyController` expone lectura scoped de versiones/evaluaciones, drafts, publicación+activación atómica, retiro y simulación tipada no persistente sobre snapshot; mutaciones validan pertenencia de draft/activation a `actor.OrganizationId`; edición versionada completa y límites API siguen pendientes. | `ad97c4f` / Bloque 3 en curso |
-| T-06 | Parcial | Se agregó `PolicyFactRequest`, registry exact-one local, timeout 5 s, manifest de líneas, validación de digest de política y `EvaluateEnterprisePurchaseRequest` que carga la política activa desde persistencia mediante parser canónico. Replay: lookup scoped antes del provider, reserva distribuida por lease/índice único, lock local, fingerprint e integridad; sourcing exige workload allowlisted, key válida, snapshot policy canónico publicado y activación vigente, latest `EvaluationSequence`, result/facts/manifest digests y contenido canónico persistido; faltan catálogos completos y manifest de attestation exhaustivo. | `ad97c4f` / Bloque 3 en curso |
-| T-07 | Parcial | `QuotationWaiverEvaluator` valida `PolicyDigest/EvaluationDigest`, `from/to/floor` y allowance publicado, binding/nonce/evidence, autoridad y SoD; actualiza controles/scopes por identidad contractual (incluyendo controles lineales derivados de un combinado) y recalcula digest canónico. El servicio rehidrata y valida el bundle persistido antes de aplicar, conserva verification snapshot y apendea una reevaluación con `PreviousBundleId`/input digest de excepción. Falta verifier registry de workflow y evidencia HTTP/replay completa. | `ad97c4f` / Bloque 3 en curso |
-| T-08 | Parcial | `PolicyConfigurationHealthCheck` y `/health/policy` distinguen ausencia/ambigüedad y validan estado publicado + digest SHA-256 del contenido cargado sin exponer reglas; `ApiE2ETests` verifica `503` + `POLICY_CONFIGURATION_REQUIRED`; faltan corrupción/indisponibilidad HTTP. | `ad97c4f` / Bloque 4 en curso |
-| T-09 | Parcial | Unitarias: 32 correctas; IntegrationTests: 8 correctas con SQL Server/Testcontainers; ApiE2ETests: 2 correctas (incluye `/health/policy` required); solución compila con 0 advertencias/errores; `lens_diagnostics --mode=all --severity=error`: sin errores. Se agregó replay real, corrupción fail-closed, reserva concurrente, actualidad persistida de sourcing, waiver floor/digest/rehydration y unique index de secuencia. Falta ampliar evidencia negativa/golden/API específica de CA-01–CA-12. | `ad97c4f` / Bloque 4 |
+| T-04 | Parcial | `PolicyPersistenceService`: selección serializable de activación, retiro append-only, auditoría administrativa, rowversion e idempotencia por SHA-256; reserva persistente `PolicyEvaluationReservations` con índice scoped y lease de 5 min antes del provider; `EvaluationSequence` persistida con índice único y latest lookup para sourcing; `PolicyPersistenceServiceTests` verifica reserva/liberación, espera concurrente, provider único, replay y conflicto. Aún falta cierre atómico de sucesor y diff/reevaluación completo. | `57f63fe` / Bloque 2 en curso |
+| T-05 | Parcial | `PolicyController` expone lectura scoped de versiones/evaluaciones, drafts, publicación+activación atómica, retiro y simulación tipada no persistente sobre snapshot; mutaciones validan pertenencia de draft/activation a `actor.OrganizationId`; edición versionada completa y límites API siguen pendientes. | `57f63fe` / Bloque 3 en curso |
+| T-06 | Parcial | Se agregó `PolicyFactRequest`, registry exact-one local, timeout 5 s, manifest de líneas, validación de digest de política y `EvaluateEnterprisePurchaseRequest` que carga la política activa desde persistencia mediante parser canónico. Replay: lookup scoped antes del provider, reserva distribuida por lease/índice único, lock local, fingerprint e integridad; sourcing exige workload allowlisted, key válida, snapshot policy canónico publicado y activación vigente, latest `EvaluationSequence`, result/facts/manifest digests y contenido canónico persistido; los digests de manifest/facts ahora comparten serializer canónico y faltan catálogos completos y manifest de attestation exhaustivo. | `57f63fe` / Bloque 3 en curso |
+| T-07 | Parcial | `QuotationWaiverEvaluator` valida `PolicyDigest/EvaluationDigest`, `from/to/floor` y allowance publicado, binding/nonce/evidence, autoridad y SoD; actualiza controles/scopes por identidad contractual (incluyendo controles lineales derivados de un combinado) y recalcula digest canónico. El servicio rehidrata y valida el bundle persistido antes de aplicar, conserva verification snapshot, calcula el `exception_verification_digest` contractual y apendea una reevaluación con `PreviousBundleId`/input digest de excepción. Falta verifier registry de workflow y evidencia HTTP/replay completa. | `57f63fe` / Bloque 3 en curso |
+| T-08 | Parcial | `PolicyConfigurationHealthCheck` y `/health/policy` distinguen ausencia/ambigüedad y validan estado publicado + digest SHA-256 del contenido cargado sin exponer reglas; `ApiE2ETests` verifica `503` + `POLICY_CONFIGURATION_REQUIRED`; faltan corrupción/indisponibilidad HTTP. | `57f63fe` / Bloque 4 en curso |
+| T-09 | Parcial | Unitarias: 38 correctas; IntegrationTests: 9 correctas con SQL Server/Testcontainers, incluyendo provider de facts y vectores golden de manifest/bundle; ApiE2ETests: 2 correctas (incluye `/health/policy` required); solución compila con 0 advertencias/errores; LSP primario sin diagnósticos. Se agregaron golden vectors exactos para policy/input/result/exception, ordenación UTF-8, NFC y rechazo de duplicados, además de unificación del digest del provider controlado con producción. Falta ampliar evidencia negativa/golden/API específica de CA-01–CA-12. | `57f63fe` / Bloque 4 |
 
 ## Checkpoints
 
@@ -64,13 +64,21 @@
 - Resultado: el replay secuencial y distribuido dispone de reserva persistente previa al provider con organización obligatoria, validación temprana de `evaluation_key`, lease de 5 minutos y el overload de snapshot del puerto ya delega en la ruta scoped; snapshots separados (`inputCanonicalJson` contractual + `requestSnapshotJson`) y serialización; no se declara PASS contractual: faltan pruebas HTTP del servicio real sin provider, corrupción 503 y CA-01–CA-12.
 - HEAD de implementación: `ad97c4f`.
 
+### CP-03 — 2026-09-10 00:06 - Canonicalización contractual y facts digest
+
+- Cambios: `policy-canonical-json/v1` ahora ordena sets por bytes UTF-8 canónicos, normaliza strings a NFC, rechaza duplicados de `PolicyValue.Set`, y aplica representación canónica completa a rules, predicates, effects, scopes y controls. Se agregó canonicalización tipada de `exception_verification_digest` y su uso productivo durante reevaluaciones de waiver.
+- Persistencia/providers: el digest de manifest y facts usa la misma representación `SortedDictionary` + serializer canónico en producción y provider controlado; el digest de excepción ya se incluye en `exception_verification_digests` del input de reevaluación.
+- Tests/checks: UnitTests 38/38; golden de policy/input/result/exception; IntegrationTests 1/1 para facts manifest/bundle y 1/1 para replay SQL Server; `dotnet build ProcureToPay.sln --no-restore` 0/0; `git diff --check` limpio.
+- Resultado: se cerró la divergencia de digest que impedía el provider controlado y quedó evidencia independiente para los preimages principales. CA-03 sigue parcial por faltar evidencia HTTP de corrupción/indisponibilidad y matriz completa.
+- HEAD de implementación: `57f63fe`.
+
 ## Evidencia de aceptación
 
 | Criterio | Estado | Evidencia | Verificador |
 | --- | --- | --- | --- |
 | CA-01 | Pendiente | — | — |
 | CA-02 | Pendiente | — | — |
-| CA-03 | Parcial | CP-02/`PolicyCanonicalizer`: preimages explícitos para input/result, UUIDs/timestamps UTC y orden determinista de scopes/controles; falta golden vector contractual independiente. | Subagente / pendiente de PASS |
+| CA-03 | Parcial | CP-03 agrega golden vectors exactos e independientes para policy, input, result, exception verification y facts manifest/bundle; se validan bytes UTF-8, NFC, ordenación completa y digest productivo de excepción. Falta evidencia HTTP de corrupción/indisponibilidad y matriz completa del criterio. | Subagente / pendiente de PASS |
 | CA-04 | Pendiente | — | — |
 | CA-05 | Pendiente | — | — |
 | CA-06 | Pendiente | — | — |
@@ -116,7 +124,7 @@
 
 ## Cierre
 
-- HEAD de implementación: `ad97c4f`.
+- HEAD de implementación: `57f63fe`.
 - Estrategia de integración: Pendiente.
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.
