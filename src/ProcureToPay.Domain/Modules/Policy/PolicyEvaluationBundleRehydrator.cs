@@ -35,6 +35,7 @@ public static class PolicyEvaluationBundleRehydrator
                 ? operation.GetString() ?? string.Empty : string.Empty,
             FactsDigest = NullableString(root, "factsDigest"),
             ManifestDigest = NullableString(root, "manifestDigest"),
+            ManifestCanonicalJson = NullableString(root, "manifestCanonicalJson"),
             InputCanonicalJson = NullableString(root, "inputCanonicalJson"),
             RequestSnapshotJson = NullableString(root, "requestSnapshotJson"),
             ActivationId = NullableGuid(root, "activationId"),

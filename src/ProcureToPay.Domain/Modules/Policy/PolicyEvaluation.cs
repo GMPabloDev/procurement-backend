@@ -131,6 +131,7 @@ public sealed record PolicyEvaluationBundle(
     public string Operation { get; init; } = string.Empty;
     public string? FactsDigest { get; init; }
     public string? ManifestDigest { get; init; }
+    public string? ManifestCanonicalJson { get; init; }
     public string? InputCanonicalJson { get; init; }
     public string? RequestSnapshotJson { get; init; }
     public Guid? ActivationId { get; init; }
@@ -703,6 +704,7 @@ public static class PolicyEvaluator
             Operation = "SOURCING_PO",
             FactsDigest = factsDigest,
             ManifestDigest = manifestDigest,
+            ManifestCanonicalJson = PolicyCanonicalizer.CanonicalizeSourcingManifest(sourcing),
             InputCanonicalJson = inputCanonical
         };
     }

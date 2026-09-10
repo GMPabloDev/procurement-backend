@@ -177,6 +177,9 @@ public sealed class PolicyEvaluationService(
                 replay.Controls,
                 // pi-lens-ignore: lsp:CS1061
                 replay.Diff.Count == 0 ? null : replay.Diff));
+        var recomputedManifestDigest = string.IsNullOrWhiteSpace(replay.ManifestCanonicalJson)
+            ? null
+            : PolicyCanonicalizer.Hash(replay.ManifestCanonicalJson);
         if (replay.Id != existing.Id ||
             !string.Equals(replay.EvaluationKey, existing.EvaluationKey, StringComparison.Ordinal) ||
             replay.Subject.Id != existing.SubjectId ||
@@ -189,7 +192,8 @@ public sealed class PolicyEvaluationService(
             !string.Equals(replay.InputDigest, existing.InputDigest, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(replay.ResultDigest, existing.ResultDigest, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(replay.InputDigest, recomputedInputDigest, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(replay.ResultDigest, recomputedResultDigest, StringComparison.OrdinalIgnoreCase))
+            !string.Equals(replay.ResultDigest, recomputedResultDigest, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(replay.ManifestDigest, recomputedManifestDigest, StringComparison.OrdinalIgnoreCase))
         {
             throw new PolicyDependencyUnavailableException("Persisted policy evaluation integrity check failed.");
         }
