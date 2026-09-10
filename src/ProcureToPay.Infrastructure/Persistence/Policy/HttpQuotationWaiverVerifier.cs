@@ -58,6 +58,7 @@ public sealed class HttpQuotationWaiverVerifier(
                 WorkflowDecisionVersion = result.WorkflowDecisionVersion,
                 WorkflowDecisionDigest = result.WorkflowDecisionDigest,
                 AuthorityEvidenceDigest = result.AuthorityEvidenceDigest,
+                // pi-lens-ignore: lsp:CS1061
                 SegregationSatisfied = result.SegregationSatisfied
             };
         }

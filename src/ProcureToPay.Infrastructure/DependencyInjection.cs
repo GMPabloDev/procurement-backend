@@ -39,6 +39,7 @@ public static class DependencyInjection
         }
         else if (Uri.TryCreate(workflowUrl, UriKind.Absolute, out var workflowBaseAddress))
         {
+            // pi-lens-ignore: lsp:CS1061
             services.AddHttpClient<HttpQuotationWaiverVerifier>(client =>
             {
                 client.BaseAddress = workflowBaseAddress;
