@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
-> **Actualizado:** 2026-09-10 00:50 -05
-> **HEAD de implementación verificado:** `748771d`
+> **Actualizado:** 2026-09-10 01:15 -05
+> **HEAD de implementación verificado:** `562b9d9`
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -38,7 +38,7 @@
 | T-01 | Verificada | `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore`: 24 correctos; modelo de reglas tipadas, fallback por scope, validación de efectos, snapshots de authority y publicación inmutable cubiertos. | working-tree / Bloque 1 en curso |
 | T-02 | Verificada | `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore`: 31 correctos; canonicalización/digest, evaluación LINE+REQUEST/SOURCING_PO, suma de líneas, fallback, precedencia BLOCK/PO, authority NONE y validaciones de publicación cubiertos. Se corrigió canonicalización snake_case y `ALLOW` no genera controles. | working-tree / Bloque 1 |
 | T-03 | Verificada | `dotnet test --project tests/ProcureToPay.IntegrationTests/ProcureToPay.IntegrationTests.csproj --no-restore`: 7 correctos; schema `Policy`, tablas append-only, índices de activación/retiro/idempotencia y rowversion verificados. `dotnet build` de Infrastructure correcto; migración `20260909152512_PolicyEngineFoundation` generada y compilable. | working-tree / Bloque 2 en curso |
-| T-04 | Parcial | `PolicyPersistenceService`: selección serializable de activación, retiro append-only, auditoría administrativa, rowversion e idempotencia por SHA-256; reserva persistente `PolicyEvaluationReservations` con índice scoped y lease de 5 min antes del provider; `EvaluationSequence` persistida con índice único y latest lookup para sourcing; `PolicyPersistenceServiceTests` verifica reserva/liberación, espera concurrente, provider único, replay y conflicto. Aún falta cierre atómico de sucesor y diff/reevaluación completo. | `57f63fe` / Bloque 2 en curso |
+| T-04 | Parcial | `PolicyPersistenceService`: selección serializable de activación, retiro append-only, auditoría administrativa, rowversion e idempotencia por SHA-256; reserva persistente `PolicyEvaluationReservations` con índice scoped y lease de 5 min antes del provider; `EvaluationSequence` persistida con índice único y latest lookup para sourcing; `PolicyPersistenceServiceTests` verifica reserva/liberación, espera concurrente, provider único, replay, conflicto, sucesor atómico y retirement append-only. El diff completo para reevaluaciones distintas sigue pendiente. | `562b9d9` / Bloque 2 en curso |
 | T-05 | Parcial | `PolicyController` expone lectura scoped de versiones/evaluaciones, drafts, publicación+activación atómica, retiro y simulación tipada no persistente sobre snapshot; mutaciones validan pertenencia de draft/activation a `actor.OrganizationId`; edición versionada completa y límites API siguen pendientes. | `57f63fe` / Bloque 3 en curso |
 | T-06 | Parcial | Se agregó `PolicyFactRequest`, registry exact-one local, timeout 5 s, manifest de líneas, validación de digest de política y `EvaluateEnterprisePurchaseRequest` que carga la política activa desde persistencia mediante parser canónico. Replay: lookup scoped antes del provider, reserva distribuida por lease/índice único, lock local, fingerprint e integridad; sourcing exige workload allowlisted, key válida, snapshot policy canónico publicado y activación vigente, latest `EvaluationSequence`, result/facts/manifest digests y contenido canónico persistido; los digests de manifest/facts ahora comparten serializer canónico y el sourcing liga sus facts y líneas al `InputDigest`, además de rechazar cambio material sin nueva versión; faltan catálogos completos y manifest de attestation exhaustivo. | `353c192` / Bloque 3 en curso |
 | T-07 | Parcial | `QuotationWaiverEvaluator` valida `PolicyDigest/EvaluationDigest`, `from/to/floor` y allowance publicado, binding/nonce/evidence, autoridad y SoD; actualiza controles/scopes por identidad contractual (incluyendo controles lineales derivados de un combinado) y recalcula digest canónico. El servicio rehidrata y valida el bundle persistido antes de aplicar, conserva verification snapshot, calcula el `exception_verification_digest` contractual y apendea una reevaluación con `PreviousBundleId`/input digest de excepción. El registry ya usa default-deny cuando no hay workflow; falta evidencia integrada de replay/NOT_EXCEPTIONABLE y HTTP. | `748771d` / Bloque 3 en curso |
@@ -77,12 +77,20 @@
 - Cambios: `EvaluateSourcing` ahora calcula `ManifestDigest` y `FactsDigest` propios a partir de sujeto, líneas cubiertas y facts de sourcing; esos digests alimentan el input canónico y se conservan en el bundle. `EvaluateSourcingAsync` rechaza un segundo bundle del mismo sourcing id/version cuando cambia el input digest, obligando a publicar una nueva versión del sujeto.
 - Tests/checks: UnitTests 38/38; prueba dirigida de persistencia SQL Server 1/1; build y LSP primario sin diagnósticos. La prueba unitaria confirma que cambiar facts de sourcing cambia FactsDigest/InputDigest sin cambiar el manifest de líneas.
 - Resultado: se cerró la omisión por la que facts materiales de sourcing podían cambiar sin quedar ligados al digest; permanecen pendientes providers/manifests reales y cobertura completa de cambios materiales.
+
 ### CP-05 — 2026-09-10 00:50 - Ciclo API, sucesor atómico y default-deny
 
 - Cambios: el verifier registry retorna un adapter default-deny cuando no hay workflow, evitando convertir la ausencia esperada del workflow en `503`. Se agregaron pruebas HTTP de corrupción de configuración (`503`), creación de draft, publicación, health y simulación no persistente. La prueba SQL cubre publicación de sucesor y retiro append-only exactamente en `effective_from`.
 - Tests/checks: UnitTests 38/38; IntegrationTests 10/10; ApiE2ETests 2/2; build 0/0; `specctl check 02 --approval` válido; LSP primario limpio.
 - Resultado: queda cubierta evidencia HTTP de corrupción y lifecycle administrativo básico; el run sigue BLOCK por materialidad/manifest de sourcing completa, waiver integrado y matriz contractual restante.
 - HEAD de implementación: `748771d`.
+
+### CP-06 — 2026-09-10 01:15 - Diff de reevaluación de waiver
+
+- Cambios: `PolicyEvaluationBundle` conserva entradas de diff tipadas; un quotation waiver verificado registra `REMOVED`, control objetivo, líneas y mínimos anterior/actual, y el `evaluation_result_digest` usa ese diff canónico. La reevaluación persistida conserva la historia y el diff al rehidratarse.
+- Tests/checks: UnitTests 38/38, incluyendo aserciones del diff `3 → 2`; build 0/0; LSP primario limpio.
+- Resultado: se cerró la pérdida de evidencia del cambio en reevaluaciones de waiver; falta generalizar `ADDED/HARDENED/UNCHANGED` para cambios materiales y cubrirlo en integración/HTTP.
+- HEAD de implementación: `562b9d9`.
 
 ## Evidencia de aceptación
 
@@ -136,7 +144,7 @@
 
 ## Cierre
 
-- HEAD de implementación: `748771d`.
+- HEAD de implementación: `562b9d9`.
 - Estrategia de integración: Pendiente.
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.
