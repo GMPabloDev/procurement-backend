@@ -140,6 +140,7 @@ public sealed class PolicyEvaluatorTests
     public void Quotation_waiver_uses_published_from_and_floor_and_recomputes_result_digest()
     {
         var subject = new PolicySubjectReference(Guid.NewGuid(), 1);
+        var secondSubject = new PolicySubjectReference(Guid.NewGuid(), 1);
         var control = new PolicyGeneratedControl(
             "QUOTATIONS",
             PolicyEffectType.RequireQuotations,
@@ -151,15 +152,26 @@ public sealed class PolicyEvaluatorTests
             ImmutableHashSet<string>.Empty,
             ImmutableHashSet.Create("RULE:1"),
             "RULE") { MinimumAllowedQuotations = 1 };
+        var secondControl = control with { SubjectIds = ImmutableHashSet.Create(secondSubject.Id) };
+        var combinedControl = control with
+        {
+            SubjectIds = ImmutableHashSet.Create(subject.Id, secondSubject.Id)
+        };
         var scope = new PolicyScopeEvaluation(
             PolicyScope.Line,
             ImmutableHashSet.Create(subject.Id),
             ["RULE:1"],
             [control],
             PolicyResult.RequirementsGenerated) { SubjectReferences = [subject] };
+        var secondScope = new PolicyScopeEvaluation(
+            PolicyScope.Line,
+            ImmutableHashSet.Create(secondSubject.Id),
+            ["RULE:1"],
+            [secondControl],
+            PolicyResult.RequirementsGenerated) { SubjectReferences = [secondSubject] };
         var bundle = new PolicyEvaluationBundle(
             Guid.NewGuid(), "waiver-001", subject, DateTimeOffset.UtcNow, "a".PadLeft(64, 'a'),
-            "b".PadLeft(64, 'b'), [scope], [control], PolicyResult.RequirementsGenerated,
+            "b".PadLeft(64, 'b'), [scope, secondScope], [combinedControl], PolicyResult.RequirementsGenerated,
             "c".PadLeft(64, 'c'));
         var request = new QuotationWaiverRequest(
             PolicyExceptionType.ReduceMinValidQuotations, 3, 2, 1,
@@ -172,7 +184,8 @@ public sealed class PolicyEvaluatorTests
         var reduced = QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(bundle, request, evidence);
 
         Assert.Equal(2, reduced.Controls.Single().MinimumQuotations);
-        Assert.Equal(2, reduced.ScopeEvaluations.Single().Controls.Single().MinimumQuotations);
+        Assert.All(reduced.ScopeEvaluations, value =>
+            Assert.Equal(2, value.Controls.Single().MinimumQuotations));
         Assert.NotEqual(bundle.ResultDigest, reduced.ResultDigest);
         var replay = PolicyEvaluationBundleRehydrator.FromJson(
             JsonSerializer.Serialize(reduced, new JsonSerializerOptions(JsonSerializerDefaults.Web)));

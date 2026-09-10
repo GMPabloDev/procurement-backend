@@ -114,7 +114,7 @@ public static class QuotationWaiverEvaluator
         static bool IsTarget(PolicyGeneratedControl control, PolicyGeneratedControl targetControl) =>
             control.Type == targetControl.Type &&
             string.Equals(control.RequirementKey, targetControl.RequirementKey, StringComparison.Ordinal) &&
-            control.SubjectIds.SetEquals(targetControl.SubjectIds);
+            control.SubjectIds.IsSubsetOf(targetControl.SubjectIds);
         var controls = bundle.Controls.Select(control =>
             targets.Any(targetControl => IsTarget(control, targetControl))
                 ? control with { MinimumQuotations = request.To }

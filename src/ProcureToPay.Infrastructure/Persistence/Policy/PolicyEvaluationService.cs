@@ -194,9 +194,16 @@ public sealed class PolicyEvaluationService(
         {
             throw new PolicyDependencyUnavailableException("The quotation waiver verifier timed out.");
         }
-        var reduced = QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(bundle, request, evidence);
+        var persistedRecord = await persistenceService.FindEvaluationAsync(bundle.Id, cancellationToken)
+            ?? throw new DomainConflictException("The quotation waiver evaluation is not persisted.");
+        var persistedBundle = ValidatePersistedEvaluation(persistedRecord);
+        if (!HasSameEvaluationContent(persistedBundle, bundle))
+        {
+            throw new DomainConflictException("The quotation waiver evaluation does not match persisted evidence.");
+        }
+        var reduced = QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(persistedBundle, request, evidence);
         await persistenceService.AppendExceptionVerificationAsync(
-            bundle.Id, request, evidence, reduced, cancellationToken);
+            persistedBundle.Id, request, evidence, reduced, cancellationToken);
         return reduced;
     }
 
@@ -545,6 +552,21 @@ public sealed class PolicyEvaluationService(
             throw new DomainForbiddenException("The workload is not allowlisted for policy evaluation.");
         }
         ValidateEvaluationKey(evaluationKey);
+        if (policy.OrganizationId != sourcing.Request.OrganizationId ||
+            !string.Equals(
+                PolicyCanonicalizer.ComputePolicyDigest(policy), policy.ContentDigest,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new PolicyConfigurationUnavailableException("The sourcing policy snapshot is invalid.");
+        }
+        var activePolicy = await persistenceService.FindActiveAsync(
+            sourcing.Request.OrganizationId, evaluatedAt, cancellationToken);
+        if (activePolicy is null || activePolicy.PolicySetVersionId != policy.Id ||
+            !string.Equals(activePolicy.PolicySetVersion.ContentDigest, policy.ContentDigest,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainConflictException("The sourcing policy is not current.");
+        }
         if (sourcing.CurrentRequestEvaluation is null)
         {
             throw new DomainConflictException("Sourcing evaluation requires a request evaluation.");
