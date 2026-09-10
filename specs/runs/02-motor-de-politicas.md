@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
-> **Actualizado:** 2026-09-10 02:35 -05
-> **HEAD de implementación verificado:** `working-tree`
+> **Actualizado:** 2026-09-10 02:40 -05
+> **HEAD de implementación verificado:** `bb582bf`
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -43,7 +43,7 @@
 | T-06 | Parcial | Se agregó `PolicyFactRequest`, registry exact-one local, timeout 5 s, manifest de líneas, validación de digest de política y `EvaluateEnterprisePurchaseRequest` que carga la política activa desde persistencia mediante parser canónico. Replay: lookup scoped antes del provider, reserva distribuida por lease/índice único, lock local, fingerprint e integridad; sourcing exige workload allowlisted, key válida, snapshot policy canónico publicado y activación vigente, latest `EvaluationSequence`, result/facts/manifest digests y contenido canónico persistido; los digests de manifest/facts ahora comparten serializer canónico y el sourcing liga sus facts y líneas al `InputDigest`, además de rechazar cambio material sin nueva versión; faltan catálogos completos y manifest de attestation exhaustivo. | `353c192` / Bloque 3 en curso |
 | T-07 | Parcial | `QuotationWaiverEvaluator` valida `PolicyDigest/EvaluationDigest`, `from/to/floor` y allowance publicado, binding/nonce/evidence, autoridad y SoD; actualiza controles/scopes por identidad contractual (incluyendo controles lineales derivados de un combinado) y recalcula digest canónico. El servicio rehidrata y valida el bundle persistido antes de aplicar, conserva verification snapshot, calcula el `exception_verification_digest` contractual y apendea una reevaluación con `PreviousBundleId`/input digest de excepción y diff `REMOVED`; el rehidratador/validador conserva ese diff. El registry usa default-deny cuando no hay workflow; falta evidencia integrada de replay/NOT_EXCEPTIONABLE y HTTP. | `1e7700d` / Bloque 3 en curso |
 | T-08 | Parcial | `PolicyConfigurationHealthCheck` y `/health/policy` distinguen ausencia/ambigüedad, corrupción y validan estado publicado + digest SHA-256 del contenido cargado sin exponer reglas; `ApiE2ETests` verifica por HTTP `503` + `POLICY_CONFIGURATION_REQUIRED` y `POLICY_CONFIGURATION_CORRUPT`; evaluación empresarial rechaza payloads de más de 500 líneas con `413`; faltan indisponibilidad HTTP y telemetría completa. | `1e7700d` / Bloque 4 en curso |
-| T-09 | Parcial | Unitarias: 39 correctas; IntegrationTests: 10 correctas con SQL Server/Testcontainers, incluyendo provider de facts, publicación sucesora atómica, default-deny y vectores golden; ApiE2ETests: 2 correctas (incluye health required/corrupt, edición optimista y ciclo draft/publicación/simulación); `dotnet test --solution ProcureToPay.sln --no-restore`: 51/51 correctas en el último commit verificado; solución compila con 0 advertencias/errores; métricas y logs estructurados básicos añadidos para evaluaciones, replays y fallos de provider. Falta ampliar evidencia negativa/golden/API específica de CA-01–CA-12. | working-tree / Bloque 4 |
+| T-09 | Parcial | Unitarias: 39 correctas; IntegrationTests: 10 correctas con SQL Server/Testcontainers, incluyendo provider de facts, publicación sucesora atómica, default-deny y vectores golden; ApiE2ETests: 2 correctas (incluye health required/corrupt, edición optimista y ciclo draft/publicación/simulación); `dotnet test --solution ProcureToPay.sln --no-restore`: 51/51 correctas en el último commit verificado; solución compila con 0 advertencias/errores; métricas y logs estructurados básicos añadidos para evaluaciones, replays y fallos de provider. Falta ampliar evidencia negativa/golden/API específica de CA-01–CA-12. | `bb582bf` / Bloque 4 |
 
 ## Checkpoints
 
@@ -110,7 +110,7 @@
 - Cambios: `PolicyEvaluationService` publica métricas `evaluations_total`, `replays_total`, `provider_failures_total` y duración, etiquetadas solo por operación, tipo de sujeto y resultado; conserva logs sin facts sensibles.
 - Tests/checks: build de solución 0/0; las suites anteriores permanecen en 51/51; no se expone contenido de políticas ni datos personales en las etiquetas.
 - Resultado: se cubre la instrumentación mínima del flujo principal; faltan exportador OpenTelemetry, dashboards/alertas y validación operacional del despliegue.
-- HEAD de implementación: pendiente de commit.
+- HEAD de implementación: `bb582bf`.
 
 ## Evidencia de aceptación
 
