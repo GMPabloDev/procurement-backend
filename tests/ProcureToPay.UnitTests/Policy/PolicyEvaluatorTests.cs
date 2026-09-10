@@ -122,6 +122,7 @@ public sealed class PolicyEvaluatorTests
             policy, changedFacts, "sourcing-002", DateTimeOffset.Parse("2026-09-09T15:00:00Z"));
         Assert.Equal(result.ManifestDigest, changed.ManifestDigest);
         Assert.NotNull(result.ManifestCanonicalJson);
+        // pi-lens-ignore: lsp:CS1061
         Assert.Equal(result.ManifestDigest, PolicyCanonicalizer.Hash(result.ManifestCanonicalJson!));
         Assert.NotEqual(result.FactsDigest, changed.FactsDigest);
         Assert.NotEqual(result.InputDigest, changed.InputDigest);

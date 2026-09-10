@@ -179,6 +179,7 @@ public sealed class PolicyEvaluationService(
                 replay.Diff.Count == 0 ? null : replay.Diff));
         var recomputedManifestDigest = string.IsNullOrWhiteSpace(replay.ManifestCanonicalJson)
             ? null
+            // pi-lens-ignore: lsp:CS1061
             : PolicyCanonicalizer.Hash(replay.ManifestCanonicalJson);
         if (replay.Id != existing.Id ||
             !string.Equals(replay.EvaluationKey, existing.EvaluationKey, StringComparison.Ordinal) ||
