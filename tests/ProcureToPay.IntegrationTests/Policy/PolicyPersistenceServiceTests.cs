@@ -121,7 +121,23 @@ public sealed class PolicyPersistenceServiceTests
                 request.Subject),
             cancellationToken);
         Assert.NotNull(reservation);
+        await using var concurrentContext = new ProcureToPayDbContext(options);
+        var concurrentService = new PolicyPersistenceService(concurrentContext);
+        var waitingReservation = concurrentService.ReserveEvaluationKeyAsync(
+            organizationId,
+            "https://issuer.test",
+            "procurement-api",
+            "REQUEST_EVALUATE",
+            "policy-eval-reservation",
+            request.Subject.Id,
+            request.Subject.Version,
+            PolicyPersistenceService.ComputeCommandFingerprint(caller, request.Subject),
+            cancellationToken);
+        await Task.Delay(150, cancellationToken);
         await service.ReleaseEvaluationKeyAsync(reservation.Id, cancellationToken);
+        var secondReservation = await waitingReservation;
+        Assert.NotNull(secondReservation);
+        await concurrentService.ReleaseEvaluationKeyAsync(secondReservation.Id, cancellationToken);
         Assert.Null(await context.PolicyEvaluationReservations.SingleOrDefaultAsync(
             item => item.Id == reservation.Id, cancellationToken));
 
