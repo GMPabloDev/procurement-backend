@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Reflection;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
@@ -96,6 +98,15 @@ public sealed class PolicyEvaluationService(
     ILogger<PolicyEvaluationService> logger) : IPolicyEvaluationPort
 {
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> EvaluationGates = new(StringComparer.Ordinal);
+    private static readonly Meter PolicyMeter = new("ProcureToPay.Policy", "1.0");
+    private static readonly Counter<long> Evaluations = PolicyMeter.CreateCounter<long>(
+        "procure_to_pay_policy_evaluations_total");
+    private static readonly Counter<long> Replays = PolicyMeter.CreateCounter<long>(
+        "procure_to_pay_policy_replays_total");
+    private static readonly Counter<long> ProviderFailures = PolicyMeter.CreateCounter<long>(
+        "procure_to_pay_policy_provider_failures_total");
+    private static readonly Histogram<double> EvaluationDuration = PolicyMeter.CreateHistogram<double>(
+        "procure_to_pay_policy_evaluation_duration_ms", "ms");
 
     private PolicyEvaluationBundle ReplayExistingEvaluation(
         PolicyEvaluationBundleRecord existing,
@@ -123,6 +134,7 @@ public sealed class PolicyEvaluationService(
             throw new DomainConflictException("The evaluation key is already bound to a different request.");
         }
         var replay = ValidatePersistedEvaluation(existing);
+        Replays.Add(1, new KeyValuePair<string, object?>("operation", factRequest.Operation));
         logger.LogInformation("Policy evaluation replayed from persistence. EvaluationId={EvaluationId}", existing.Id);
         return replay;
     }
@@ -252,6 +264,7 @@ public sealed class PolicyEvaluationService(
         string evaluationKey,
         CancellationToken cancellationToken = default)
     {
+        var startedAt = Stopwatch.GetTimestamp();
         var workload = new PolicyWorkloadIdentity(factRequest.Workload.Issuer, factRequest.Workload.ClientId);
         if (!workloadAllowlist.IsAllowed(workload))
         {
@@ -303,10 +316,12 @@ public sealed class PolicyEvaluationService(
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            ProviderFailures.Add(1, new KeyValuePair<string, object?>("operation", factRequest.Operation));
             throw new PolicyDependencyUnavailableException("The policy fact provider timed out.");
         }
         catch (Exception exception) when (exception is not DomainException)
         {
+            ProviderFailures.Add(1, new KeyValuePair<string, object?>("operation", factRequest.Operation));
             logger.LogWarning(exception, "Policy fact provider failed.");
             throw new PolicyDependencyUnavailableException("The policy fact provider is unavailable.");
         }
@@ -327,8 +342,15 @@ public sealed class PolicyEvaluationService(
             active.PolicySetVersion.Sequence,
             (PolicySetStatus)active.PolicySetVersion.Status,
             active.PolicySetVersion.ContentDigest);
-        return await EvaluateEnterprisePurchaseRequestCoreAsync(
+        var result = await EvaluateEnterprisePurchaseRequestCoreAsync(
             policy, factRequest with { RequestedAtUtc = at }, evaluationKey, cancellationToken, facts);
+        Evaluations.Add(1,
+            new KeyValuePair<string, object?>("operation", factRequest.Operation),
+            new KeyValuePair<string, object?>("subject_type", factRequest.SubjectType),
+            new KeyValuePair<string, object?>("result", result.Result.ToString()));
+        EvaluationDuration.Record(Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds,
+            new KeyValuePair<string, object?>("operation", factRequest.Operation));
+        return result;
         }
         finally
         {

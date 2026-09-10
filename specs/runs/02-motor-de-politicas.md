@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
-> **Actualizado:** 2026-09-10 02:00 -05
-> **HEAD de implementación verificado:** `1e7700d`
+> **Actualizado:** 2026-09-10 02:35 -05
+> **HEAD de implementación verificado:** `working-tree`
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -39,11 +39,11 @@
 | T-02 | Verificada | `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore`: 31 correctos; canonicalización/digest, evaluación LINE+REQUEST/SOURCING_PO, suma de líneas, fallback, precedencia BLOCK/PO, authority NONE y validaciones de publicación cubiertos. Se corrigió canonicalización snake_case y `ALLOW` no genera controles. | working-tree / Bloque 1 |
 | T-03 | Verificada | `dotnet test --project tests/ProcureToPay.IntegrationTests/ProcureToPay.IntegrationTests.csproj --no-restore`: 7 correctos; schema `Policy`, tablas append-only, índices de activación/retiro/idempotencia y rowversion verificados. `dotnet build` de Infrastructure correcto; migración `20260909152512_PolicyEngineFoundation` generada y compilable. | working-tree / Bloque 2 en curso |
 | T-04 | Parcial | `PolicyPersistenceService`: selección serializable de activación, retiro append-only, auditoría administrativa, rowversion e idempotencia por SHA-256; reserva persistente `PolicyEvaluationReservations` con índice scoped y lease de 5 min antes del provider; `EvaluationSequence` persistida con índice único y latest lookup para sourcing; `PolicyPersistenceServiceTests` verifica reserva/liberación, espera concurrente, provider único, replay, conflicto, sucesor atómico y retirement append-only. El diff completo para reevaluaciones distintas sigue pendiente. | `562b9d9` / Bloque 2 en curso |
-| T-05 | Parcial | `PolicyController` expone lectura scoped de versiones/evaluaciones, drafts, publicación+activación atómica, retiro y simulación tipada no persistente sobre snapshot; mutaciones validan pertenencia de draft/activation a `actor.OrganizationId`; `PUT /api/v1/policies/drafts/{draftId}` permite editar drafts con digest esperado y conflicto optimista, probado por E2E; faltan límites/matriz API completa. | working-tree / Bloque 3 en curso |
+| T-05 | Parcial | `PolicyController` expone lectura scoped de versiones/evaluaciones, drafts, publicación+activación atómica, retiro y simulación tipada no persistente sobre snapshot; mutaciones validan pertenencia de draft/activation a `actor.OrganizationId`; `PUT /api/v1/policies/drafts/{draftId}` permite editar drafts con digest esperado y conflicto optimista, probado por E2E; faltan límites/matriz API completa. | `ea63c22` / Bloque 3 en curso |
 | T-06 | Parcial | Se agregó `PolicyFactRequest`, registry exact-one local, timeout 5 s, manifest de líneas, validación de digest de política y `EvaluateEnterprisePurchaseRequest` que carga la política activa desde persistencia mediante parser canónico. Replay: lookup scoped antes del provider, reserva distribuida por lease/índice único, lock local, fingerprint e integridad; sourcing exige workload allowlisted, key válida, snapshot policy canónico publicado y activación vigente, latest `EvaluationSequence`, result/facts/manifest digests y contenido canónico persistido; los digests de manifest/facts ahora comparten serializer canónico y el sourcing liga sus facts y líneas al `InputDigest`, además de rechazar cambio material sin nueva versión; faltan catálogos completos y manifest de attestation exhaustivo. | `353c192` / Bloque 3 en curso |
 | T-07 | Parcial | `QuotationWaiverEvaluator` valida `PolicyDigest/EvaluationDigest`, `from/to/floor` y allowance publicado, binding/nonce/evidence, autoridad y SoD; actualiza controles/scopes por identidad contractual (incluyendo controles lineales derivados de un combinado) y recalcula digest canónico. El servicio rehidrata y valida el bundle persistido antes de aplicar, conserva verification snapshot, calcula el `exception_verification_digest` contractual y apendea una reevaluación con `PreviousBundleId`/input digest de excepción y diff `REMOVED`; el rehidratador/validador conserva ese diff. El registry usa default-deny cuando no hay workflow; falta evidencia integrada de replay/NOT_EXCEPTIONABLE y HTTP. | `1e7700d` / Bloque 3 en curso |
 | T-08 | Parcial | `PolicyConfigurationHealthCheck` y `/health/policy` distinguen ausencia/ambigüedad, corrupción y validan estado publicado + digest SHA-256 del contenido cargado sin exponer reglas; `ApiE2ETests` verifica por HTTP `503` + `POLICY_CONFIGURATION_REQUIRED` y `POLICY_CONFIGURATION_CORRUPT`; evaluación empresarial rechaza payloads de más de 500 líneas con `413`; faltan indisponibilidad HTTP y telemetría completa. | `1e7700d` / Bloque 4 en curso |
-| T-09 | Parcial | Unitarias: 39 correctas; IntegrationTests: 10 correctas con SQL Server/Testcontainers, incluyendo provider de facts, publicación sucesora atómica, default-deny y vectores golden; ApiE2ETests: 2 correctas (incluye health required/corrupt y ciclo draft/publicación/simulación); `dotnet test --solution ProcureToPay.sln --no-restore`: **51/51** correctas; solución compila con 0 advertencias/errores; LSP primario sin diagnósticos. Falta ampliar evidencia negativa/golden/API específica de CA-01–CA-12. | `1e7700d` / Bloque 4 |
+| T-09 | Parcial | Unitarias: 39 correctas; IntegrationTests: 10 correctas con SQL Server/Testcontainers, incluyendo provider de facts, publicación sucesora atómica, default-deny y vectores golden; ApiE2ETests: 2 correctas (incluye health required/corrupt, edición optimista y ciclo draft/publicación/simulación); `dotnet test --solution ProcureToPay.sln --no-restore`: 51/51 correctas en el último commit verificado; solución compila con 0 advertencias/errores; métricas y logs estructurados básicos añadidos para evaluaciones, replays y fallos de provider. Falta ampliar evidencia negativa/golden/API específica de CA-01–CA-12. | working-tree / Bloque 4 |
 
 ## Checkpoints
 
@@ -103,6 +103,13 @@
 - Cambios: se añadió `UpdateDraftAsync` con transacción serializable, ownership organizacional, estado `DRAFT`, digest esperado como control optimista y auditoría `POLICY_DRAFT_UPDATED`; la API expone `PUT /api/v1/policies/drafts/{draftId}`.
 - Tests/checks: build 0/0; `ApiE2ETests` 2/2, incluyendo actualización válida y rechazo `409` de digest stale.
 - Resultado: se cerró la ausencia de edición básica de drafts; todavía faltan referencias versionadas, edición tras publicación prohibida con matriz HTTP completa y cobertura contractual restante.
+- HEAD de implementación: `ea63c22`.
+
+### CP-09 — 2026-09-10 02:35 - Observabilidad operativa básica
+
+- Cambios: `PolicyEvaluationService` publica métricas `evaluations_total`, `replays_total`, `provider_failures_total` y duración, etiquetadas solo por operación, tipo de sujeto y resultado; conserva logs sin facts sensibles.
+- Tests/checks: build de solución 0/0; las suites anteriores permanecen en 51/51; no se expone contenido de políticas ni datos personales en las etiquetas.
+- Resultado: se cubre la instrumentación mínima del flujo principal; faltan exportador OpenTelemetry, dashboards/alertas y validación operacional del despliegue.
 - HEAD de implementación: pendiente de commit.
 
 ## Evidencia de aceptación
