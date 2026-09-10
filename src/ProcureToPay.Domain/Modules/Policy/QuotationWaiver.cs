@@ -1,7 +1,6 @@
 using ProcureToPay.Domain.SharedKernel;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 
 namespace ProcureToPay.Domain.Modules.Policy;
 
@@ -95,31 +94,29 @@ public static class QuotationWaiverEvaluator
             throw new DomainConflictException("Quotation waiver is not bound to this evaluation.");
         }
 
-        var matched = false;
-        var controls = bundle.Controls.Select(control =>
-        {
-            if (control.Type != PolicyEffectType.RequireQuotations ||
-                !string.Equals(control.RequirementKey, target, StringComparison.Ordinal))
-            {
-                return control;
-            }
-
-            matched = true;
-            return control with { MinimumQuotations = request.To };
-        }).ToArray();
-        if (!matched)
+        var targets = bundle.Controls.Where(control =>
+            control.Type == PolicyEffectType.RequireQuotations &&
+            string.Equals(control.RequirementKey, target, StringComparison.Ordinal)).ToArray();
+        if (targets.Length == 0)
         {
             throw new DomainConflictException("Quotation waiver target is not present in the evaluation.");
         }
-
-        var resultDigest = PolicyCanonicalizer.Hash(JsonSerializer.Serialize(controls.Select(control => new
+        if (targets.Any(control => control.MinimumQuotations != request.Floor))
         {
-            control.RequirementKey,
-            Type = control.Type.ToString(),
-            control.MinimumQuotations,
-            Subjects = control.SubjectIds.OrderBy(id => id)
-        })));
-        return bundle with { Controls = controls, ResultDigest = resultDigest };
+            throw new DomainConflictException("Quotation waiver floor does not match the published control.");
+        }
+
+        var controls = bundle.Controls.Select(control => targets.Contains(control)
+            ? control with { MinimumQuotations = request.To }
+            : control).ToArray();
+        var scopes = bundle.ScopeEvaluations.Select(scope => scope with
+        {
+            Controls = scope.Controls.Select(control =>
+                targets.Contains(control) ? control with { MinimumQuotations = request.To } : control).ToArray()
+        }).ToArray();
+        var resultDigest = PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
+            bundle.InputDigest, scopes, controls, bundle.Result, null));
+        return bundle with { ScopeEvaluations = scopes, Controls = controls, ResultDigest = resultDigest };
     }
 
     public static string ComputeBinding(
