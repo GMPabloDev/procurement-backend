@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence;
@@ -141,6 +143,35 @@ public sealed class PolicyPersistenceServiceTests
         Assert.Null(await context.PolicyEvaluationReservations.SingleOrDefaultAsync(
             item => item.Id == reservation.Id, cancellationToken));
 
+        var provider = new CountingFactProvider(request);
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Policy:Workloads:0:Issuer"] = "https://issuer.test",
+            ["Policy:Workloads:0:ClientId"] = "procurement-api"
+        }).Build();
+        var evaluationService = new PolicyEvaluationService(
+            service,
+            new PolicyWorkloadAllowlist(configuration),
+            new PolicyFactProviderRegistry([provider]),
+            new PolicyExceptionVerifierRegistry([]),
+            new PolicyReferenceCatalogRegistry([]),
+            NullLogger<PolicyEvaluationService>.Instance);
+        var factRequest = new PolicyFactRequest(
+            "PURCHASE_REQUEST", request.Subject.Id, request.Subject.Version, "REQUEST_EVALUATE",
+            DateTimeOffset.UtcNow, new PolicyWorkloadPrincipal("https://issuer.test", "procurement-api"),
+            "corr-service-replay") { OrganizationId = organizationId };
+        var serviceFirst = await evaluationService.EvaluateEnterprisePurchaseRequestAsync(
+            factRequest, "policy-service-replay", cancellationToken);
+        var serviceReplay = await evaluationService.EvaluateEnterprisePurchaseRequestAsync(
+            factRequest with { RequestedAtUtc = DateTimeOffset.UtcNow.AddMinutes(1) },
+            "policy-service-replay", cancellationToken);
+        Assert.Equal(serviceFirst.Id, serviceReplay.Id);
+        Assert.Equal(1, provider.Calls);
+        await Assert.ThrowsAsync<DomainConflictException>(() => evaluationService
+            .EvaluateEnterprisePurchaseRequestAsync(
+                factRequest with { SubjectId = Guid.NewGuid() }, "policy-service-replay", cancellationToken));
+        Assert.Equal(1, provider.Calls);
+
         await service.RetireAsync(
             activation.Id,
             DateTimeOffset.UtcNow.AddMinutes(1),
@@ -149,5 +180,69 @@ public sealed class PolicyPersistenceServiceTests
             "corr-policy-4",
             cancellationToken);
         Assert.Null(await service.FindActiveAsync(organizationId, DateTimeOffset.UtcNow.AddHours(1), cancellationToken));
+    }
+
+    private sealed class CountingFactProvider(PolicyRequestInput request) : IPolicyFactProvider
+    {
+        public int Calls { get; private set; }
+        public string SubjectType => "PURCHASE_REQUEST";
+        public string Operation => "REQUEST_EVALUATE";
+        public string ProviderId => "test-provider";
+        public string ContractVersion => "v1";
+
+        public Task<PolicyFactBundle> GetFactsAsync(
+            PolicyFactRequest factRequest,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            var manifest = new PolicyCompletenessManifest(
+                request.Subject.Id, request.Subject.Version,
+                request.Lines.Select(line => line.Subject).ToArray(), string.Empty);
+            var manifestPreimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["canonicalization_version"] = PolicyCanonicalizer.Version,
+                ["line_count"] = manifest.Lines.Count,
+                ["lines"] = manifest.Lines.OrderBy(line => line.Id).ThenBy(line => line.Version)
+                    .Select(line => new { id = line.Id.ToString("D"), version = line.Version }).ToArray(),
+                ["request_id"] = manifest.RequestId.ToString("D"),
+                ["request_version"] = manifest.RequestVersion
+            };
+            manifest = manifest with { Digest = PolicyCanonicalizer.Hash(JsonSerializer.Serialize(manifestPreimage)) };
+            using var requestDocument = JsonDocument.Parse(PolicyCanonicalizer.CanonicalizeRequest(
+                request, DateTimeOffset.UnixEpoch));
+            var factPayload = new SortedDictionary<string, JsonElement>(StringComparer.Ordinal);
+            foreach (var property in requestDocument.RootElement.EnumerateObject())
+            {
+                if (!string.Equals(property.Name, "evaluated_at_utc", StringComparison.Ordinal))
+                {
+                    factPayload[string.Equals(property.Name, "subject", StringComparison.Ordinal)
+                        ? "subject_ref" : property.Name] = property.Value.Clone();
+                }
+            }
+            var factsPreimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["canonicalization_version"] = PolicyCanonicalizer.Version,
+                ["completeness_manifest"] = new
+                {
+                    request_id = manifest.RequestId.ToString("D"),
+                    request_version = manifest.RequestVersion,
+                    lines = manifest.Lines.OrderBy(line => line.Id).ThenBy(line => line.Version)
+                        .Select(line => new { id = line.Id.ToString("D"), version = line.Version }).ToArray(),
+                    digest = manifest.Digest
+                },
+                ["facts"] = factPayload,
+                ["provenance"] = new Dictionary<string, string>(), 
+                ["provider_contract_version"] = ContractVersion,
+                ["provider_id"] = ProviderId,
+                ["subject_ref"] = new { id = request.Subject.Id.ToString("D"), version = request.Subject.Version },
+                ["organization_id"] = request.OrganizationId.ToString("D"),
+                ["legal_entity_id"] = request.LegalEntityId.ToString("D"),
+                ["base_currency"] = request.BaseCurrency
+            };
+            var facts = new PolicyFactBundle(
+                request, manifest, ProviderId, ContractVersion,
+                PolicyCanonicalizer.Hash(JsonSerializer.Serialize(factsPreimage)));
+            return Task.FromResult(facts);
+        }
     }
 }
