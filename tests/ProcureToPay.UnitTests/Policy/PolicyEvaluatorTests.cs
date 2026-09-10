@@ -174,6 +174,9 @@ public sealed class PolicyEvaluatorTests
         Assert.Equal(2, reduced.Controls.Single().MinimumQuotations);
         Assert.Equal(2, reduced.ScopeEvaluations.Single().Controls.Single().MinimumQuotations);
         Assert.NotEqual(bundle.ResultDigest, reduced.ResultDigest);
+        var replay = PolicyEvaluationBundleRehydrator.FromJson(
+            JsonSerializer.Serialize(reduced, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        Assert.Equal(1, replay.Controls.Single().MinimumAllowedQuotations);
         Assert.Throws<DomainConflictException>(() =>
             QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(
                 bundle, request with { From = 4 }, evidence));

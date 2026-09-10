@@ -88,6 +88,8 @@ public static class QuotationWaiverEvaluator
         ArgumentNullException.ThrowIfNull(evidence);
         var target = request.TargetRequirementKey;
         if (string.IsNullOrWhiteSpace(target) ||
+            !string.Equals(request.PolicyDigest, bundle.PolicyContentDigest, StringComparison.Ordinal) ||
+            !string.Equals(request.EvaluationDigest, bundle.ResultDigest, StringComparison.Ordinal) ||
             !string.Equals(evidence.Binding, request.Binding, StringComparison.Ordinal) ||
             !string.Equals(evidence.EvidenceDigest, request.EvidenceDigest, StringComparison.Ordinal))
         {
@@ -109,13 +111,19 @@ public static class QuotationWaiverEvaluator
             throw new DomainConflictException("Quotation waiver bounds do not match the published control.");
         }
 
-        var controls = bundle.Controls.Select(control => targets.Contains(control)
-            ? control with { MinimumQuotations = request.To }
-            : control).ToArray();
+        static bool IsTarget(PolicyGeneratedControl control, PolicyGeneratedControl targetControl) =>
+            control.Type == targetControl.Type &&
+            string.Equals(control.RequirementKey, targetControl.RequirementKey, StringComparison.Ordinal) &&
+            control.SubjectIds.SetEquals(targetControl.SubjectIds);
+        var controls = bundle.Controls.Select(control =>
+            targets.Any(targetControl => IsTarget(control, targetControl))
+                ? control with { MinimumQuotations = request.To }
+                : control).ToArray();
         var scopes = bundle.ScopeEvaluations.Select(scope => scope with
         {
             Controls = scope.Controls.Select(control =>
-                targets.Contains(control) ? control with { MinimumQuotations = request.To } : control).ToArray()
+                targets.Any(targetControl => IsTarget(control, targetControl))
+                    ? control with { MinimumQuotations = request.To } : control).ToArray()
         }).ToArray();
         var resultDigest = PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
             bundle.InputDigest, scopes, controls, bundle.Result, null));

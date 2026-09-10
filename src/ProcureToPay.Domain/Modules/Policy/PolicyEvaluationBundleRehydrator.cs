@@ -81,7 +81,10 @@ public static class PolicyEvaluationBundleRehydrator
             NullableInt(value, "minimumQuotations"),
             documents,
             rules,
-            value.GetProperty("reason").GetString() ?? string.Empty);
+            value.GetProperty("reason").GetString() ?? string.Empty)
+        {
+            MinimumAllowedQuotations = NullableInt(value, "minimumAllowedQuotations")
+        };
     }
 
     private static PolicyApprovalDescriptor ParseApproval(JsonElement value)

@@ -540,6 +540,11 @@ public sealed class PolicyEvaluationService(
         string correlationReference,
         CancellationToken cancellationToken = default)
     {
+        if (!workloadAllowlist.IsAllowed(workload))
+        {
+            throw new DomainForbiddenException("The workload is not allowlisted for policy evaluation.");
+        }
+        ValidateEvaluationKey(evaluationKey);
         if (sourcing.CurrentRequestEvaluation is null)
         {
             throw new DomainConflictException("Sourcing evaluation requires a request evaluation.");

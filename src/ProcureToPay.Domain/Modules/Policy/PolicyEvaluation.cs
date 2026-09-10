@@ -657,7 +657,9 @@ public static class PolicyEvaluator
                 ? group.Max(control => control.MinimumQuotations)
                 : first.MinimumQuotations,
             MinimumAllowedQuotations = first.Type == PolicyEffectType.RequireQuotations
-                ? group.Max(control => control.MinimumAllowedQuotations)
+                ? group.Any(control => control.MinimumAllowedQuotations is null)
+                    ? null
+                    : group.Max(control => control.MinimumAllowedQuotations)
                 : first.MinimumAllowedQuotations,
             SupportingDocumentTypes = group.SelectMany(control => control.SupportingDocumentTypes)
                 .ToImmutableHashSet(StringComparer.Ordinal),
