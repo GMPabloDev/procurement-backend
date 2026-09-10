@@ -20,6 +20,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<PolicyActivationRecord> PolicyActivations => Set<PolicyActivationRecord>();
     public DbSet<PolicyRetirementRecord> PolicyRetirements => Set<PolicyRetirementRecord>();
     public DbSet<PolicyEvaluationBundleRecord> PolicyEvaluationBundles => Set<PolicyEvaluationBundleRecord>();
+    public DbSet<PolicyEvaluationReservationRecord> PolicyEvaluationReservations => Set<PolicyEvaluationReservationRecord>();
     public DbSet<PolicyExceptionVerificationRecord> PolicyExceptionVerifications => Set<PolicyExceptionVerificationRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -36,6 +37,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigurePolicySetVersion(modelBuilder);
         ConfigurePolicyActivation(modelBuilder);
         ConfigurePolicyRetirement(modelBuilder);
+        ConfigurePolicyEvaluationReservation(modelBuilder);
         ConfigurePolicyEvaluationBundle(modelBuilder);
         ConfigurePolicyExceptionVerification(modelBuilder);
         base.OnModelCreating(modelBuilder);
@@ -224,6 +226,26 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.HasIndex(record => new { record.WorkflowDecisionId, record.BaseBundleId, record.TargetRequirementKey })
             .IsUnique();
         entity.HasIndex(record => record.EvaluationBundleId);
+    }
+
+    private static void ConfigurePolicyEvaluationReservation(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PolicyEvaluationReservationRecord>();
+        entity.ToTable("PolicyEvaluationReservations", "Policy");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.WorkloadIssuer).HasMaxLength(320).IsRequired();
+        entity.Property(record => record.WorkloadClientId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Operation).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.EvaluationKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.IdempotencyFingerprint).HasMaxLength(64).IsRequired();
+        entity.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.WorkloadIssuer,
+            record.WorkloadClientId,
+            record.Operation,
+            record.EvaluationKey
+        }).IsUnique();
     }
 
     private static void ConfigurePolicyEvaluationBundle(ModelBuilder modelBuilder)

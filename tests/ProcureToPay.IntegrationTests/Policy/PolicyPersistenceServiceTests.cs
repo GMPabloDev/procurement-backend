@@ -108,6 +108,22 @@ public sealed class PolicyPersistenceServiceTests
             bundle with { Subject = new PolicySubjectReference(bundle.Subject.Id, 2) }, caller, cancellationToken));
         Assert.Equal(1, await context.PolicyEvaluationBundles.CountAsync(cancellationToken));
         Assert.Equal(3, await context.AdministrativeAuditRecords.CountAsync(cancellationToken));
+        var reservation = await service.ReserveEvaluationKeyAsync(
+            organizationId,
+            "https://issuer.test",
+            "procurement-api",
+            "REQUEST_EVALUATE",
+            "policy-eval-reservation",
+            request.Subject.Id,
+            request.Subject.Version,
+            PolicyPersistenceService.ComputeCommandFingerprint(
+                caller,
+                request.Subject),
+            cancellationToken);
+        Assert.NotNull(reservation);
+        await service.ReleaseEvaluationKeyAsync(reservation.Id, cancellationToken);
+        Assert.Null(await context.PolicyEvaluationReservations.SingleOrDefaultAsync(
+            item => item.Id == reservation.Id, cancellationToken));
 
         await service.RetireAsync(
             activation.Id,

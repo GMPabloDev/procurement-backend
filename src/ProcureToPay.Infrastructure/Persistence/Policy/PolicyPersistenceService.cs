@@ -501,6 +501,82 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             record.Operation == operation &&
             record.EvaluationKey == evaluationKey,
             cancellationToken);
+
+    public async Task<PolicyEvaluationReservationRecord?> ReserveEvaluationKeyAsync(
+        Guid organizationId,
+        string issuer,
+        string clientId,
+        string operation,
+        string evaluationKey,
+        Guid subjectId,
+        int subjectVersion,
+        string idempotencyFingerprint,
+        CancellationToken cancellationToken = default)
+    {
+        for (var attempt = 0; attempt < 120; attempt++)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (await FindByWorkloadEvaluationKeyAsync(
+                    organizationId, issuer, clientId, operation, evaluationKey, cancellationToken) is not null)
+            {
+                return null;
+            }
+
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(
+                System.Data.IsolationLevel.Serializable, cancellationToken);
+            var reservation = await dbContext.PolicyEvaluationReservations.AsNoTracking().SingleOrDefaultAsync(record =>
+                record.OrganizationId == organizationId &&
+                record.WorkloadIssuer == issuer &&
+                record.WorkloadClientId == clientId &&
+                record.Operation == operation &&
+                record.EvaluationKey == evaluationKey,
+                cancellationToken);
+            if (reservation is not null && reservation.ExpiresAt > now)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken);
+                continue;
+            }
+            if (reservation is not null)
+            {
+                dbContext.PolicyEvaluationReservations.Remove(reservation);
+            }
+
+            var created = new PolicyEvaluationReservationRecord
+            {
+                Id = Guid.NewGuid(), OrganizationId = organizationId,
+                WorkloadIssuer = issuer, WorkloadClientId = clientId, Operation = operation,
+                EvaluationKey = evaluationKey, SubjectId = subjectId, SubjectVersion = subjectVersion,
+                IdempotencyFingerprint = idempotencyFingerprint, ReservedAt = now,
+                ExpiresAt = now.AddSeconds(30)
+            };
+            dbContext.PolicyEvaluationReservations.Add(created);
+            try
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return created;
+            }
+            catch (DbUpdateException)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                dbContext.Entry(created).State = EntityState.Detached;
+            }
+        }
+
+        throw new PolicyDependencyUnavailableException("The evaluation key reservation timed out.");
+    }
+
+    public async Task ReleaseEvaluationKeyAsync(Guid reservationId, CancellationToken cancellationToken = default)
+    {
+        var reservation = await dbContext.PolicyEvaluationReservations
+            .SingleOrDefaultAsync(record => record.Id == reservationId, cancellationToken);
+        if (reservation is not null)
+        {
+            dbContext.PolicyEvaluationReservations.Remove(reservation);
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+    }
     public async Task<PolicyExceptionVerificationRecord> AppendExceptionVerificationAsync(
         Guid evaluationBundleId,
         QuotationWaiverRequest request,

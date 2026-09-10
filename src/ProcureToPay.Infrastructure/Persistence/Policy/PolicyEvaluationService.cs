@@ -235,6 +235,25 @@ public sealed class PolicyEvaluationService(
         }
 
         var provider = factProviderRegistry.Resolve(factRequest.SubjectType, factRequest.Operation);
+        PolicyEvaluationReservationRecord? reservation = null;
+        if (factRequest.OrganizationId is Guid organizationId)
+        {
+            reservation = await persistenceService.ReserveEvaluationKeyAsync(
+                organizationId, workload.Issuer, workload.ClientId, factRequest.Operation, evaluationKey,
+                factRequest.SubjectId, factRequest.SubjectVersion,
+                ComputePreProviderFingerprint(factRequest, workload), cancellationToken);
+            if (reservation is null)
+            {
+                var persisted = await persistenceService.FindByWorkloadEvaluationKeyAsync(
+                    organizationId, workload.Issuer, workload.ClientId, factRequest.Operation,
+                    evaluationKey, cancellationToken)
+                    ?? throw new PolicyDependencyUnavailableException("Evaluation reservation completed without a bundle.");
+                return ReplayExistingEvaluation(persisted, factRequest, evaluationKey, workload);
+            }
+        }
+
+        try
+        {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(5));
         PolicyFactBundle facts;
@@ -270,6 +289,14 @@ public sealed class PolicyEvaluationService(
             active.PolicySetVersion.ContentDigest);
         return await EvaluateEnterprisePurchaseRequestCoreAsync(
             policy, factRequest with { RequestedAtUtc = at }, evaluationKey, cancellationToken, facts);
+        }
+        finally
+        {
+            if (reservation is not null)
+            {
+                await persistenceService.ReleaseEvaluationKeyAsync(reservation.Id, CancellationToken.None);
+            }
+        }
     }
 
     public Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestAsync(
@@ -393,6 +420,24 @@ public sealed class PolicyEvaluationService(
         }
         return properties;
     }
+
+    private static string ComputePreProviderFingerprint(
+        PolicyFactRequest factRequest,
+        PolicyWorkloadIdentity workload) =>
+        PolicyPersistenceService.ComputeCommandFingerprint(
+            new PolicyEvaluationCaller(
+                factRequest.OrganizationId ?? Guid.Empty,
+                workload.Issuer,
+                workload.ClientId,
+                factRequest.Operation,
+                string.Empty,
+                Guid.Empty,
+                string.Empty)
+            {
+                SubjectType = factRequest.SubjectType,
+                Cause = "FACT_PROVIDER_EVALUATION"
+            },
+            new PolicySubjectReference(factRequest.SubjectId, factRequest.SubjectVersion));
 
     private static string ComputeFactsDigest(PolicyFactBundle bundle)
     {

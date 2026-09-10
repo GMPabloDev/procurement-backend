@@ -72,6 +72,21 @@ public sealed class PolicyEvaluationBundleRecord
     public PolicySetVersionRecord PolicySetVersion { get; set; } = null!;
 }
 
+public sealed class PolicyEvaluationReservationRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string WorkloadIssuer { get; set; } = null!;
+    public string WorkloadClientId { get; set; } = null!;
+    public string Operation { get; set; } = null!;
+    public string EvaluationKey { get; set; } = null!;
+    public Guid SubjectId { get; set; }
+    public int SubjectVersion { get; set; }
+    public string IdempotencyFingerprint { get; set; } = null!;
+    public DateTimeOffset ReservedAt { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+}
+
 public sealed class PolicyExceptionVerificationRecord
 {
     public Guid Id { get; set; }
