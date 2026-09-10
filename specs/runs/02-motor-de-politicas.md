@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
-> **Actualizado:** 2026-09-10 00:20 -05
-> **HEAD de implementación verificado:** `353c192`
+> **Actualizado:** 2026-09-10 00:50 -05
+> **HEAD de implementación verificado:** `748771d`
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -41,9 +41,9 @@
 | T-04 | Parcial | `PolicyPersistenceService`: selección serializable de activación, retiro append-only, auditoría administrativa, rowversion e idempotencia por SHA-256; reserva persistente `PolicyEvaluationReservations` con índice scoped y lease de 5 min antes del provider; `EvaluationSequence` persistida con índice único y latest lookup para sourcing; `PolicyPersistenceServiceTests` verifica reserva/liberación, espera concurrente, provider único, replay y conflicto. Aún falta cierre atómico de sucesor y diff/reevaluación completo. | `57f63fe` / Bloque 2 en curso |
 | T-05 | Parcial | `PolicyController` expone lectura scoped de versiones/evaluaciones, drafts, publicación+activación atómica, retiro y simulación tipada no persistente sobre snapshot; mutaciones validan pertenencia de draft/activation a `actor.OrganizationId`; edición versionada completa y límites API siguen pendientes. | `57f63fe` / Bloque 3 en curso |
 | T-06 | Parcial | Se agregó `PolicyFactRequest`, registry exact-one local, timeout 5 s, manifest de líneas, validación de digest de política y `EvaluateEnterprisePurchaseRequest` que carga la política activa desde persistencia mediante parser canónico. Replay: lookup scoped antes del provider, reserva distribuida por lease/índice único, lock local, fingerprint e integridad; sourcing exige workload allowlisted, key válida, snapshot policy canónico publicado y activación vigente, latest `EvaluationSequence`, result/facts/manifest digests y contenido canónico persistido; los digests de manifest/facts ahora comparten serializer canónico y el sourcing liga sus facts y líneas al `InputDigest`, además de rechazar cambio material sin nueva versión; faltan catálogos completos y manifest de attestation exhaustivo. | `353c192` / Bloque 3 en curso |
-| T-07 | Parcial | `QuotationWaiverEvaluator` valida `PolicyDigest/EvaluationDigest`, `from/to/floor` y allowance publicado, binding/nonce/evidence, autoridad y SoD; actualiza controles/scopes por identidad contractual (incluyendo controles lineales derivados de un combinado) y recalcula digest canónico. El servicio rehidrata y valida el bundle persistido antes de aplicar, conserva verification snapshot, calcula el `exception_verification_digest` contractual y apendea una reevaluación con `PreviousBundleId`/input digest de excepción. Falta verifier registry de workflow y evidencia HTTP/replay completa. | `57f63fe` / Bloque 3 en curso |
-| T-08 | Parcial | `PolicyConfigurationHealthCheck` y `/health/policy` distinguen ausencia/ambigüedad y validan estado publicado + digest SHA-256 del contenido cargado sin exponer reglas; `ApiE2ETests` verifica `503` + `POLICY_CONFIGURATION_REQUIRED`; faltan corrupción/indisponibilidad HTTP. | `57f63fe` / Bloque 4 en curso |
-| T-09 | Parcial | Unitarias: 38 correctas; IntegrationTests: 9 correctas con SQL Server/Testcontainers, incluyendo provider de facts y vectores golden de manifest/bundle; ApiE2ETests: 2 correctas (incluye `/health/policy` required); solución compila con 0 advertencias/errores; LSP primario sin diagnósticos. Se agregaron golden vectors exactos para policy/input/result/exception, ordenación UTF-8, NFC y rechazo de duplicados, además de unificación del digest del provider controlado con producción. Falta ampliar evidencia negativa/golden/API específica de CA-01–CA-12. | `57f63fe` / Bloque 4 |
+| T-07 | Parcial | `QuotationWaiverEvaluator` valida `PolicyDigest/EvaluationDigest`, `from/to/floor` y allowance publicado, binding/nonce/evidence, autoridad y SoD; actualiza controles/scopes por identidad contractual (incluyendo controles lineales derivados de un combinado) y recalcula digest canónico. El servicio rehidrata y valida el bundle persistido antes de aplicar, conserva verification snapshot, calcula el `exception_verification_digest` contractual y apendea una reevaluación con `PreviousBundleId`/input digest de excepción. El registry ya usa default-deny cuando no hay workflow; falta evidencia integrada de replay/NOT_EXCEPTIONABLE y HTTP. | `748771d` / Bloque 3 en curso |
+| T-08 | Parcial | `PolicyConfigurationHealthCheck` y `/health/policy` distinguen ausencia/ambigüedad, corrupción y validan estado publicado + digest SHA-256 del contenido cargado sin exponer reglas; `ApiE2ETests` verifica por HTTP `503` + `POLICY_CONFIGURATION_REQUIRED` y `POLICY_CONFIGURATION_CORRUPT`; faltan indisponibilidad HTTP y telemetría completa. | `748771d` / Bloque 4 en curso |
+| T-09 | Parcial | Unitarias: 38 correctas; IntegrationTests: 10 correctas con SQL Server/Testcontainers, incluyendo provider de facts, publicación sucesora atómica, default-deny y vectores golden; ApiE2ETests: 2 correctas (incluye health required/corrupt y ciclo draft/publicación/simulación); solución compila con 0 advertencias/errores; LSP primario sin diagnósticos. Falta ampliar evidencia negativa/golden/API específica de CA-01–CA-12. | `748771d` / Bloque 4 |
 
 ## Checkpoints
 
@@ -77,7 +77,12 @@
 - Cambios: `EvaluateSourcing` ahora calcula `ManifestDigest` y `FactsDigest` propios a partir de sujeto, líneas cubiertas y facts de sourcing; esos digests alimentan el input canónico y se conservan en el bundle. `EvaluateSourcingAsync` rechaza un segundo bundle del mismo sourcing id/version cuando cambia el input digest, obligando a publicar una nueva versión del sujeto.
 - Tests/checks: UnitTests 38/38; prueba dirigida de persistencia SQL Server 1/1; build y LSP primario sin diagnósticos. La prueba unitaria confirma que cambiar facts de sourcing cambia FactsDigest/InputDigest sin cambiar el manifest de líneas.
 - Resultado: se cerró la omisión por la que facts materiales de sourcing podían cambiar sin quedar ligados al digest; permanecen pendientes providers/manifests reales y cobertura completa de cambios materiales.
-- HEAD de implementación: `353c192`.
+### CP-05 — 2026-09-10 00:50 - Ciclo API, sucesor atómico y default-deny
+
+- Cambios: el verifier registry retorna un adapter default-deny cuando no hay workflow, evitando convertir la ausencia esperada del workflow en `503`. Se agregaron pruebas HTTP de corrupción de configuración (`503`), creación de draft, publicación, health y simulación no persistente. La prueba SQL cubre publicación de sucesor y retiro append-only exactamente en `effective_from`.
+- Tests/checks: UnitTests 38/38; IntegrationTests 10/10; ApiE2ETests 2/2; build 0/0; `specctl check 02 --approval` válido; LSP primario limpio.
+- Resultado: queda cubierta evidencia HTTP de corrupción y lifecycle administrativo básico; el run sigue BLOCK por materialidad/manifest de sourcing completa, waiver integrado y matriz contractual restante.
+- HEAD de implementación: `748771d`.
 
 ## Evidencia de aceptación
 
@@ -131,7 +136,7 @@
 
 ## Cierre
 
-- HEAD de implementación: `353c192`.
+- HEAD de implementación: `748771d`.
 - Estrategia de integración: Pendiente.
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.
