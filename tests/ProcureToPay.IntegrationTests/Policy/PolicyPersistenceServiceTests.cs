@@ -232,6 +232,10 @@ public sealed class PolicyPersistenceServiceTests
         Assert.Single(reevaluated.Diff);
         Assert.Equal(1, await context.Set<PolicyExceptionVerificationRecord>().CountAsync(cancellationToken));
         Assert.Equal(quotationBundle.Id, reevaluated.PreviousBundleId);
+        var replayedReevaluation = await waiverService.ApplyQuotationWaiverAsync(
+            quotationBundle, waiver, cancellationToken);
+        Assert.Equal(reevaluated.Id, replayedReevaluation.Id);
+        Assert.Equal(1, await context.Set<PolicyExceptionVerificationRecord>().CountAsync(cancellationToken));
 
         var successor = new PolicySetVersion(Guid.NewGuid(), organizationId, 3, [PolicyScope.Line]);
         successor.AddRule(new PolicyRule(
