@@ -1,7 +1,7 @@
 # RUN SPEC 03 — Núcleo de casos y decisiones de aprobación
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** En implementación
+> **Estado del run:** Bloqueado
 > **Spec:** specs/03-approval-workflow.md
 > **Revisión contractual:** 2
 > **Commit de la spec:** a8f73d19a2bd77563050f8d2acf39ff9be05eb6e
@@ -14,7 +14,7 @@
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-11 04:45 -05
 > **Actualizado:** 2026-09-11 08:20 -05
-> **HEAD verificado:** Pendiente
+> **HEAD verificado:** fd80f4fd4171dbddd2c57207b47385c716b52030
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -176,12 +176,47 @@
 
 ## Verificación independiente
 
-> **Resultado:** Pendiente (gate no ejecutado: exige `HEAD verificado` commiteado)
-> **Rondas:** 0/2
-> **Triaje:** 0 detalle-contrato / 0 ambigüedad / 0 prueba-faltante / 0 error-del-revisor
-> **Modelo efectivo:** Pendiente
-> **Método:** Subagente `sdd-implementation-reviewer`
-> **Fecha:** Pendiente
+> **Resultado:** Con bloqueos (ronda 1 = BLOCK)
+> **Rondas:** 1/2
+> **Triaje:** 8 detalle-contrato / 2 ambigüedad / 2 prueba-faltante / 1 error-del-revisor
+> **Modelo efectivo:** `openai-codex/gpt-5.6-sol` (effort high) — coincide con el configurado en `subagents.json` y es distinto del orquestador; sin degradación
+> **Método:** Subagente `sdd-implementation-reviewer`, ronda 1 sobre `0e25ab77…fd80f4f`
+> **Fecha:** 2026-09-11 13:30 UTC
+
+El revisor leyó archivos y ejecutó comprobaciones propias (build, `specctl`, `git`, `hashlib` sobre el vector de submission — coincidió en `de1d2652…`). Veredicto: **BLOCK**, con 12 hallazgos bloqueantes. Triaje verificado contra el contrato por el orquestador:
+
+#### Detalle-contrato (el contrato ya lo exigía y faltaba implementarlo) — 8
+
+- **Worker productivo ausente** (`DependencyInjection.cs:90-102`). `grep -rn "AddHostedService|BackgroundService|IHostedService" src/` no devuelve nada: no hay ejecución automática del dispatcher ni del reconciliador. REQ-10 exige entrega de outbox y recuperación tras restart, y NFR-03 que una reconciliación debida ocurra en ≤60 s; el endpoint administrativo no es un worker.
+- **Reconciliación sin lease persistente** (`ApprovalReconciliationService.cs:43-133`). REQ-10 enumera `reconciliación` entre las operaciones que «usan índices, leases y transacciones multiinstancia»; `owner` solo se escribe al final y dos instancias pueden solaparse.
+- **Selección de carga fuera de transacción serializable** (`ApprovalSubmissionService.cs:74-98`). REQ-04: «Selección, reserva de carga y assignment se serializan». El índice de reserva solo serializa submissions con la **misma** key; dos keys distintas pueden leer la misma carga y elegir al mismo candidato.
+- **Replay de decisión no devuelve los artefactos originales** (`ApprovalDecisionService.cs:109-122`). Devuelve `OutboxEventIds = []` y estados actuales; NFR-01 exige que «un replay devuelve los artefactos originales».
+- **Lecturas de evidencia admiten `ADMIN`** (`ApprovalController.cs:307-327`). REQ-09 concede la lectura organizacional de casos, assignments, decisiones y evidencia al `AUDITOR`, mientras que `ADMIN` ve `UNASSIGNED` y dispara reconciliación.
+- **`correlation_reference` en trazas** (`ApprovalTelemetry.cs:56-60`). Es entrada arbitraria del workload y puede transportar PII; NFR-05 pide observabilidad minimizada.
+- **`Down` de la migración fundacional destruye historia** (`20260911100346_ApprovalWorkflowFoundation.cs:473-521`). El contrato prohíbe la migración descendente destructiva y la prueba de reversión solo retrocede **hasta** foundation, por lo que no demuestra lo que su nombre sugiere.
+- **CA-07 sin bytes de preimagen para signal/authority/decisión** (`ApprovalGoldenVectorTests.cs:29-77`). CA-07 pide «fijan bytes y SHA-256 de submission, signal, authority y decisión»; solo submission fija el literal y los demás únicamente el hash.
+
+#### Ambigüedad (el contrato no lo fija; exige `/spec revisar`) — 2
+
+- **Outbox en toda transición observable.** REQ-08 dice «Cada transición observable crea audit y un `ApprovalOutboxEvent` por target en la misma transacción», pero el vocabulario cerrado de `resultado` en Datos y contratos es `APPROVED/REJECTED/CHANGES_REQUESTED/CANCELLED/SATISFIED/FAILED` (`ApprovalRecords.cs:343-349`): **no existe código de resultado para una submission ni para un assignment**. Por eso el outbox solo se produce en `ApprovalWorkflowService` y `ApprovalDecisionService`. La spec es internamente contradictoria y no corresponde adivinar cuál de las dos frases manda.
+- **`ADMIN` que además ostenta el rol empresarial.** REQ-09 dice que `ADMIN` «no decide» y CA-05 que «`ADMIN` recibe `403`», pero el decisor legítimo se define por ser el assignee actual y elegible. Hoy un `ADMIN` que además tenga el rol requerido y sea el assignee podría decidir; la E2E solo cubre a un `ADMIN` que no era assignee. Interpretarlo en sentido estricto cambia autorización (materia de seguridad) y conviene fijarlo en el contrato.
+
+#### Prueba-faltante — 2
+
+- La carrera de decisiones captura cualquier `Exception` (`ApprovalDecisionIntegrationTests.cs:192-214`) en vez de exigir el `409` contractual; un error de infraestructura pasaría la prueba.
+- La conformidad declarada no se sostiene en las filas REQ-04/06/08/09/10 ni NFR-01/02/03/04/05 mientras los ocho puntos anteriores sigan abiertos.
+
+#### Error-del-revisor — 1
+
+- El hallazgo sobre `actor_user_id` en `ApprovalDecisionService.cs:296-301` es un error del revisor: eso no es telemetría sino el registro de **audit** exigido por el contrato (`ApprovalAuditRecord | actor, UTC, acción, …`), que debe identificar al actor. La parte válida del mismo hallazgo es `correlation_reference` en trazas, ya listada arriba.
+
+#### Hueco de proceso — 1 (`prueba-faltante`)
+
+- El árbol no está limpio en el momento del gate porque este run registra `HEAD verificado: fd80f4f` y esa actualización administrativa es posterior al commit revisado. Se resuelve con el commit de metadatos que debe hacer el usuario.
+
+**Fuera de alcance (no bloquea ni dispara ronda):** nada. El revisor confirma que no hay dependencias nuevas, binarios, secretos, artefactos `bin/obj` ni trabajo sobre delegaciones, supersesión, Policy/waiver, PRs, quórums o frontend.
+
+**Decisión pendiente del humano:** dos ambigüedades internas del contrato (REQ-08 vs vocabulario de `resultado`; alcance de `ADMIN` como decisor) exigen `/spec revisar 03` antes de gastar la ronda 2, porque arreglar los ocho puntos de detalle sin resolverlas haría re-bloquear la ronda por la misma capa.
 
 Trabajo de Fase 4 completado **antes** del gate, para no delegarle la conformidad:
 
@@ -190,7 +225,8 @@ Trabajo de Fase 4 completado **antes** del gate, para no delegarle la conformida
 - `## Evidencia de aceptación`: **CA-01…CA-08 `Cumplido`**; 0 criterios pendientes.
 - Contraste del diff contra `Commit base`: todos los cambios pertenecen a la spec 03 (dominio, infraestructura, API, pruebas y migraciones aditivas) más los dos `xunit.runner.json` de los proyectos de prueba, necesarios para que las suites de Testcontainers no agoten la memoria del agente. Sin binarios, sin artefactos generados, sin secretos y sin archivos ajenos al alcance.
 - Reversibilidad probada: `ApprovalOutboxIntegrationTests.Additive_migrations_revert_and_reapply_while_preserving_history`.
-- **Bloqueo del gate**: `HEAD verificado` exige el árbol commiteado y el flujo prohíbe que el agente haga el commit. La rama sigue en `0e25ab77a8df32183215c4af68494776798e2541` (Commit base) con 27 entradas sin commitear. Mientras no exista ese commit, el gate no puede ejecutarse ni procede marcar `Lista para integrar`.
+- Gate ejecutado sobre `HEAD verificado` = `fd80f4fd4171dbddd2c57207b47385c716b52030` (commit del usuario), rango `0e25ab77…fd80f4f`. Resultado: **BLOCK (ronda 1/2)**, ver arriba.
+- La actualización administrativa de este run (registro de `HEAD verificado` y del resultado del gate) queda sin commitear por diseño: el flujo prohíbe que el agente haga commit y corresponde al usuario commitear los metadatos.
 
 ## Resumen de cambios
 

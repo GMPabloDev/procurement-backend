@@ -2,7 +2,7 @@
 
 > **Formato:** sdd/v3
 > **Estado:** Aprobada
-> **Ejecución:** En implementación
+> **Ejecución:** Bloqueada
 > **Vigencia:** Pendiente
 > **Revisión:** 2
 > **Digest contractual:** 82ed4ebe75e522106d9b9b281feb3b9dd2a5702efece9b4d21c13ce3960e7299
