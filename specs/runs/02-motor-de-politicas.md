@@ -1,7 +1,7 @@
 # RUN SPEC 02 — Motor de políticas de compras
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** Lista para integrar
+> **Estado del run:** Integrado
 > **Spec:** specs/02-motor-de-politicas.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** be81039c1afc851575c9694d999d7f38ddeed573
@@ -13,9 +13,9 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
-> **Actualizado:** 2026-09-11 03:32 -05
+> **Actualizado:** 2026-09-11 08:40 -05
 > **HEAD verificado:** dac85ab671e0fc2d91bb538135e58c78b26d2092
-> **Commit de integración:** Pendiente
+> **Commit de integración:** c4ecd80fda6c5dbfad3ff3d2780572fe4495fe15
 
 ## Línea base
 
@@ -342,9 +342,9 @@ Verificación acotada al último residual B7 / NFR-05 / CA-10, CA-11: los spans 
 
 ## Cierre
 
-- HEAD de implementación: `1e4829d`.
-- Estrategia de integración: Pendiente.
-- Commit integrado en rama base: Pendiente.
-- Verificación ejecutada sobre rama base: Pendiente.
-- Metadatos de vigencia actualizados: Pendiente.
-- Pendientes posteriores: Pendiente.
+- HEAD verificado: `dac85ab671e0fc2d91bb538135e58c78b26d2092`.
+- Estrategia de integración: merge no fast-forward de `spec-02-motor-de-politicas` en `main` (`0205e99`), con el commit verificado como segundo padre; `git diff dac85ab..HEAD -- src tests` vacío (sin drift del contenido verificado).
+- Commit integrado en rama base: `c4ecd80fda6c5dbfad3ff3d2780572fe4495fe15` (HEAD de `main` al cierre; contiene `0205e99` y `dac85ab`).
+- Verificación ejecutada sobre rama base: `dotnet build ProcureToPay.sln` 0 advertencias/0 errores; UnitTests 64/64; IntegrationTests 11/11; ApiE2ETests 3/3; `specctl run-lint 02`, `git-check` y `doctor` válidos; digest contractual `63fec425…` intacto.
+- Metadatos de vigencia actualizados: ninguno (`Modifica: Ninguna`, `Reemplaza: Ninguna`).
+- Pendientes posteriores: providers empresariales de Purchase Request/Sourcing, catálogos propietarios de Supplier/Cost Center y workflow HTTP real, fuera del alcance de SPEC 02 (SPEC 03).
