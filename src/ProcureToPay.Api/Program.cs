@@ -2,6 +2,7 @@ using Asp.Versioning;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using ProcureToPay.Api.ExceptionHandling;
@@ -10,6 +11,7 @@ using ProcureToPay.Api.Identity;
 using ProcureToPay.Application;
 using ProcureToPay.Infrastructure;
 using ProcureToPay.Infrastructure.Persistence.Organization;
+using ProcureToPay.Infrastructure.Persistence.Policy;
 using Scalar.AspNetCore;
 
 const string AngularDevelopmentCorsPolicy = "AngularDevelopment";
@@ -109,7 +111,8 @@ var sqlServerConnectionString = builder.Configuration.GetConnectionString("SqlSe
 builder.Services
     .AddHealthChecks()
     .AddSqlServer(sqlServerConnectionString, name: "sqlserver", tags: ["ready"])
-    .AddCheck<OrganizationBootstrapHealthCheck>("organization-bootstrap", tags: ["ready"]);
+    .AddCheck<OrganizationBootstrapHealthCheck>("organization-bootstrap", tags: ["ready"])
+    .AddCheck<PolicyConfigurationHealthCheck>("policy-configuration", tags: ["ready"]);
 
 var telemetryServiceName = builder.Configuration["OpenTelemetry:ServiceName"]
     ?? builder.Environment.ApplicationName;
@@ -117,6 +120,7 @@ builder.Services
     .AddOpenTelemetry()
     .ConfigureResource(resource => resource.AddService(telemetryServiceName))
     .WithTracing(tracing => tracing
+        .AddSource(PolicyTelemetry.SourceName)
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation()
         .AddOtlpExporter());
@@ -161,6 +165,24 @@ app.MapHealthChecks("/health");
 app.MapHealthChecks("/health/bootstrap", new HealthCheckOptions
 {
     Predicate = registration => registration.Name == "organization-bootstrap"
+});
+app.MapHealthChecks("/health/policy", new HealthCheckOptions
+{
+    Predicate = registration => registration.Name == "policy-configuration",
+    ResponseWriter = async (context, report) =>
+    {
+        var entry = report.Entries.Values.Single();
+        var code = report.Status == HealthStatus.Healthy
+            ? "POLICY_CONFIGURATION_OK"
+            : entry.Exception is not null
+                ? "POLICY_CONFIGURATION_UNAVAILABLE"
+                : entry.Description ?? "POLICY_CONFIGURATION_CORRUPT";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            status = report.Status.ToString().ToUpperInvariant(),
+            code
+        });
+    }
 });
 
 app.MapControllers();

@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ProcureToPay.Application.Abstractions;
+using ProcureToPay.Domain.Modules.Policy;
+using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Application.Abstractions.Files;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Organization;
@@ -26,6 +28,58 @@ public static class DependencyInjection
         services.AddScoped<OrganizationBootstrapper>();
         services.AddScoped<CurrentUserProvisioningService>();
         services.AddScoped<OrganizationEligibilityService>();
+        services.AddScoped<PolicyPersistenceService>();
+        services.AddSingleton<PolicyWorkloadAllowlist>();
+        // pi-lens-ignore: CS0246
+        services.AddScoped<PolicyFactProviderRegistry>();
+        var workflowUrl = configuration["Policy:ExceptionWorkflow:BaseUrl"];
+        if (string.IsNullOrWhiteSpace(workflowUrl))
+        {
+            services.AddScoped<IQuotationWaiverVerifier, DefaultDenyQuotationWaiverVerifier>();
+        }
+        else if (Uri.TryCreate(workflowUrl, UriKind.Absolute, out var workflowBaseAddress))
+        {
+            // pi-lens-ignore: lsp:CS1061
+            services.AddHttpClient<HttpQuotationWaiverVerifier>(client =>
+            {
+                client.BaseAddress = workflowBaseAddress;
+                client.Timeout = TimeSpan.FromSeconds(5);
+            });
+            services.AddScoped<IQuotationWaiverVerifier>(provider =>
+                provider.GetRequiredService<HttpQuotationWaiverVerifier>());
+        }
+        else
+        {
+            throw new InvalidOperationException("Policy exception workflow base address is invalid.");
+        }
+        services.AddScoped<PolicyExceptionVerifierRegistry>();
+        var catalogUrl = configuration["Policy:ReferenceCatalog:BaseUrl"];
+        if (string.IsNullOrWhiteSpace(catalogUrl))
+        {
+            services.AddScoped<IPolicyReferenceCatalog>(provider =>
+                new DatabasePolicyReferenceCatalog(
+                    provider.GetRequiredService<ProcureToPayDbContext>(), "DEPARTMENT"));
+            services.AddScoped<IPolicyReferenceCatalog>(provider =>
+                new DatabasePolicyReferenceCatalog(
+                    provider.GetRequiredService<ProcureToPayDbContext>(), "LEGAL_ENTITY"));
+        }
+        else if (Uri.TryCreate(catalogUrl, UriKind.Absolute, out var catalogBaseAddress))
+        {
+            // pi-lens-ignore: lsp:CS1061
+            services.AddHttpClient<HttpPolicyReferenceCatalog>(client =>
+            {
+                client.BaseAddress = catalogBaseAddress;
+                client.Timeout = TimeSpan.FromSeconds(5);
+            });
+            services.AddScoped<IPolicyReferenceCatalog>(provider =>
+                provider.GetRequiredService<HttpPolicyReferenceCatalog>());
+        }
+        else
+        {
+            throw new InvalidOperationException("Policy reference catalog base address is invalid.");
+        }
+        services.AddScoped<PolicyReferenceCatalogRegistry>();
+        services.AddScoped<PolicyEvaluationService>();
         services.AddScoped<IOrganizationEligibilityService>(provider =>
             provider.GetRequiredService<OrganizationEligibilityService>());
 

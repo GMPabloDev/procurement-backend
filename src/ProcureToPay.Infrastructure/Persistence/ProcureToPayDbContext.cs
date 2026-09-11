@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using ProcureToPay.Infrastructure.Persistence.Organization;
+using ProcureToPay.Infrastructure.Persistence.Policy;
 
 namespace ProcureToPay.Infrastructure.Persistence;
 
@@ -15,6 +16,12 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<AuthorityLevelRecord> AuthorityLevels => Set<AuthorityLevelRecord>();
     public DbSet<AuthorityGrantRecord> AuthorityGrants => Set<AuthorityGrantRecord>();
     public DbSet<AdministrativeAuditRecord> AdministrativeAuditRecords => Set<AdministrativeAuditRecord>();
+    public DbSet<PolicySetVersionRecord> PolicySetVersions => Set<PolicySetVersionRecord>();
+    public DbSet<PolicyActivationRecord> PolicyActivations => Set<PolicyActivationRecord>();
+    public DbSet<PolicyRetirementRecord> PolicyRetirements => Set<PolicyRetirementRecord>();
+    public DbSet<PolicyEvaluationBundleRecord> PolicyEvaluationBundles => Set<PolicyEvaluationBundleRecord>();
+    public DbSet<PolicyEvaluationReservationRecord> PolicyEvaluationReservations => Set<PolicyEvaluationReservationRecord>();
+    public DbSet<PolicyExceptionVerificationRecord> PolicyExceptionVerifications => Set<PolicyExceptionVerificationRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -27,6 +34,12 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigureAuthorityLevel(modelBuilder);
         ConfigureAuthorityGrant(modelBuilder);
         ConfigureAdministrativeAudit(modelBuilder);
+        ConfigurePolicySetVersion(modelBuilder);
+        ConfigurePolicyActivation(modelBuilder);
+        ConfigurePolicyRetirement(modelBuilder);
+        ConfigurePolicyEvaluationReservation(modelBuilder);
+        ConfigurePolicyEvaluationBundle(modelBuilder);
+        ConfigurePolicyExceptionVerification(modelBuilder);
         base.OnModelCreating(modelBuilder);
     }
 
@@ -149,6 +162,129 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.HasOne(record => record.AuthorityLevel)
             .WithMany(record => record.Grants)
             .HasForeignKey(record => record.AuthorityLevelId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigurePolicySetVersion(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PolicySetVersionRecord>();
+        entity.ToTable("PolicySetVersions", "Policy");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.ScopesJson).HasMaxLength(2000).IsRequired();
+        entity.Property(record => record.ContentJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.OrganizationId, record.Sequence }).IsUnique();
+        entity.HasOne(record => record.Organization)
+            .WithMany()
+            .HasForeignKey(record => record.OrganizationId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigurePolicyActivation(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PolicyActivationRecord>();
+        entity.ToTable("PolicyActivations", "Policy");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.ActorType).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.Reason).HasMaxLength(1000).IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.EffectiveFrom });
+        entity.HasIndex(record => new { record.PolicySetVersionId, record.EffectiveFrom }).IsUnique();
+        entity.HasOne(record => record.PolicySetVersion)
+            .WithMany(record => record.Activations)
+            .HasForeignKey(record => record.PolicySetVersionId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigurePolicyRetirement(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PolicyRetirementRecord>();
+        entity.ToTable("PolicyRetirements", "Policy");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.ActorType).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.Reason).HasMaxLength(1000).IsRequired();
+        entity.HasIndex(record => record.PolicyActivationId).IsUnique();
+        entity.HasOne(record => record.PolicyActivation)
+            .WithOne(record => record.Retirement)
+            .HasForeignKey<PolicyRetirementRecord>(record => record.PolicyActivationId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigurePolicyExceptionVerification(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PolicyExceptionVerificationRecord>();
+        entity.ToTable("PolicyExceptionVerifications", "Policy");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.WorkflowDecisionId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.TargetRequirementKey).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Binding).HasMaxLength(256).IsRequired();
+        entity.Property(record => record.Nonce).HasMaxLength(256).IsRequired();
+        entity.Property(record => record.EvidenceDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.VerifierReference).HasMaxLength(256).IsRequired();
+        entity.Property(record => record.SnapshotJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.WorkflowDecisionId, record.BaseBundleId, record.TargetRequirementKey })
+            .IsUnique();
+        entity.HasIndex(record => record.EvaluationBundleId);
+    }
+
+    private static void ConfigurePolicyEvaluationReservation(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PolicyEvaluationReservationRecord>();
+        entity.ToTable("PolicyEvaluationReservations", "Policy");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.WorkloadIssuer).HasMaxLength(320).IsRequired();
+        entity.Property(record => record.WorkloadClientId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Operation).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.EvaluationKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.IdempotencyFingerprint).HasMaxLength(64).IsRequired();
+        entity.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.WorkloadIssuer,
+            record.WorkloadClientId,
+            record.Operation,
+            record.EvaluationKey
+        }).IsUnique();
+    }
+
+    private static void ConfigurePolicyEvaluationBundle(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PolicyEvaluationBundleRecord>();
+        entity.ToTable("PolicyEvaluationBundles", "Policy");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.EvaluationKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.WorkloadIssuer).HasMaxLength(320).IsRequired();
+        entity.Property(record => record.WorkloadClientId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Operation).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.EvaluationSequence).IsRequired();
+        entity.Property(record => record.PolicyContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.InputDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Result).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.ResultDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.BundleJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.IdempotencyFingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.CorrelationReference).HasMaxLength(120).IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.WorkloadIssuer,
+            record.WorkloadClientId,
+            record.Operation,
+            record.EvaluationKey
+        }).IsUnique();
+        entity.HasIndex(record => new { record.OrganizationId, record.SubjectId, record.SubjectVersion });
+        entity.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.SubjectId,
+            record.SubjectVersion,
+            record.EvaluationSequence
+        }).IsUnique();
+        entity.HasOne(record => record.PolicySetVersion)
+            .WithMany(record => record.Evaluations)
+            .HasForeignKey(record => record.PolicySetVersionId)
             .OnDelete(DeleteBehavior.Restrict);
     }
 

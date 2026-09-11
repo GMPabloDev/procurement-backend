@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc;
 using ProcureToPay.Domain.SharedKernel;
+using ProcureToPay.Infrastructure.Persistence.Policy;
 
 namespace ProcureToPay.Api.ExceptionHandling;
 
@@ -18,6 +19,21 @@ public sealed class ApiExceptionHandler(
         var problemDetails = exception switch
         {
             ValidationException validationException => CreateValidationProblemDetails(validationException),
+            BadHttpRequestException tooLargeException when tooLargeException.StatusCode == StatusCodes.Status413PayloadTooLarge => new ProblemDetails
+            {
+                Status = StatusCodes.Status413PayloadTooLarge,
+                Title = "Payload too large",
+                Type = "/problems/payload-too-large",
+                Detail = tooLargeException.Message
+            },
+            // pi-lens-ignore: lsp:CS0246
+            PolicyPayloadTooLargeException tooLargeException => new ProblemDetails
+            {
+                Status = StatusCodes.Status413PayloadTooLarge,
+                Title = "Payload too large",
+                Type = "/problems/payload-too-large",
+                Detail = tooLargeException.Message
+            },
             DomainValidationException validationException => new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
@@ -53,7 +69,21 @@ public sealed class ApiExceptionHandler(
                 Type = "/problems/not-found",
                 Detail = notFoundException.Message
             },
-            // pi-lens-ignore: lsp:CS0246
+            // pi-lens-ignore: lsp:CS0246, CS0246
+            PolicyConfigurationUnavailableException configurationException => new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Policy configuration unavailable",
+                Type = "/problems/policy-configuration-unavailable",
+                Detail = configurationException.Message
+            },
+            PolicyDependencyUnavailableException dependencyException => new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Policy dependency unavailable",
+                Type = "/problems/policy-dependency-unavailable",
+                Detail = dependencyException.Message
+            },
             DomainConflictException conflictException => new ProblemDetails
             {
                 Status = StatusCodes.Status409Conflict,
@@ -76,6 +106,15 @@ public sealed class ApiExceptionHandler(
             }
         };
 
+        if (exception is DomainConflictException or PolicyConfigurationUnavailableException or PolicyDependencyUnavailableException)
+        {
+            using var conflictActivity = PolicyTelemetry.Source.StartActivity("policy.conflict");
+            var conflictStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            conflictActivity?.SetTag("policy.conflict_type", exception.GetType().Name);
+            conflictActivity?.SetTag("policy.result", "CONFLICT");
+            conflictActivity?.SetTag("policy.correlation_reference", httpContext.TraceIdentifier);
+            conflictActivity?.SetTag("policy.duration_ms", System.Diagnostics.Stopwatch.GetElapsedTime(conflictStartedAt).TotalMilliseconds);
+        }
         if (exception is ValidationException or DomainException or DbUpdateException)
         {
             logger.LogWarning(exception, "Handled request exception.");

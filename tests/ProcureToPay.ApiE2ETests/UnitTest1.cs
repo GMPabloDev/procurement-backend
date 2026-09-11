@@ -17,8 +17,10 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using ProcureToPay.Domain.Modules.Organization;
+using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Organization;
+using ProcureToPay.Infrastructure.Persistence.Policy;
 using Testcontainers.MsSql;
 
 namespace ProcureToPay.ApiE2ETests;
@@ -186,6 +188,137 @@ public sealed class UnitTest1
             item.GetProperty("afterJson").GetString()!.Contains("\"before\"", StringComparison.Ordinal));
         using var health = await adminClient.GetAsync("/health/bootstrap", cancellationToken);
         Assert.Equal(HttpStatusCode.OK, health.StatusCode);
+        using var policyHealth = await adminClient.GetAsync("/health/policy", cancellationToken);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, policyHealth.StatusCode);
+        var policyHealthBody = await policyHealth.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        Assert.Equal("POLICY_CONFIGURATION_REQUIRED", policyHealthBody.GetProperty("code").GetString());
+
+        var corruptPolicy = new PolicySetVersionRecord
+        {
+            Id = Guid.NewGuid(), OrganizationId = organizationRecord.Id, Sequence = 1,
+            Status = (int)PolicySetStatus.Published, ScopesJson = "[\"LINE\"]",
+            ContentJson = "{\"corrupt\":true}", ContentDigest = new string('a', 64),
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        context.PolicySetVersions.Add(corruptPolicy);
+        context.PolicyActivations.Add(new PolicyActivationRecord
+        {
+            Id = Guid.NewGuid(), OrganizationId = organizationRecord.Id,
+            PolicySetVersionId = corruptPolicy.Id, EffectiveFrom = DateTimeOffset.UtcNow.AddMinutes(-1),
+            ActorType = "USER", ActorUserId = Guid.NewGuid(),
+            Reason = "corruption test", OccurredAt = DateTimeOffset.UtcNow
+        });
+        await context.SaveChangesAsync(cancellationToken);
+        using var corruptPolicyHealth = await adminClient.GetAsync("/health/policy", cancellationToken);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, corruptPolicyHealth.StatusCode);
+        var corruptPolicyHealthBody = await corruptPolicyHealth.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        Assert.Equal("POLICY_CONFIGURATION_CORRUPT", corruptPolicyHealthBody.GetProperty("code").GetString());
+        var corruptActivation = await context.PolicyActivations.SingleAsync(
+            item => item.PolicySetVersionId == corruptPolicy.Id, cancellationToken);
+        context.PolicyActivations.Remove(corruptActivation);
+        context.PolicySetVersions.Remove(corruptPolicy);
+        await context.SaveChangesAsync(cancellationToken);
+
+        var apiPolicy = new PolicySetVersion(Guid.NewGuid(), organizationRecord.Id, 1, [PolicyScope.Line]);
+        apiPolicy.AddRule(new PolicyRule(
+            "LINE_DEFAULT", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.Allow, "DIRECT_PURCHASE")], isFallback: true));
+        var apiPolicyContent = PolicyCanonicalizer.CanonicalizePolicy(apiPolicy);
+        using var draftResponse = await adminClient.PostAsJsonAsync(
+            "/api/v1/policies/drafts",
+            new
+            {
+                scopesJson = "[\"LINE\"]",
+                contentJson = apiPolicyContent,
+                contentDigest = PolicyCanonicalizer.Hash(apiPolicyContent),
+                reason = "create API policy"
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.Created, draftResponse.StatusCode);
+        var draftBody = await draftResponse.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        var draftId = draftBody.GetProperty("id").GetGuid();
+        var draftDigest = draftBody.GetProperty("contentDigest").GetString();
+        using var updateDraftResponse = await adminClient.PutAsJsonAsync(
+            $"/api/v1/policies/drafts/{draftId}",
+            new
+            {
+                scopesJson = "[\"LINE\"]",
+                contentJson = apiPolicyContent,
+                contentDigest = PolicyCanonicalizer.Hash(apiPolicyContent),
+                expectedContentDigest = draftDigest,
+                reason = "update API policy draft"
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, updateDraftResponse.StatusCode);
+        using var staleDraftResponse = await adminClient.PutAsJsonAsync(
+            $"/api/v1/policies/drafts/{draftId}",
+            new
+            {
+                scopesJson = "[\"LINE\"]",
+                contentJson = apiPolicyContent,
+                contentDigest = PolicyCanonicalizer.Hash(apiPolicyContent),
+                expectedContentDigest = "stale-digest",
+                reason = "reject stale API policy draft"
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.Conflict, staleDraftResponse.StatusCode);
+        using var publishResponse = await adminClient.PostAsJsonAsync(
+            $"/api/v1/policies/{draftBody.GetProperty("id").GetGuid()}/publish",
+            new { effectiveFrom = DateTimeOffset.UtcNow.AddMinutes(1), reason = "publish API policy" },
+            cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, publishResponse.StatusCode);
+
+        var simulationInput = new
+        {
+            subject = new { id = Guid.NewGuid(), version = 1 },
+            organization_id = organizationRecord.Id,
+            legal_entity_id = Guid.NewGuid(),
+            base_currency = "PEN",
+            facts = new { },
+            lines = new[]
+            {
+                new
+                {
+                    subject = new { id = Guid.NewGuid(), version = 1 },
+                    facts = new { GROSS_AMOUNT_BASE = new { kind = "MONEY", value = "10", currency = "PEN" } }
+                }
+            }
+        };
+        var simulationSnapshot = JsonSerializer.SerializeToElement(simulationInput);
+        using var simulation = await adminClient.PostAsJsonAsync(
+            "/api/v1/policies/simulate",
+            new
+            {
+                evaluationKey = "api-simulation-1",
+                contentJson = apiPolicyContent,
+                contentDigest = PolicyCanonicalizer.Hash(apiPolicyContent),
+                policyId = apiPolicy.Id,
+                evaluatedAt = DateTimeOffset.UtcNow,
+                inputSnapshot = simulationSnapshot
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, simulation.StatusCode);
+        var simulationBody = await simulation.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        Assert.False(simulationBody.GetProperty("persisted").GetBoolean());
+        Assert.Equal(0, await context.PolicyEvaluationBundles.CountAsync(cancellationToken));
+
+        using var invalidWaiver = await adminClient.PostAsJsonAsync(
+            $"/api/v1/policies/evaluations/{Guid.NewGuid()}/quotation-waiver",
+            new
+            {
+                type = "UNKNOWN_EXCEPTION",
+                from = 3,
+                to = 2,
+                floor = 1,
+                policyDigest = new string('a', 64),
+                evaluationDigest = new string('b', 64),
+                binding = "binding",
+                nonce = "nonce",
+                evidenceDigest = new string('c', 64),
+                approverRole = "PROCUREMENT_APPROVER",
+                authorityType = "PROCUREMENT",
+                approverId = Guid.NewGuid(),
+                workloadSubjectId = Guid.NewGuid(),
+                originatorId = bootstrapAdmin.Id,
+                targetRequirementKey = "RFQ"
+            }, cancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidWaiver.StatusCode);
 
         using var malformed = await adminClient.PostAsync("/api/v1/departments",
             new StringContent("{", System.Text.Encoding.UTF8, "application/json"), cancellationToken);
