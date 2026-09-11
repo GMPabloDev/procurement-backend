@@ -127,30 +127,48 @@ public static class PolicyDocumentParser
     private static IReadOnlyDictionary<string, PolicyValue> ParseFacts(JsonElement facts) =>
         facts.EnumerateObject().ToDictionary(property => property.Name, property => ParseValue(property.Value), StringComparer.Ordinal);
 
-    private static PolicyValue ParseValue(JsonElement value)
+    public static PolicyValue ParseValue(JsonElement value)
     {
         var kind = ParseEnum<PolicyValueKind>(value.GetProperty("kind").GetString()!);
         return kind switch
         {
-            PolicyValueKind.Money => PolicyValue.Money(decimal.Parse(value.GetProperty("value").GetString()!, CultureInfo.InvariantCulture)),
+            PolicyValueKind.Money => PolicyValue.Money(
+                decimal.Parse(value.GetProperty("value").GetString()!, CultureInfo.InvariantCulture),
+                value.GetProperty("currency").GetString()!),
             PolicyValueKind.Boolean => PolicyValue.Boolean(bool.Parse(value.GetProperty("value").GetString()!)),
             PolicyValueKind.Code => PolicyValue.Code(value.GetProperty("value").GetString()!),
-            PolicyValueKind.Reference => ParseReference(value),
+            PolicyValueKind.VersionedEntityRef => ParseEntityRef(value),
+            PolicyValueKind.VersionedCodeRef => PolicyValue.VersionedCode(
+                value.GetProperty("catalog").GetString()!,
+                value.GetProperty("value").GetString()!,
+                value.GetProperty("version").GetInt32(),
+                value.GetProperty("digest").GetString()!),
+            PolicyValueKind.TypedAnswer => PolicyValue.TypedAnswer(
+                value.GetProperty("question_code").GetString()!,
+                value.GetProperty("schema_version").GetInt32(),
+                ParseEnum<TypedAnswerValueKind>(value.GetProperty("value_kind").GetString()!),
+                value.GetProperty("value").GetString()!),
             PolicyValueKind.Set => PolicyValue.Set(value.GetProperty("members").EnumerateArray().Select(ParseValue).ToArray()),
             PolicyValueKind.MoneyRange => PolicyValue.MoneyRange(
                 decimal.Parse(value.GetProperty("lower_bound").GetString()!, CultureInfo.InvariantCulture),
                 decimal.Parse(value.GetProperty("upper_bound").GetString()!, CultureInfo.InvariantCulture),
+                value.GetProperty("currency").GetString()!,
                 value.GetProperty("lower_inclusive").GetBoolean(),
                 value.GetProperty("upper_inclusive").GetBoolean()),
             _ => throw new DomainValidationException("Unknown policy value kind.")
         };
     }
 
-    private static PolicyValue ParseReference(JsonElement value)
+    private static PolicyValue ParseEntityRef(JsonElement value)
     {
+        var entityType = value.GetProperty("reference_type").GetString()!;
+        if (value.TryGetProperty("entity_id", out var entityId) && entityId.ValueKind != JsonValueKind.Null)
+        {
+            return PolicyValue.EntityRef(entityType, entityId.GetGuid(), value.GetProperty("version").GetInt32());
+        }
         var parts = value.GetProperty("value").GetString()!.Split(':', 2);
-        return PolicyValue.Reference(value.GetProperty("reference_type").GetString()!,
-            Guid.Parse(parts[0]), int.Parse(parts[1], CultureInfo.InvariantCulture));
+        return PolicyValue.EntityRef(
+            entityType, Guid.Parse(parts[0]), int.Parse(parts[1], CultureInfo.InvariantCulture));
     }
 
     private static PolicyScope ParseScope(string? value) => value switch

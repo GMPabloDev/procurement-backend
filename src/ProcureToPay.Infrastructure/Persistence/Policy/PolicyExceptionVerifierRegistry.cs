@@ -22,6 +22,9 @@ public sealed class PolicyExceptionVerifierRegistry(
     {
         public static readonly DefaultDenyVerifier Instance = new();
 
+        public string VerifierId => "APPROVAL_WORKFLOW";
+        public string ContractVersion => "policy-exception-verifier/v1";
+
         public Task<QuotationWaiverEvidence?> VerifyAsync(
             QuotationWaiverRequest request,
             CancellationToken cancellationToken = default) =>
@@ -31,6 +34,9 @@ public sealed class PolicyExceptionVerifierRegistry(
 
 public sealed class DefaultDenyQuotationWaiverVerifier : IQuotationWaiverVerifier
 {
+    public string VerifierId => "APPROVAL_WORKFLOW";
+    public string ContractVersion => "policy-exception-verifier/v1";
+
     public Task<QuotationWaiverEvidence?> VerifyAsync(
         QuotationWaiverRequest request,
         CancellationToken cancellationToken = default) =>

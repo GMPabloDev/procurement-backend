@@ -61,9 +61,11 @@ public enum PolicyValueKind
     Money = 1,
     Boolean = 2,
     Code = 3,
-    Reference = 4,
+    VersionedEntityRef = 4,
     Set = 5,
-    MoneyRange = 6
+    MoneyRange = 6,
+    VersionedCodeRef = 7,
+    TypedAnswer = 8
 }
 
 public sealed record PolicyValue
@@ -76,7 +78,15 @@ public sealed record PolicyValue
         decimal? lowerBound = null,
         decimal? upperBound = null,
         bool lowerInclusive = true,
-        bool upperInclusive = false)
+        bool upperInclusive = false,
+        string? currency = null,
+        string? catalog = null,
+        int? version = null,
+        string? digest = null,
+        Guid? entityId = null,
+        string? questionCode = null,
+        int? schemaVersion = null,
+        TypedAnswerValueKind? answerKind = null)
     {
         Kind = kind;
         Value = value;
@@ -86,6 +96,14 @@ public sealed record PolicyValue
         UpperBound = upperBound;
         LowerInclusive = lowerInclusive;
         UpperInclusive = upperInclusive;
+        Currency = currency;
+        Catalog = catalog;
+        Version = version;
+        Digest = digest;
+        EntityId = entityId;
+        QuestionCode = questionCode;
+        SchemaVersion = schemaVersion;
+        AnswerKind = answerKind;
     }
 
     public PolicyValueKind Kind { get; }
@@ -96,8 +114,28 @@ public sealed record PolicyValue
     public decimal? UpperBound { get; }
     public bool LowerInclusive { get; }
     public bool UpperInclusive { get; }
+    public string? Currency { get; }
+    public string? Catalog { get; }
+    public int? Version { get; }
+    public string? Digest { get; }
+    public Guid? EntityId { get; }
+    public string? QuestionCode { get; }
+    public int? SchemaVersion { get; }
+    public TypedAnswerValueKind? AnswerKind { get; }
 
-    public static PolicyValue Money(decimal value)
+    /// <summary>MoneyBase currency; must equal the base currency of the evaluated bundle (REQ-04).</summary>
+    public static string NormalizeCurrency(string currency)
+    {
+        if (string.IsNullOrWhiteSpace(currency) || currency.Trim().Length != 3 ||
+            !Regex.IsMatch(currency.Trim(), "^[A-Za-z]{3}$", RegexOptions.CultureInvariant))
+        {
+            throw new DomainValidationException("Policy money requires an ISO 4217 currency.");
+        }
+
+        return currency.Trim().ToUpperInvariant();
+    }
+
+    public static PolicyValue Money(decimal value, string currency)
     {
         if (value < 0)
         {
@@ -106,7 +144,8 @@ public sealed record PolicyValue
 
         return new PolicyValue(
             PolicyValueKind.Money,
-            value.ToString("0.##############################", CultureInfo.InvariantCulture));
+            value.ToString("0.##############################", CultureInfo.InvariantCulture),
+            currency: NormalizeCurrency(currency));
     }
 
     public static PolicyValue Boolean(bool value) =>
@@ -115,7 +154,25 @@ public sealed record PolicyValue
     public static PolicyValue Code(string value) =>
         new(PolicyValueKind.Code, NormalizeCode(value, "Policy code value"));
 
-    public static PolicyValue Reference(string referenceType, Guid id, int version)
+    /// <summary>VersionedCodeRef: catalog, code and version/digest (REQ-04).</summary>
+    public static PolicyValue VersionedCode(string catalog, string code, int version, string digest)
+    {
+        if (version < 1 || string.IsNullOrWhiteSpace(digest) || digest.Length != 64 ||
+            !digest.All(Uri.IsHexDigit))
+        {
+            throw new DomainValidationException("Versioned code references require a version and SHA-256 digest.");
+        }
+
+        return new PolicyValue(
+            PolicyValueKind.VersionedCodeRef,
+            NormalizeCode(code, "Versioned code"),
+            catalog: NormalizeCode(catalog, "Versioned code catalog"),
+            version: version,
+            digest: digest.ToLowerInvariant());
+    }
+
+    /// <summary>VersionedEntityRef: entity type, stable id and positive version (REQ-04).</summary>
+    public static PolicyValue EntityRef(string entityType, Guid id, int version)
     {
         if (id == Guid.Empty || version < 1)
         {
@@ -123,9 +180,39 @@ public sealed record PolicyValue
         }
 
         return new PolicyValue(
-            PolicyValueKind.Reference,
+            PolicyValueKind.VersionedEntityRef,
             $"{id:D}:{version}",
-            NormalizeCode(referenceType, "Policy reference type"));
+            NormalizeCode(entityType, "Policy reference type"),
+            entityId: id,
+            version: version);
+    }
+
+    /// <summary>Compatibility alias for <see cref="EntityRef"/>.</summary>
+    public static PolicyValue Reference(string referenceType, Guid id, int version) =>
+        EntityRef(referenceType, id, version);
+
+    /// <summary>TypedAnswerRef: question code, schema version and one typed value (REQ-04).</summary>
+    public static PolicyValue TypedAnswer(
+        string questionCode,
+        int schemaVersion,
+        TypedAnswerValueKind answerKind,
+        string value)
+    {
+        if (schemaVersion < 1 || string.IsNullOrWhiteSpace(value))
+        {
+            throw new DomainValidationException("Typed answers require a schema version and value.");
+        }
+
+        var normalizedValue = answerKind == TypedAnswerValueKind.Boolean
+            ? bool.TryParse(value, out var boolean) ? (boolean ? "true" : "false")
+                : throw new DomainValidationException("Boolean typed answers must contain true or false.")
+            : NormalizeCode(value, "Enum answer");
+        return new PolicyValue(
+            PolicyValueKind.TypedAnswer,
+            normalizedValue,
+            questionCode: NormalizeCode(questionCode, "Question code"),
+            schemaVersion: schemaVersion,
+            answerKind: answerKind);
     }
 
     // Set values are canonicalized in a deterministic order for IN/NOT_IN predicates.
@@ -154,7 +241,12 @@ public sealed record PolicyValue
             members: members);
     }
 
-    public static PolicyValue MoneyRange(decimal lowerBound, decimal upperBound, bool lowerInclusive = true, bool upperInclusive = false)
+    public static PolicyValue MoneyRange(
+        decimal lowerBound,
+        decimal upperBound,
+        string currency,
+        bool lowerInclusive = true,
+        bool upperInclusive = false)
     {
         if (lowerBound > upperBound || (lowerBound == upperBound && (!lowerInclusive || !upperInclusive)))
         {
@@ -167,7 +259,8 @@ public sealed record PolicyValue
             lowerBound: lowerBound,
             upperBound: upperBound,
             lowerInclusive: lowerInclusive,
-            upperInclusive: upperInclusive);
+            upperInclusive: upperInclusive,
+            currency: NormalizeCurrency(currency));
     }
 
     public decimal AsMoney() =>
@@ -175,10 +268,36 @@ public sealed record PolicyValue
             ? decimal.Parse(Value, CultureInfo.InvariantCulture)
             : throw new DomainValidationException("Policy value is not monetary.");
 
+    public string AsCurrency() =>
+        Kind == PolicyValueKind.Money
+            ? Currency ?? throw new DomainValidationException("Policy money value requires a currency.")
+            : throw new DomainValidationException("Policy value is not monetary.");
+
     public bool AsBoolean() =>
         Kind == PolicyValueKind.Boolean
             ? bool.Parse(Value)
             : throw new DomainValidationException("Policy value is not boolean.");
+
+    /// <summary>Full typed identity, including the fields a bare <see cref="Value"/> would lose.</summary>
+    public bool SameAs(PolicyValue other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        return Kind == other.Kind &&
+            string.Equals(Value, other.Value, StringComparison.Ordinal) &&
+            string.Equals(ReferenceType, other.ReferenceType, StringComparison.Ordinal) &&
+            string.Equals(Currency, other.Currency, StringComparison.Ordinal) &&
+            string.Equals(Catalog, other.Catalog, StringComparison.Ordinal) &&
+            Version == other.Version &&
+            string.Equals(Digest, other.Digest, StringComparison.Ordinal) &&
+            EntityId == other.EntityId &&
+            string.Equals(QuestionCode, other.QuestionCode, StringComparison.Ordinal) &&
+            SchemaVersion == other.SchemaVersion &&
+            AnswerKind == other.AnswerKind &&
+            LowerBound == other.LowerBound &&
+            UpperBound == other.UpperBound &&
+            LowerInclusive == other.LowerInclusive &&
+            UpperInclusive == other.UpperInclusive;
+    }
 
     public static string NormalizeCode(string value, string field)
     {
@@ -197,61 +316,144 @@ public sealed record PolicyPredicate
     public PolicyPredicate(string factKey, PolicyOperator @operator, PolicyValue value)
     {
         FactKey = PolicyValue.NormalizeCode(factKey, "Policy fact key");
-        if (!AllowedFactKeys.Contains(FactKey))
+        if (!PolicyFactCatalog.IsKnown(FactKey))
         {
             throw new DomainValidationException($"Unknown policy fact '{FactKey}'.");
         }
         Operator = @operator;
         Value = value ?? throw new ArgumentNullException(nameof(value));
-        ValidateCompatibility();
+        PolicyFactCatalog.Validate(FactKey, Operator, Value);
     }
 
     public string FactKey { get; }
     public PolicyOperator Operator { get; }
     public PolicyValue Value { get; }
+}
 
-    private static readonly IReadOnlySet<string> AllowedFactKeys = new HashSet<string>(StringComparer.Ordinal)
+/// <summary>
+/// Closed Release 1 fact catalog: every fact declares its Release 1 type and the
+/// operators it accepts, validated before publication (REQ-04).
+/// </summary>
+public static class PolicyFactCatalog
+{
+    private static readonly IReadOnlySet<string> MoneyFacts = new HashSet<string>(StringComparer.Ordinal)
     {
-        "GROSS_AMOUNT_BASE", "PURCHASE_TYPE", "SPEND_CATEGORY", "BENEFICIARY_DEPARTMENT",
-        "COST_CENTER", "COST_CENTER_DEPARTMENT", "SUPPLIER", "PREFERRED_PRODUCT",
-        "REQUIRED_PRODUCT", "COST_CENTER_ACTIVE", "COST_CENTER_DEPARTMENT_ACTIVE",
-        "PREFERRED_SUPPLIER", "CONTRACT_REQUIRED", "NON_STANDARD_TERMS",
-        "EXTERNAL_AGREEMENT_STATUS", "DATA_RISK", "RISK_ANSWER", "LEGAL_ENTITY_ID",
-        "BASE_CURRENCY"
+        "GROSS_AMOUNT_BASE"
     };
 
-    private void ValidateCompatibility()
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> EnumFacts =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+        {
+            ["PURCHASE_TYPE"] = new HashSet<string>(StringComparer.Ordinal) { "GOOD", "SERVICE", "SUBSCRIPTION" },
+            ["EXTERNAL_AGREEMENT_STATUS"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "NONE", "ACTIVE", "INACTIVE", "EXPIRED"
+            }
+        };
+
+    private static readonly IReadOnlySet<string> BooleanFacts = new HashSet<string>(StringComparer.Ordinal)
     {
-        var booleanOperator = Operator is PolicyOperator.IsTrue or PolicyOperator.IsFalse;
-        var comparisonOperator = Operator is PolicyOperator.GreaterThan or
-            PolicyOperator.GreaterThanOrEqual or PolicyOperator.LessThan or
-            PolicyOperator.LessThanOrEqual or PolicyOperator.Between;
+        "COST_CENTER_ACTIVE", "COST_CENTER_DEPARTMENT_ACTIVE", "PREFERRED_SUPPLIER",
+        "CONTRACT_REQUIRED", "NON_STANDARD_TERMS"
+    };
 
-        if (booleanOperator && Value.Kind != PolicyValueKind.Boolean)
+    private static readonly IReadOnlySet<string> CodeRefFacts = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "SPEND_CATEGORY", "DATA_RISK"
+    };
+
+    private static readonly IReadOnlySet<string> EntityRefFacts = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "BENEFICIARY_DEPARTMENT", "COST_CENTER", "COST_CENTER_DEPARTMENT", "SUPPLIER",
+        "PREFERRED_PRODUCT", "REQUIRED_PRODUCT"
+    };
+
+    public static bool IsKnown(string factKey) =>
+        MoneyFacts.Contains(factKey) || EnumFacts.ContainsKey(factKey) || BooleanFacts.Contains(factKey) ||
+        CodeRefFacts.Contains(factKey) || EntityRefFacts.Contains(factKey) ||
+        string.Equals(factKey, "RISK_ANSWER", StringComparison.Ordinal);
+
+    public static void Validate(string factKey, PolicyOperator @operator, PolicyValue value)
+    {
+        if (MoneyFacts.Contains(factKey))
         {
-            throw new DomainValidationException("Boolean policy operators require a Boolean value.");
+            if (@operator == PolicyOperator.Between && value.Kind != PolicyValueKind.MoneyRange)
+            {
+                throw new DomainValidationException($"Fact '{factKey}' requires a money range for BETWEEN.");
+            }
+            if (@operator is not (PolicyOperator.GreaterThan or PolicyOperator.GreaterThanOrEqual or
+                PolicyOperator.LessThan or PolicyOperator.LessThanOrEqual or PolicyOperator.Between))
+            {
+                throw new DomainValidationException($"Fact '{factKey}' only accepts money comparison operators.");
+            }
+            if (@operator != PolicyOperator.Between && value.Kind != PolicyValueKind.Money)
+            {
+                throw new DomainValidationException($"Fact '{factKey}' requires a Money value.");
+            }
+            return;
         }
 
-        if (Operator is PolicyOperator.Between && Value.Kind != PolicyValueKind.MoneyRange)
+        if (EnumFacts.TryGetValue(factKey, out var allowedCodes))
         {
-            throw new DomainValidationException("BETWEEN requires a non-empty MoneyRange value.");
+            RequireTextualOperator(factKey, @operator, value);
+            var codes = value.Kind == PolicyValueKind.Set ? value.Members : [value];
+            if (codes.Any(code => code.Kind != PolicyValueKind.Code || !allowedCodes.Contains(code.Value)))
+            {
+                throw new DomainValidationException($"Fact '{factKey}' only accepts its enumerated codes.");
+            }
+            return;
         }
 
-        if (comparisonOperator && Operator is not PolicyOperator.Between && Value.Kind != PolicyValueKind.Money)
+        if (CodeRefFacts.Contains(factKey))
         {
-            throw new DomainValidationException("Range policy operators require a Money value.");
+            RequireTextualOperator(factKey, @operator, value);
+            RequireKind(factKey, value, PolicyValueKind.VersionedCodeRef);
+            return;
         }
 
-        if (Operator is PolicyOperator.In or PolicyOperator.NotIn && Value.Kind != PolicyValueKind.Set)
+        if (EntityRefFacts.Contains(factKey))
+        {
+            RequireTextualOperator(factKey, @operator, value);
+            RequireKind(factKey, value, PolicyValueKind.VersionedEntityRef);
+            return;
+        }
+
+        if (string.Equals(factKey, "RISK_ANSWER", StringComparison.Ordinal))
+        {
+            RequireTextualOperator(factKey, @operator, value);
+            RequireKind(factKey, value, PolicyValueKind.TypedAnswer);
+            return;
+        }
+
+        if (BooleanFacts.Contains(factKey))
+        {
+            if (@operator is not (PolicyOperator.IsTrue or PolicyOperator.IsFalse) ||
+                value.Kind != PolicyValueKind.Boolean)
+            {
+                throw new DomainValidationException($"Fact '{factKey}' requires a boolean operator and value.");
+            }
+        }
+    }
+
+    private static void RequireTextualOperator(string factKey, PolicyOperator @operator, PolicyValue value)
+    {
+        if (@operator is not (PolicyOperator.Equal or PolicyOperator.NotEqual or
+            PolicyOperator.In or PolicyOperator.NotIn))
+        {
+            throw new DomainValidationException($"Fact '{factKey}' only accepts EQ/NEQ/IN/NOT_IN.");
+        }
+        if (@operator is PolicyOperator.In or PolicyOperator.NotIn && value.Kind != PolicyValueKind.Set)
         {
             throw new DomainValidationException("IN and NOT_IN require a non-empty value set.");
         }
+    }
 
-        if (!booleanOperator && !comparisonOperator &&
-            Operator is not (PolicyOperator.In or PolicyOperator.NotIn) &&
-            Value.Kind is not (PolicyValueKind.Code or PolicyValueKind.Reference))
+    private static void RequireKind(string factKey, PolicyValue value, PolicyValueKind expected)
+    {
+        var values = value.Kind == PolicyValueKind.Set ? value.Members : [value];
+        if (values.Any(member => member.Kind != expected))
         {
-            throw new DomainValidationException("Equality policy operators require a Code or Reference value.");
+            throw new DomainValidationException($"Fact '{factKey}' only accepts its typed reference values.");
         }
     }
 }

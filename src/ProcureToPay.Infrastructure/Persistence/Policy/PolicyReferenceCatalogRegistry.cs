@@ -4,7 +4,14 @@ public sealed record PolicyReferenceLookup(
     string ReferenceType,
     Guid Id,
     int Version,
-    string Digest);
+    string Digest)
+{
+    /// <summary>Versioned code or typed answer value the resolver must validate (REQ-04/REQ-05).</summary>
+    public string? Code { get; init; }
+
+    /// <summary>Typed answer schema kind (BOOLEAN/ENUM_CODE) when applicable.</summary>
+    public string? ValueKind { get; init; }
+}
 
 public interface IPolicyReferenceCatalog
 {

@@ -277,7 +277,7 @@ public sealed class UnitTest1
                 new
                 {
                     subject = new { id = Guid.NewGuid(), version = 1 },
-                    facts = new { GROSS_AMOUNT_BASE = new { kind = "MONEY", value = "10" } }
+                    facts = new { GROSS_AMOUNT_BASE = new { kind = "MONEY", value = "10", currency = "PEN" } }
                 }
             }
         };

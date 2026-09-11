@@ -106,6 +106,15 @@ public sealed class ApiExceptionHandler(
             }
         };
 
+        if (exception is DomainConflictException or PolicyConfigurationUnavailableException or PolicyDependencyUnavailableException)
+        {
+            using var conflictActivity = PolicyTelemetry.Source.StartActivity("policy.conflict");
+            var conflictStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            conflictActivity?.SetTag("policy.conflict_type", exception.GetType().Name);
+            conflictActivity?.SetTag("policy.result", "CONFLICT");
+            conflictActivity?.SetTag("policy.correlation_reference", httpContext.TraceIdentifier);
+            conflictActivity?.SetTag("policy.duration_ms", System.Diagnostics.Stopwatch.GetElapsedTime(conflictStartedAt).TotalMilliseconds);
+        }
         if (exception is ValidationException or DomainException or DbUpdateException)
         {
             logger.LogWarning(exception, "Handled request exception.");

@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -92,6 +90,8 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         string correlationReference,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PolicyTelemetry.Source.StartActivity("policy.draft.create");
+        activity?.SetTag("policy.organization_id", document.OrganizationId.ToString("D"));
         ValidateDocument(document);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             System.Data.IsolationLevel.Serializable, cancellationToken);
@@ -127,6 +127,8 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         string correlationReference,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PolicyTelemetry.Source.StartActivity("policy.draft.update");
+        activity?.SetTag("policy.draft_id", draftId.ToString("D"));
         ValidateDocument(document);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             System.Data.IsolationLevel.Serializable, cancellationToken);
@@ -166,6 +168,8 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         CancellationToken cancellationToken = default,
         Guid? organizationId = null)
     {
+        using var activity = PolicyTelemetry.Source.StartActivity("policy.publish");
+        activity?.SetTag("policy.draft_id", draftId.ToString("D"));
         if (effectiveFrom < DateTimeOffset.UtcNow)
         {
             throw new DomainValidationException("Policy activation cannot start in the past.");
@@ -227,6 +231,8 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             Reason = reason, OccurredAt = DateTimeOffset.UtcNow
         };
         dbContext.PolicyActivations.Add(activation);
+        activity?.SetTag("policy.version_id", published.Id.ToString("D"));
+        activity?.SetTag("policy.activation_id", activation.Id.ToString("D"));
         AddAudit("POLICY_PUBLISHED", published.Id, draft.ContentJson, (int)published.Sequence,
             published.ContentJson, actor, reason, correlationReference);
         AddAudit("POLICY_ACTIVATED", activation.Id, null, null, null, actor, reason, correlationReference);
@@ -341,6 +347,10 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         DateTimeOffset at,
         CancellationToken cancellationToken = default)
     {
+        using var activity = PolicyTelemetry.Source.StartActivity("policy.select_version");
+        var selectStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        activity?.SetTag("policy.organization_id", organizationId.ToString("D"));
+        activity?.SetTag("policy.at_utc", at.ToUniversalTime().ToString("O", System.Globalization.CultureInfo.InvariantCulture));
         var activations = await dbContext.PolicyActivations
             .AsNoTracking()
             .Include(activation => activation.PolicySetVersion)
@@ -353,10 +363,21 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             .ToArrayAsync(cancellationToken);
         if (activations.Length > 1)
         {
+            activity?.SetTag("policy.selection", "AMBIGUOUS");
+            activity?.SetTag("policy.result", "CONFLICT");
+            activity?.SetTag("policy.duration_ms", System.Diagnostics.Stopwatch.GetElapsedTime(selectStartedAt).TotalMilliseconds);
             throw new PolicyDependencyUnavailableException("Multiple policy activations are current.");
         }
 
-        return activations.SingleOrDefault();
+        var selected = activations.SingleOrDefault();
+        activity?.SetTag("policy.selection", selected is null ? "NONE" : "ACTIVE");
+        activity?.SetTag("policy.result", selected is null ? "NOT_FOUND" : "SELECTED");
+        activity?.SetTag("policy.duration_ms", System.Diagnostics.Stopwatch.GetElapsedTime(selectStartedAt).TotalMilliseconds);
+        if (selected is not null)
+        {
+            activity?.SetTag("policy.activation_id", selected.Id.ToString("D"));
+        }
+        return selected;
     }
 
     public async Task<PolicyRetirementRecord> RetireAsync(
@@ -368,6 +389,8 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         CancellationToken cancellationToken = default,
         Guid? organizationId = null)
     {
+        using var activity = PolicyTelemetry.Source.StartActivity("policy.retire");
+        activity?.SetTag("policy.activation_id", activationId.ToString("D"));
         if (effectiveTo < DateTimeOffset.UtcNow)
         {
             throw new DomainValidationException("Policy retirement cannot be backdated.");
@@ -408,14 +431,23 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         return record;
     }
 
-    public async Task<PolicyEvaluationBundleRecord> AppendEvaluationAsync(
+    public Task<PolicyEvaluationBundleRecord> AppendEvaluationAsync(
         PolicyEvaluationBundle bundle,
         PolicyEvaluationCaller caller,
+        CancellationToken cancellationToken = default) =>
+        AppendEvaluationAsync(bundle, caller, manageTransaction: true, cancellationToken);
+
+    private async Task<PolicyEvaluationBundleRecord> AppendEvaluationAsync(
+        PolicyEvaluationBundle bundle,
+        PolicyEvaluationCaller caller,
+        bool manageTransaction,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(bundle);
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            System.Data.IsolationLevel.Serializable, cancellationToken);
+        await using var transaction = manageTransaction
+            ? await dbContext.Database.BeginTransactionAsync(
+                System.Data.IsolationLevel.Serializable, cancellationToken)
+            : null;
         if (caller.PolicySetVersionId == Guid.Empty || bundle.Subject.Id == Guid.Empty)
         {
             throw new InvalidOperationException("Policy evaluations require a policy and subject reference.");
@@ -475,11 +507,17 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         try
         {
             await dbContext.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
         }
         catch (DbUpdateException)
         {
-            await transaction.RollbackAsync(cancellationToken);
+            if (transaction is not null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+            }
             dbContext.Entry(record).State = EntityState.Detached;
             var duplicate = await dbContext.PolicyEvaluationBundles
                 .SingleOrDefaultAsync(evaluation =>
@@ -669,7 +707,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             Binding = request.Binding,
             Nonce = request.Nonce,
             EvidenceDigest = evidence.EvidenceDigest,
-            ApproverId = request.ApproverId,
+            ApproverId = evidence.ApproverId,
             ExpiresAt = evidence.ExpiresAt,
             VerifierReference = evidence.VerifierReference,
             SnapshotJson = JsonSerializer.Serialize(new { request, evidence, reducedBundle }, JsonOptions),
@@ -704,6 +742,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         QuotationWaiverRequest request,
         QuotationWaiverEvidence evidence,
         Guid exceptionVerificationId,
+        bool manageTransaction = true,
         CancellationToken cancellationToken = default)
     {
         var baseRecord = await dbContext.PolicyEvaluationBundles
@@ -717,11 +756,11 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
         }
         var verifiedAt = DateTimeOffset.UtcNow;
         var exceptionVerification = new PolicyExceptionVerificationInput(
-            "APPROVAL_WORKFLOW",
-            "policy-exception-verifier/v1",
+            evidence.VerifierId,
+            evidence.VerifierContractVersion,
             evidence.VerifierReference,
-            1,
-            evidence.EvidenceDigest,
+            evidence.WorkflowDecisionVersion,
+            evidence.WorkflowDecisionDigest,
             baseRecord.Id,
             baseRecord.ResultDigest,
             baseRecord.PolicySetVersionId,
@@ -734,11 +773,11 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             request.OriginatorId,
             verifiedAt,
             request.Nonce,
-            request.ApproverId,
-            evidence.EvidenceDigest,
-            true,
-            "REQUEST",
-            verifiedAt,
+            evidence.ApproverId,
+            evidence.EligibilityEvidenceDigest,
+            evidence.SegregationSatisfied,
+            evidence.Scope,
+            evidence.ValidFrom,
             evidence.ExpiresAt,
             request.Binding);
         var exceptionVerificationDigest = PolicyCanonicalizer.ComputeExceptionVerificationDigest(exceptionVerification);
@@ -790,11 +829,38 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
                 ExceptionTo = request.To,
                 PreviousResultDigest = baseRecord.ResultDigest
             },
+            manageTransaction,
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Confirms the exception verification and its reevaluation in a single transaction (NFR-02).
+    /// </summary>
+    public async Task<(PolicyExceptionVerificationRecord Verification, PolicyEvaluationBundleRecord Reevaluation)>
+        AppendVerifiedQuotationWaiverAsync(
+            PolicyEvaluationBundle baseBundle,
+            PolicyEvaluationBundle reducedBundle,
+            QuotationWaiverRequest request,
+            QuotationWaiverEvidence evidence,
+            CancellationToken cancellationToken = default)
+    {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            System.Data.IsolationLevel.Serializable, cancellationToken);
+        var verification = await AppendExceptionVerificationAsync(
+            baseBundle.Id, request, evidence, reducedBundle, cancellationToken);
+        var reevaluation = await AppendQuotationWaiverReevaluationAsync(
+            baseBundle, reducedBundle, request, evidence, verification.Id,
+            manageTransaction: false, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return (verification, reevaluation);
     }
 
     private static void ValidateDocument(PolicyDraftDocument document)
     {
+        if (System.Text.Encoding.UTF8.GetByteCount(document.ContentJson) > 10 * 1024 * 1024)
+        {
+            throw new PolicyPayloadTooLargeException("Policies support at most 10 MiB of content.");
+        }
         if (document.OrganizationId == Guid.Empty || string.IsNullOrWhiteSpace(document.ScopesJson) ||
             string.IsNullOrWhiteSpace(document.ContentJson) ||
             document.ContentDigest is null || document.ContentDigest.Length != 64 ||
@@ -810,15 +876,15 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             using var documentJson = JsonDocument.Parse(document.ContentJson);
             var root = documentJson.RootElement;
             var required = new[] { "canonicalization_version", "policy_schema_version", "organization_id", "scopes", "rules" };
+            EnforceContentLimits(root);
             if (root.ValueKind != JsonValueKind.Object ||
                 root.EnumerateObject().Any(property => !required.Contains(property.Name, StringComparer.Ordinal)) ||
                 required.Any(property => !root.TryGetProperty(property, out _)) ||
                 root.GetProperty("canonicalization_version").GetString() != PolicyCanonicalizer.Version ||
-                root.GetProperty("policy_schema_version").GetString() != "policy-schema/v1" ||
+                root.GetProperty("policy_schema_version").GetString() != "policy-schema/v2" ||
                 root.GetProperty("organization_id").GetGuid() != document.OrganizationId ||
                 root.GetProperty("scopes").GetArrayLength() == 0 ||
                 root.GetProperty("rules").GetArrayLength() == 0 ||
-                root.GetProperty("rules").GetArrayLength() > 2000 ||
                 root.GetProperty("rules").EnumerateArray().Any(rule => !IsTypedRule(rule)))
             {
                 throw new DomainValidationException("Policy content does not match the typed policy schema.");
@@ -841,6 +907,38 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             KeyNotFoundException or InvalidOperationException)
         {
             throw new DomainValidationException($"Policy content is not valid canonical JSON: {exception.Message}");
+        }
+    }
+
+    private static void EnforceContentLimits(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("rules", out var rules) || rules.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        if (rules.GetArrayLength() > 2000)
+        {
+            throw new PolicyPayloadTooLargeException("Policies support at most 2,000 rules.");
+        }
+
+        foreach (var rule in rules.EnumerateArray())
+        {
+            if (rule.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+            if (rule.TryGetProperty("predicates", out var predicates) &&
+                predicates.ValueKind == JsonValueKind.Array && predicates.GetArrayLength() > 32)
+            {
+                throw new PolicyPayloadTooLargeException("Policy rules support at most 32 predicates.");
+            }
+            if (rule.TryGetProperty("effects", out var effects) &&
+                effects.ValueKind == JsonValueKind.Array && effects.GetArrayLength() > 16)
+            {
+                throw new PolicyPayloadTooLargeException("Policy rules support at most 16 effects.");
+            }
         }
     }
 

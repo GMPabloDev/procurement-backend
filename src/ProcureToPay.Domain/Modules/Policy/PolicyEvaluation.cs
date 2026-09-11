@@ -92,6 +92,18 @@ public sealed record PolicyGeneratedControl(
     string Reason)
 {
     public int? MinimumAllowedQuotations { get; init; }
+
+    /// <summary>Cost Centers covered by a budget control (REQ-07/REQ-08).</summary>
+    public ImmutableHashSet<Guid> CostCenterIds { get; init; } = ImmutableHashSet<Guid>.Empty;
+
+    /// <summary>Base amount and currency carried by a budget control (REQ-07/REQ-08).</summary>
+    public decimal? AmountBase { get; init; }
+    public string? BaseCurrency { get; init; }
+
+    /// <summary>Fact keys that justified the control and the provider provenance of those facts (CA-05).</summary>
+    public ImmutableHashSet<string> OriginFacts { get; init; } = ImmutableHashSet<string>.Empty;
+    public ImmutableDictionary<string, string> FactProvenance { get; init; } = ImmutableDictionary<string, string>.Empty;
+
     public bool Covers(Guid subjectId) => SubjectIds.Contains(subjectId);
 }
 
@@ -136,6 +148,9 @@ public sealed record PolicyEvaluationBundle(
     public string? RequestSnapshotJson { get; init; }
     public Guid? ActivationId { get; init; }
     public Guid? PreviousBundleId { get; init; }
+
+    /// <summary>Reevaluation cause persisted for reproducible idempotency checks (REQ-13).</summary>
+    public string? Cause { get; init; }
 }
 
 public static class PolicyCanonicalizer
@@ -148,7 +163,7 @@ public static class PolicyCanonicalizer
         var root = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
             ["canonicalization_version"] = Version,
-            ["policy_schema_version"] = "policy-schema/v1",
+            ["policy_schema_version"] = "policy-schema/v2",
             ["organization_id"] = policy.OrganizationId.ToString("D"),
             ["scopes"] = policy.Scopes
                 .Select(CanonicalName)
@@ -309,9 +324,19 @@ public static class PolicyCanonicalizer
     private static object CanonicalizeControl(PolicyGeneratedControl control) =>
         new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
+            ["amount_base"] = control.AmountBase?.ToString("0.##############################", CultureInfo.InvariantCulture),
             ["approval"] = control.Approval is null ? null : CanonicalizeApproval(control.Approval),
+            ["base_currency"] = control.BaseCurrency,
+            ["cost_center_ids"] = control.CostCenterIds
+                .Select(CanonicalGuid)
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToArray(),
+            ["fact_provenance"] = new SortedDictionary<string, object?>(
+                control.FactProvenance.ToDictionary(pair => pair.Key, pair => (object?)pair.Value, StringComparer.Ordinal),
+                StringComparer.Ordinal),
             ["minimum_quotations"] = control.MinimumQuotations,
             ["minimum_allowed_quotations"] = control.MinimumAllowedQuotations,
+            ["origin_facts"] = control.OriginFacts.Order(StringComparer.Ordinal).ToArray(),
             ["origin_rules"] = control.OriginRuleCodes.Order(StringComparer.Ordinal).ToArray(),
             ["origin_scopes"] = control.OriginScopes
                 .Select(CanonicalName)
@@ -541,14 +566,22 @@ public static class PolicyCanonicalizer
     internal static object CanonicalizeValue(PolicyValue value) =>
         new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["kind"] = value.Kind.ToString().ToUpperInvariant(),
+            ["catalog"] = value.Catalog,
+            ["currency"] = value.Currency,
+            ["digest"] = value.Digest,
+            ["entity_id"] = value.EntityId?.ToString("D"),
+            ["kind"] = CanonicalName(value.Kind),
             ["lower_bound"] = value.LowerBound?.ToString("0.##############################", CultureInfo.InvariantCulture),
             ["lower_inclusive"] = value.LowerInclusive,
             ["members"] = value.Members.IsDefaultOrEmpty ? null : value.Members.Select(CanonicalizeValue).ToArray(),
+            ["question_code"] = value.QuestionCode,
             ["reference_type"] = value.ReferenceType,
+            ["schema_version"] = value.SchemaVersion,
             ["upper_bound"] = value.UpperBound?.ToString("0.##############################", CultureInfo.InvariantCulture),
             ["upper_inclusive"] = value.UpperInclusive,
-            ["value"] = value.Value
+            ["value"] = value.Value,
+            ["value_kind"] = value.AnswerKind is null ? null : CanonicalName(value.AnswerKind.Value),
+            ["version"] = value.Version
         };
 
     private sealed class NfcStringConverter : JsonConverter<string>
@@ -591,6 +624,12 @@ public static class PolicyEvaluator
             throw new DomainConflictException("Policy and request organizations differ.");
         }
 
+        EnsureBaseCurrency(request.Facts, request.BaseCurrency);
+        foreach (var line in request.Lines)
+        {
+            EnsureBaseCurrency(line.Facts, request.BaseCurrency);
+        }
+
         var lineEvaluations = policy.Scopes.Contains(PolicyScope.Line)
             ? request.Lines
                 .Select(line => EvaluateScope(
@@ -604,7 +643,8 @@ public static class PolicyEvaluator
         var requestFacts = new Dictionary<string, PolicyValue>(request.Facts ?? new Dictionary<string, PolicyValue>(), StringComparer.Ordinal)
         {
             ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(
-                request.Lines.Sum(line => GetMoney(line.Facts, "GROSS_AMOUNT_BASE")))
+                request.Lines.Sum(line => GetMoney(line.Facts, "GROSS_AMOUNT_BASE")),
+                request.BaseCurrency)
         };
         var requestEvaluations = policy.Scopes.Contains(PolicyScope.Request)
             ? new[] { EvaluateScope(
@@ -733,7 +773,7 @@ public static class PolicyEvaluator
         var controls = matching
             .SelectMany(rule => rule.Effects
                 .Where(effect => effect.Type is not (PolicyEffectType.Allow or PolicyEffectType.AllowDirectPurchase))
-                .Select(effect => ToControl(effect, scope, subjectIds, rule)))
+                .Select(effect => ToControl(effect, scope, subjectIds, rule, facts)))
             .ToArray();
         return new PolicyScopeEvaluation(
             scope,
@@ -847,8 +887,30 @@ public static class PolicyEvaluator
         PolicyEffect effect,
         PolicyScope scope,
         IReadOnlySet<Guid> subjectIds,
-        PolicyRule rule) =>
-        new(
+        PolicyRule rule,
+        IReadOnlyDictionary<string, PolicyValue> facts)
+    {
+        var costCenterIds = ImmutableHashSet<Guid>.Empty;
+        decimal? amountBase = null;
+        string? baseCurrency = null;
+        if (effect.Type == PolicyEffectType.RequireBudgetCheck)
+        {
+            if (facts.TryGetValue("COST_CENTER", out var costCenter))
+            {
+                var centers = costCenter.Kind == PolicyValueKind.Set ? costCenter.Members : [costCenter];
+                costCenterIds = centers
+                    .Where(value => value.EntityId is not null)
+                    .Select(value => value.EntityId!.Value)
+                    .ToImmutableHashSet();
+            }
+            if (facts.TryGetValue("GROSS_AMOUNT_BASE", out var gross) && gross.Kind == PolicyValueKind.Money)
+            {
+                amountBase = gross.AsMoney();
+                baseCurrency = gross.AsCurrency();
+            }
+        }
+
+        return new PolicyGeneratedControl(
             effect.RequirementKey,
             effect.Type,
             ImmutableHashSet.Create(scope),
@@ -860,8 +922,14 @@ public static class PolicyEvaluator
             ImmutableHashSet.Create(StringComparer.Ordinal, $"{rule.Code}:{rule.Revision}"),
             effect.Reason ?? rule.Code)
         {
-            MinimumAllowedQuotations = effect.MinimumExceptionQuotations
+            MinimumAllowedQuotations = effect.MinimumExceptionQuotations,
+            CostCenterIds = costCenterIds,
+            AmountBase = amountBase,
+            BaseCurrency = baseCurrency,
+            OriginFacts = rule.Predicates.Select(predicate => predicate.FactKey)
+                .ToImmutableHashSet(StringComparer.Ordinal)
         };
+    }
 
     private static string PhaseFor(PolicyEffect effect) => effect.Type switch
     {
@@ -886,13 +954,14 @@ public static class PolicyEvaluator
                 return false;
             }
 
-            var contains = predicate.Value.Members.Any(member => member.Value == actual.Value);
+            var contains = predicate.Value.Members.Any(member => member.SameAs(actual));
             return predicate.Operator == PolicyOperator.In ? contains : !contains;
         }
 
         if (predicate.Operator == PolicyOperator.Between)
         {
-            if (actual.Kind != PolicyValueKind.Money || predicate.Value.Kind != PolicyValueKind.MoneyRange)
+            if (actual.Kind != PolicyValueKind.Money || predicate.Value.Kind != PolicyValueKind.MoneyRange ||
+                !string.Equals(actual.Currency, predicate.Value.Currency, StringComparison.Ordinal))
             {
                 return false;
             }
@@ -912,10 +981,16 @@ public static class PolicyEvaluator
             return false;
         }
 
+        if (actual.Kind == PolicyValueKind.Money &&
+            !string.Equals(actual.Currency, predicate.Value.Currency, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         return predicate.Operator switch
         {
-            PolicyOperator.Equal => actual.Value == predicate.Value.Value,
-            PolicyOperator.NotEqual => actual.Value != predicate.Value.Value,
+            PolicyOperator.Equal => actual.SameAs(predicate.Value),
+            PolicyOperator.NotEqual => !actual.SameAs(predicate.Value),
             PolicyOperator.IsTrue => actual.AsBoolean(),
             PolicyOperator.IsFalse => !actual.AsBoolean(),
             PolicyOperator.GreaterThan => actual.AsMoney() > predicate.Value.AsMoney(),
@@ -927,9 +1002,30 @@ public static class PolicyEvaluator
     }
 
     private static decimal GetMoney(IReadOnlyDictionary<string, PolicyValue> facts, string key) =>
-        facts.TryGetValue(key, out var value)
+        facts.TryGetValue(key, out var value) && value.Kind == PolicyValueKind.Money
             ? value.AsMoney()
-            : throw new DomainValidationException($"Fact '{key}' is required.");
+            : throw new DomainValidationException($"Fact '{key}' is required as MoneyBase.");
+
+    /// <summary>Money facts must be expressed in the base currency of the evaluated bundle (REQ-04).</summary>
+    private static void EnsureBaseCurrency(
+        IReadOnlyDictionary<string, PolicyValue>? facts,
+        string baseCurrency)
+    {
+        if (facts is null)
+        {
+            return;
+        }
+
+        foreach (var value in facts.Values)
+        {
+            if (value.Kind is PolicyValueKind.Money or PolicyValueKind.MoneyRange &&
+                !string.Equals(value.Currency, baseCurrency, StringComparison.Ordinal))
+            {
+                throw new DomainValidationException(
+                    "Policy money facts must use the bundle base currency.");
+            }
+        }
+    }
 
     private static PolicyResult ResolveResult(IEnumerable<PolicyGeneratedControl> controls, bool hasAllowEffect)
     {

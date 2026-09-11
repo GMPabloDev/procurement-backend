@@ -32,8 +32,8 @@ public sealed class PolicyCanonicalizationIntegrationTests
                 new PolicySubjectReference(Guid.Parse("44444444-4444-4444-4444-444444444444"), 1),
                 new Dictionary<string, PolicyValue>
                 {
-                    ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(123.45m),
-                    ["DATA_RISK"] = PolicyValue.Code("HIGH")
+                    ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(123.45m, "PEN"),
+                    ["DATA_RISK"] = PolicyValue.VersionedCode("DATA_RISK", "HIGH", 1, new string('a', 64))
                 })]);
         var manifest = new PolicyCompletenessManifest(
             request.Subject.Id, request.Subject.Version,
@@ -48,7 +48,7 @@ public sealed class PolicyCanonicalizationIntegrationTests
             "a8de08b7f778503675ed8bead65208137104503ae46ee7d0dbdc99e34e8ef019",
             manifest.Digest);
         Assert.Equal(
-            "5adeb637e9139153e1bd61f86364b48e727d1e0984f39cbfb6ec21d7128ceebd",
+            "748840e099793748718acc2026d6de5d60a0dba298fde349a1313b152c07994c",
             PolicyEvaluationService.ComputeFactsDigest(bundle));
     }
 }

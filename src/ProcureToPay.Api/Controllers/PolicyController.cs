@@ -147,7 +147,10 @@ public sealed class PolicyController(
             HttpContext.TraceIdentifier)
         {
             // pi-lens-ignore: CS0117
-            OrganizationId = await GetOrganizationIdAsync(cancellationToken)
+            OrganizationId = await GetOrganizationIdAsync(cancellationToken),
+            PreviousBundleId = request.PreviousBundleId,
+            Cause = request.Cause,
+            PreviousResultDigest = request.PreviousResultDigest
         };
         return Ok(await policyEvaluationService.EvaluateEnterprisePurchaseRequestAsync(
             factRequest, request.EvaluationKey, cancellationToken));
@@ -168,7 +171,7 @@ public sealed class PolicyController(
         {
             throw new DomainForbiddenException("The waiver originator must be the authenticated user.");
         }
-        if (!Enum.TryParse<PolicyExceptionType>(request.Type, ignoreCase: false, out var type))
+        if (!TryParseExceptionType(request.Type, out var type))
         {
             throw new DomainValidationException("The quotation waiver type is invalid.");
         }
@@ -288,30 +291,7 @@ public sealed class PolicyController(
         static PolicySubjectReference ParseSubject(JsonElement value) =>
             new(value.GetProperty("id").GetGuid(), value.GetProperty("version").GetInt32());
 
-        static PolicyValue ParseValue(JsonElement value)
-        {
-            var kind = value.GetProperty("kind").GetString()!;
-            var enumName = string.Concat(kind.Split('_').Select(part =>
-                char.ToUpperInvariant(part[0]) + part[1..].ToLowerInvariant()));
-            var parsedKind = Enum.Parse<PolicyValueKind>(enumName, true);
-            return parsedKind switch
-            {
-                PolicyValueKind.Money => PolicyValue.Money(decimal.Parse(value.GetProperty("value").GetString()!, System.Globalization.CultureInfo.InvariantCulture)),
-                PolicyValueKind.Boolean => PolicyValue.Boolean(bool.Parse(value.GetProperty("value").GetString()!)),
-                PolicyValueKind.Code => PolicyValue.Code(value.GetProperty("value").GetString()!),
-                PolicyValueKind.Reference => PolicyValue.Reference(
-                    value.GetProperty("reference_type").GetString()!,
-                    Guid.Parse(value.GetProperty("value").GetString()!.Split(':')[0]),
-                    int.Parse(value.GetProperty("value").GetString()!.Split(':')[1], System.Globalization.CultureInfo.InvariantCulture)),
-                PolicyValueKind.Set => PolicyValue.Set(value.GetProperty("members").EnumerateArray().Select(ParseValue).ToArray()),
-                PolicyValueKind.MoneyRange => PolicyValue.MoneyRange(
-                    decimal.Parse(value.GetProperty("lower_bound").GetString()!, System.Globalization.CultureInfo.InvariantCulture),
-                    decimal.Parse(value.GetProperty("upper_bound").GetString()!, System.Globalization.CultureInfo.InvariantCulture),
-                    value.GetProperty("lower_inclusive").GetBoolean(),
-                    value.GetProperty("upper_inclusive").GetBoolean()),
-                _ => throw new DomainValidationException("Unsupported simulation policy value.")
-            };
-        }
+        static PolicyValue ParseValue(JsonElement value) => PolicyDocumentParser.ParseValue(value);
 
         static IReadOnlyDictionary<string, PolicyValue> ParseFacts(JsonElement facts) =>
             facts.EnumerateObject().ToDictionary(property => property.Name, property => ParseValue(property.Value), StringComparer.Ordinal);
@@ -365,6 +345,23 @@ public sealed class PolicyController(
     private async Task<Guid> GetOrganizationIdAsync(CancellationToken cancellationToken) =>
         (await provisioningService.EnsureProfileAsync(User, cancellationToken)).OrganizationId;
 
+    private static bool TryParseExceptionType(string? value, out PolicyExceptionType type)
+    {
+        type = default;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+        if (Enum.TryParse(value, ignoreCase: true, out type))
+        {
+            return true;
+        }
+        // Accept the documented uppercase contract code as well as the enum name.
+        var pascal = string.Concat(value.Split('_', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => char.ToUpperInvariant(part[0]) + part[1..].ToLowerInvariant()));
+        return Enum.TryParse(pascal, ignoreCase: false, out type);
+    }
+
     private static PolicyVersionResponse ToResponse(PolicySetVersionRecord record) => new(
         record.Id, record.OrganizationId, record.Sequence,
         ((PolicySetStatus)record.Status).ToString().ToUpperInvariant(),
@@ -377,7 +374,10 @@ public sealed record PolicyEvaluationRequest(
     int SubjectVersion,
     string Operation,
     string EvaluationKey,
-    DateTimeOffset? RequestedAtUtc = null);
+    DateTimeOffset? RequestedAtUtc = null,
+    Guid? PreviousBundleId = null,
+    string? Cause = null,
+    string? PreviousResultDigest = null);
 
 public sealed record PolicyDraftRequest(
     string ScopesJson,

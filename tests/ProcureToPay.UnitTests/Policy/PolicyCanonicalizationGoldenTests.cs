@@ -16,7 +16,7 @@ public sealed class PolicyCanonicalizationGoldenTests
         policy.AddRule(new PolicyRule(
             "Z_RULE",
             PolicyScope.Request,
-            [new PolicyPredicate("DATA_RISK", PolicyOperator.Equal, PolicyValue.Code("HIGH"))],
+            [new PolicyPredicate("DATA_RISK", PolicyOperator.Equal, PolicyValue.VersionedCode("DATA_RISK", "HIGH", 1, new string('a', 64)))],
             [new PolicyEffect(PolicyEffectType.Block, "RISK", "Cafe\u0301")]));
         policy.AddRule(new PolicyRule(
             "A_RULE",
@@ -25,11 +25,11 @@ public sealed class PolicyCanonicalizationGoldenTests
             [new PolicyEffect(PolicyEffectType.Allow, "DEFAULT")],
             isFallback: true));
 
-        const string expected = "{\"canonicalization_version\":\"policy-canonical-json/v1\",\"organization_id\":\"11111111-1111-1111-1111-111111111111\",\"policy_schema_version\":\"policy-schema/v1\",\"rules\":[{\"code\":\"A_RULE\",\"effects\":[{\"approval\":null,\"documents\":null,\"exception_floor\":null,\"minimum_quotations\":null,\"reason\":null,\"requirement_key\":\"DEFAULT\",\"type\":\"ALLOW\"}],\"fallback\":true,\"predicates\":[],\"revision\":1,\"scope\":\"LINE\"},{\"code\":\"Z_RULE\",\"effects\":[{\"approval\":null,\"documents\":null,\"exception_floor\":null,\"minimum_quotations\":null,\"reason\":\"Café\",\"requirement_key\":\"RISK\",\"type\":\"BLOCK\"}],\"fallback\":false,\"predicates\":[{\"fact_key\":\"DATA_RISK\",\"operator\":\"EQ\",\"value\":{\"kind\":\"CODE\",\"lower_bound\":null,\"lower_inclusive\":true,\"members\":null,\"reference_type\":null,\"upper_bound\":null,\"upper_inclusive\":false,\"value\":\"HIGH\"}}],\"revision\":1,\"scope\":\"REQUEST\"}],\"scopes\":[\"LINE\",\"REQUEST\"]}";
+        const string expected = "{\"canonicalization_version\":\"policy-canonical-json/v1\",\"organization_id\":\"11111111-1111-1111-1111-111111111111\",\"policy_schema_version\":\"policy-schema/v2\",\"rules\":[{\"code\":\"A_RULE\",\"effects\":[{\"approval\":null,\"documents\":null,\"exception_floor\":null,\"minimum_quotations\":null,\"reason\":null,\"requirement_key\":\"DEFAULT\",\"type\":\"ALLOW\"}],\"fallback\":true,\"predicates\":[],\"revision\":1,\"scope\":\"LINE\"},{\"code\":\"Z_RULE\",\"effects\":[{\"approval\":null,\"documents\":null,\"exception_floor\":null,\"minimum_quotations\":null,\"reason\":\"Café\",\"requirement_key\":\"RISK\",\"type\":\"BLOCK\"}],\"fallback\":false,\"predicates\":[{\"fact_key\":\"DATA_RISK\",\"operator\":\"EQ\",\"value\":{\"catalog\":\"DATA_RISK\",\"currency\":null,\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"entity_id\":null,\"kind\":\"VERSIONED_CODE_REF\",\"lower_bound\":null,\"lower_inclusive\":true,\"members\":null,\"question_code\":null,\"reference_type\":null,\"schema_version\":null,\"upper_bound\":null,\"upper_inclusive\":false,\"value\":\"HIGH\",\"value_kind\":null,\"version\":1}}],\"revision\":1,\"scope\":\"REQUEST\"}],\"scopes\":[\"LINE\",\"REQUEST\"]}";
 
         var actual = PolicyCanonicalizer.CanonicalizePolicy(policy);
         Assert.Equal(expected, actual);
-        Assert.Equal("64ceba37999c0db9def8fbeba11240a5a2b515964f2569ddcc9cdcdb9653e826", PolicyCanonicalizer.Hash(actual));
+        Assert.Equal("bd090795680014db241d029deec584d9d56c1c0e58797ee5268b4f8ef0fdbaeb", PolicyCanonicalizer.Hash(actual));
     }
 
     [Fact]
@@ -92,12 +92,12 @@ public sealed class PolicyCanonicalizationGoldenTests
             ["RULE_Q"], [control], PolicyResult.RequirementsGenerated)
         { SubjectReferences = [subject] };
 
-        const string expected = "{\"canonicalization_version\":\"policy-canonical-json/v1\",\"combined_controls\":[{\"approval\":null,\"minimum_allowed_quotations\":null,\"minimum_quotations\":3,\"origin_rules\":[\"RULE_Q\"],\"origin_scopes\":[\"LINE\"],\"phase\":\"PRE_PROCUREMENT\",\"reason\":\"Café\",\"requirement_key\":\"QUOTATIONS\",\"subjects\":[\"77777777-7777-7777-7777-777777777777\"],\"supporting_document_types\":[],\"type\":\"REQUIRE_QUOTATIONS\"}],\"combined_result\":\"REQUIREMENTS_GENERATED\",\"diff\":null,\"evaluation_input_digest\":\"iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii\",\"scope_evaluations\":[{\"controls\":[{\"approval\":null,\"minimum_allowed_quotations\":null,\"minimum_quotations\":3,\"origin_rules\":[\"RULE_Q\"],\"origin_scopes\":[\"LINE\"],\"phase\":\"PRE_PROCUREMENT\",\"reason\":\"Café\",\"requirement_key\":\"QUOTATIONS\",\"subjects\":[\"77777777-7777-7777-7777-777777777777\"],\"supporting_document_types\":[],\"type\":\"REQUIRE_QUOTATIONS\"}],\"matched_rules\":[\"RULE_Q\"],\"result\":\"REQUIREMENTS_GENERATED\",\"scope\":\"LINE\",\"subjects\":[\"77777777-7777-7777-7777-777777777777\"]}]}";
+        const string expected = "{\"canonicalization_version\":\"policy-canonical-json/v1\",\"combined_controls\":[{\"amount_base\":null,\"approval\":null,\"base_currency\":null,\"cost_center_ids\":[],\"fact_provenance\":{},\"minimum_allowed_quotations\":null,\"minimum_quotations\":3,\"origin_facts\":[],\"origin_rules\":[\"RULE_Q\"],\"origin_scopes\":[\"LINE\"],\"phase\":\"PRE_PROCUREMENT\",\"reason\":\"Café\",\"requirement_key\":\"QUOTATIONS\",\"subjects\":[\"77777777-7777-7777-7777-777777777777\"],\"supporting_document_types\":[],\"type\":\"REQUIRE_QUOTATIONS\"}],\"combined_result\":\"REQUIREMENTS_GENERATED\",\"diff\":null,\"evaluation_input_digest\":\"iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii\",\"scope_evaluations\":[{\"controls\":[{\"amount_base\":null,\"approval\":null,\"base_currency\":null,\"cost_center_ids\":[],\"fact_provenance\":{},\"minimum_allowed_quotations\":null,\"minimum_quotations\":3,\"origin_facts\":[],\"origin_rules\":[\"RULE_Q\"],\"origin_scopes\":[\"LINE\"],\"phase\":\"PRE_PROCUREMENT\",\"reason\":\"Café\",\"requirement_key\":\"QUOTATIONS\",\"subjects\":[\"77777777-7777-7777-7777-777777777777\"],\"supporting_document_types\":[],\"type\":\"REQUIRE_QUOTATIONS\"}],\"matched_rules\":[\"RULE_Q\"],\"result\":\"REQUIREMENTS_GENERATED\",\"scope\":\"LINE\",\"subjects\":[\"77777777-7777-7777-7777-777777777777\"]}]}";
 
         var actual = PolicyCanonicalizer.CanonicalizeEvaluationResult(
             new string('i', 64), [scope], [control], PolicyResult.RequirementsGenerated, null);
         Assert.Equal(expected, actual);
-        Assert.Equal("8b39ae894944132eb807cac9cc5c0674e8c61919f71363f3509d070e19133829", PolicyCanonicalizer.Hash(actual));
+        Assert.Equal("2bdae9241f15c00b6c67f5e724b996a02bb6b65fd3b10d51551a1700c866dc3b", PolicyCanonicalizer.Hash(actual));
     }
 
     [Fact]
@@ -111,6 +111,6 @@ public sealed class PolicyCanonicalizationGoldenTests
     public void Policy_value_set_rejects_duplicate_members()
     {
         Assert.Throws<DomainConflictException>(() =>
-            PolicyValue.Set(PolicyValue.Code("HIGH"), PolicyValue.Code("HIGH")));
+            PolicyValue.Set(PolicyValue.VersionedCode("DATA_RISK", "HIGH", 1, new string('a', 64)), PolicyValue.VersionedCode("DATA_RISK", "HIGH", 1, new string('a', 64))));
     }
 }

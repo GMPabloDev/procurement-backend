@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Collections.Immutable;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using ProcureToPay.Domain.Modules.Policy;
@@ -11,6 +12,12 @@ public sealed class HttpQuotationWaiverVerifier(
     HttpClient httpClient,
     ILogger<HttpQuotationWaiverVerifier> logger) : IQuotationWaiverVerifier
 {
+    public const string AdapterId = "APPROVAL_WORKFLOW";
+    public const string AdapterContractVersion = "policy-exception-verifier/v1";
+
+    public string VerifierId => AdapterId;
+    public string ContractVersion => AdapterContractVersion;
+
     public async Task<QuotationWaiverEvidence?> VerifyAsync(
         QuotationWaiverRequest request,
         CancellationToken cancellationToken = default)
@@ -43,12 +50,17 @@ public sealed class HttpQuotationWaiverVerifier(
                 result.WorkflowDecisionVersion < 1 ||
                 string.IsNullOrWhiteSpace(result.WorkflowDecisionDigest) ||
                 string.IsNullOrWhiteSpace(result.AuthorityEvidenceDigest) ||
+                result.ApproverId == Guid.Empty ||
+                string.IsNullOrWhiteSpace(result.ApproverRole) ||
+                string.IsNullOrWhiteSpace(result.AuthorityType) ||
+                string.IsNullOrWhiteSpace(result.EligibilityEvidenceDigest) ||
+                string.IsNullOrWhiteSpace(result.Scope) ||
                 !result.SegregationSatisfied)
             {
                 throw new PolicyDependencyUnavailableException(
                     "The quotation waiver workflow returned incomplete evidence.");
             }
-            return new QuotationWaiverEvidence(
+            var evidence = new QuotationWaiverEvidence(
                 result.EvidenceDigest,
                 result.Binding,
                 result.Nonce,
@@ -57,10 +69,20 @@ public sealed class HttpQuotationWaiverVerifier(
             {
                 WorkflowDecisionVersion = result.WorkflowDecisionVersion,
                 WorkflowDecisionDigest = result.WorkflowDecisionDigest,
-                AuthorityEvidenceDigest = result.AuthorityEvidenceDigest,
                 // pi-lens-ignore: lsp:CS1061
-                SegregationSatisfied = result.SegregationSatisfied
+                SegregationSatisfied = result.SegregationSatisfied,
+                EligibilityEvidenceDigest = result.EligibilityEvidenceDigest!,
+                CoveredLineIds = (result.CoveredLineIds ?? []).ToImmutableHashSet(),
+                AuthorityEvidenceDigest = result.AuthorityEvidenceDigest,
+                ApproverId = result.ApproverId,
+                ApproverRole = result.ApproverRole!,
+                AuthorityType = result.AuthorityType!,
+                Scope = result.Scope!,
+                ValidFrom = result.ValidFrom,
+                VerifierId = AdapterId,
+                VerifierContractVersion = AdapterContractVersion
             };
+            return evidence;
         }
         catch (JsonException exception)
         {
@@ -92,9 +114,16 @@ public sealed class HttpQuotationWaiverVerifier(
         string? Binding,
         string? Nonce,
         DateTimeOffset ExpiresAt,
+        DateTimeOffset ValidFrom,
         string? VerifierReference,
         int WorkflowDecisionVersion,
         string? WorkflowDecisionDigest,
         string? AuthorityEvidenceDigest,
+        string? EligibilityEvidenceDigest,
+        Guid[]? CoveredLineIds,
+        Guid ApproverId,
+        string? ApproverRole,
+        string? AuthorityType,
+        string? Scope,
         bool SegregationSatisfied);
 }

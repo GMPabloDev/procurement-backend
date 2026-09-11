@@ -27,7 +27,7 @@ public sealed class PolicyModelTests
         policy.AddRule(new PolicyRule(
             "AMOUNT_RULE",
             PolicyScope.Line,
-            [new PolicyPredicate("GROSS_AMOUNT_BASE", PolicyOperator.GreaterThan, PolicyValue.Money(500))],
+            [new PolicyPredicate("GROSS_AMOUNT_BASE", PolicyOperator.GreaterThan, PolicyValue.Money(500, "PEN"))],
             [new PolicyEffect(PolicyEffectType.RequirePo, "PO_REQUIRED")]));
 
         Assert.Throws<DomainValidationException>(() => policy.Publish(new string('a', 64)));

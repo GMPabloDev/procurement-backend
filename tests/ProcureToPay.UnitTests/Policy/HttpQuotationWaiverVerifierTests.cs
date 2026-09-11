@@ -24,6 +24,13 @@ public sealed class HttpQuotationWaiverVerifierTests
                 workflowDecisionVersion = 1,
                 workflowDecisionDigest = new string('d', 64),
                 authorityEvidenceDigest = new string('e', 64),
+                eligibilityEvidenceDigest = new string('f', 64),
+                coveredLineIds = Array.Empty<Guid>(),
+                approverId = Guid.NewGuid(),
+                approverRole = "PROCUREMENT_APPROVER",
+                authorityType = "PROCUREMENT",
+                scope = "REQUEST",
+                validFrom = DateTimeOffset.UtcNow.AddMinutes(-1),
                 segregationSatisfied = true
             })
         });
@@ -35,6 +42,8 @@ public sealed class HttpQuotationWaiverVerifierTests
         Assert.NotNull(evidence);
         Assert.Equal(new string('a', 64), evidence.EvidenceDigest);
         Assert.Equal("decision-1", evidence.VerifierReference);
+        Assert.Equal("PROCUREMENT_APPROVER", evidence.ApproverRole);
+        Assert.Equal("APPROVAL_WORKFLOW", evidence.VerifierId);
         Assert.Equal("v1/policy-exceptions/verify", handler.RequestedPath);
     }
 

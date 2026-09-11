@@ -31,8 +31,8 @@ public sealed class PolicyEvaluatorTests
             new PolicySubjectReference(Guid.NewGuid(), 1),
             new Dictionary<string, PolicyValue>
             {
-                ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(400),
-                ["DATA_RISK"] = PolicyValue.Code("HIGH")
+                ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(400, "PEN"),
+                ["DATA_RISK"] = PolicyValue.VersionedCode("DATA_RISK", "HIGH", 1, new string('a', 64))
             });
         // pi-lens-ignore: CS0246
         var lineTwo = new PolicyLineInput(
@@ -40,8 +40,8 @@ public sealed class PolicyEvaluatorTests
             new PolicySubjectReference(Guid.NewGuid(), 1),
             new Dictionary<string, PolicyValue>
             {
-                ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(700),
-                ["DATA_RISK"] = PolicyValue.Code("LOW")
+                ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(700, "PEN"),
+                ["DATA_RISK"] = PolicyValue.VersionedCode("DATA_RISK", "LOW", 1, new string('a', 64))
             });
         // pi-lens-ignore: CS0246
         var request = new PolicyRequestInput(
@@ -79,8 +79,8 @@ public sealed class PolicyEvaluatorTests
             new PolicySubjectReference(Guid.NewGuid(), 1),
             new Dictionary<string, PolicyValue>
             {
-                ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(100),
-                ["DATA_RISK"] = PolicyValue.Code("LOW")
+                ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(100, "PEN"),
+                ["DATA_RISK"] = PolicyValue.VersionedCode("DATA_RISK", "LOW", 1, new string('a', 64))
             });
         // pi-lens-ignore: CS0246
         var request = new PolicyRequestInput(
@@ -115,7 +115,7 @@ public sealed class PolicyEvaluatorTests
         {
             Facts = new Dictionary<string, PolicyValue>
             {
-                ["DATA_RISK"] = PolicyValue.Code("HIGH")
+                ["DATA_RISK"] = PolicyValue.VersionedCode("DATA_RISK", "HIGH", 1, new string('a', 64))
             }
         };
         var changed = PolicyEvaluator.EvaluateSourcing(
@@ -137,8 +137,8 @@ public sealed class PolicyEvaluatorTests
             new PolicySubjectReference(Guid.NewGuid(), 1),
             new Dictionary<string, PolicyValue>
             {
-                ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(100),
-                ["DATA_RISK"] = PolicyValue.Code("LOW")
+                ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(100, "PEN"),
+                ["DATA_RISK"] = PolicyValue.VersionedCode("DATA_RISK", "LOW", 1, new string('a', 64))
             });
         var request = new PolicyRequestInput(
             new PolicySubjectReference(Guid.NewGuid(), 1), organizationId, Guid.NewGuid(), "PEN", [line]);
@@ -239,7 +239,7 @@ public sealed class PolicyEvaluatorTests
         policy.AddRule(new PolicyRule(
             "BLOCK_HIGH_RISK",
             PolicyScope.Line,
-            [new PolicyPredicate("DATA_RISK", PolicyOperator.Equal, PolicyValue.Code("HIGH"))],
+            [new PolicyPredicate("DATA_RISK", PolicyOperator.Equal, PolicyValue.VersionedCode("DATA_RISK", "HIGH", 1, new string('a', 64)))],
             [new PolicyEffect(PolicyEffectType.Block, "RISK_BLOCKED", "High risk") ]));
         policy.AddRule(new PolicyRule(
             "DEFAULT",
@@ -263,8 +263,8 @@ public sealed class PolicyEvaluatorTests
                 new PolicySubjectReference(Guid.NewGuid(), 1),
                 new Dictionary<string, PolicyValue>
                 {
-                    ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(10),
-                    ["DATA_RISK"] = PolicyValue.Code("HIGH")
+                    ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(10, "PEN"),
+                    ["DATA_RISK"] = PolicyValue.VersionedCode("DATA_RISK", "HIGH", 1, new string('a', 64))
                 })]);
 
         // pi-lens-ignore: CS0103
@@ -291,7 +291,7 @@ public sealed class PolicyEvaluatorTests
                 new PolicySubjectReference(Guid.NewGuid(), 1),
                 new Dictionary<string, PolicyValue>
                 {
-                    ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(10)
+                    ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(10, "PEN")
                 })]);
 
         Assert.Throws<DomainConflictException>(() =>
@@ -310,7 +310,7 @@ public sealed class PolicyEvaluatorTests
             new(
                 "LINE_HIGH_RISK",
                 PolicyScope.Line,
-                [new PolicyPredicate("DATA_RISK", PolicyOperator.Equal, PolicyValue.Code("HIGH"))],
+                [new PolicyPredicate("DATA_RISK", PolicyOperator.Equal, PolicyValue.VersionedCode("DATA_RISK", "HIGH", 1, new string('a', 64)))],
                 [new PolicyEffect(
                     PolicyEffectType.RequireApproval,
                     "IT_REVIEW",
@@ -324,12 +324,12 @@ public sealed class PolicyEvaluatorTests
             new(
                 "REQUEST_THRESHOLD",
                 PolicyScope.Request,
-                [new PolicyPredicate("GROSS_AMOUNT_BASE", PolicyOperator.GreaterThan, PolicyValue.Money(1000))],
+                [new PolicyPredicate("GROSS_AMOUNT_BASE", PolicyOperator.GreaterThan, PolicyValue.Money(1000, "PEN"))],
                 [new PolicyEffect(PolicyEffectType.RequirePo, "PO_REQUIRED")]),
             new(
                 "LINE_LOW_VALUE",
                 PolicyScope.Line,
-                [new PolicyPredicate("DATA_RISK", PolicyOperator.Equal, PolicyValue.Code("LOW"))],
+                [new PolicyPredicate("DATA_RISK", PolicyOperator.Equal, PolicyValue.VersionedCode("DATA_RISK", "LOW", 1, new string('a', 64)))],
                 [new PolicyEffect(PolicyEffectType.AllowDirectPurchase, "DIRECT")]),
             new(
                 "DEFAULT_LINE",

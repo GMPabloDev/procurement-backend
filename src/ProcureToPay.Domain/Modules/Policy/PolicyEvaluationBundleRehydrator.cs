@@ -40,6 +40,7 @@ public static class PolicyEvaluationBundleRehydrator
             RequestSnapshotJson = NullableString(root, "requestSnapshotJson"),
             ActivationId = NullableGuid(root, "activationId"),
             PreviousBundleId = NullableGuid(root, "previousBundleId"),
+            Cause = NullableString(root, "cause"),
             Diff = root.TryGetProperty("diff", out var diff) && diff.ValueKind == JsonValueKind.Array
                 ? diff.EnumerateArray().Select(ParseDiff).ToArray()
                 : []
@@ -74,6 +75,16 @@ public static class PolicyEvaluationBundleRehydrator
             .Select(item => ParseEnum<PolicyScope>(item)).ToImmutableHashSet();
         var subjects = value.GetProperty("subjectIds").EnumerateArray()
             .Select(item => item.GetGuid()).ToImmutableHashSet();
+        var costCenters = value.TryGetProperty("costCenterIds", out var centers) && centers.ValueKind == JsonValueKind.Array
+            ? centers.EnumerateArray().Select(item => item.GetGuid()).ToImmutableHashSet()
+            : ImmutableHashSet<Guid>.Empty;
+        var originFacts = value.TryGetProperty("originFacts", out var originFactsElement) && originFactsElement.ValueKind == JsonValueKind.Array
+            ? originFactsElement.EnumerateArray().Select(item => item.GetString()!).ToImmutableHashSet(StringComparer.Ordinal)
+            : ImmutableHashSet<string>.Empty;
+        var provenance = value.TryGetProperty("factProvenance", out var provenanceElement) && provenanceElement.ValueKind == JsonValueKind.Object
+            ? provenanceElement.EnumerateObject().ToImmutableDictionary(
+                property => property.Name, property => property.Value.GetString() ?? string.Empty, StringComparer.Ordinal)
+            : ImmutableDictionary<string, string>.Empty;
         return new PolicyGeneratedControl(
             value.GetProperty("requirementKey").GetString()!,
             ParseEnum<PolicyEffectType>(value.GetProperty("type")),
@@ -87,7 +98,12 @@ public static class PolicyEvaluationBundleRehydrator
             rules,
             value.GetProperty("reason").GetString() ?? string.Empty)
         {
-            MinimumAllowedQuotations = NullableInt(value, "minimumAllowedQuotations")
+            MinimumAllowedQuotations = NullableInt(value, "minimumAllowedQuotations"),
+            CostCenterIds = costCenters,
+            AmountBase = NullableDecimal(value, "amountBase"),
+            BaseCurrency = NullableString(value, "baseCurrency"),
+            OriginFacts = originFacts,
+            FactProvenance = provenance
         };
     }
 

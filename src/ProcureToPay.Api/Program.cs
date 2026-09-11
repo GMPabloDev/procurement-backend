@@ -11,6 +11,7 @@ using ProcureToPay.Api.Identity;
 using ProcureToPay.Application;
 using ProcureToPay.Infrastructure;
 using ProcureToPay.Infrastructure.Persistence.Organization;
+using ProcureToPay.Infrastructure.Persistence.Policy;
 using Scalar.AspNetCore;
 
 const string AngularDevelopmentCorsPolicy = "AngularDevelopment";
@@ -119,6 +120,7 @@ builder.Services
     .AddOpenTelemetry()
     .ConfigureResource(resource => resource.AddService(telemetryServiceName))
     .WithTracing(tracing => tracing
+        .AddSource(PolicyTelemetry.SourceName)
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation()
         .AddOtlpExporter());

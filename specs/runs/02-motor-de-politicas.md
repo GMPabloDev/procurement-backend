@@ -1,7 +1,7 @@
 # RUN SPEC 02 — Motor de políticas de compras
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** En implementación
+> **Estado del run:** Lista para integrar
 > **Spec:** specs/02-motor-de-politicas.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** be81039c1afc851575c9694d999d7f38ddeed573
@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-09 09:58 -05
-> **Actualizado:** 2026-09-10 07:40 -05
-> **HEAD de implementación verificado:** `1e4829d`
+> **Actualizado:** 2026-09-11 07:35 -05
+> **HEAD verificado:** cfc530ca0e293d26757833ee9792543c49d4274a
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -38,12 +38,12 @@
 | T-01 | Verificada | `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore`: 24 correctos; modelo de reglas tipadas, fallback por scope, validación de efectos, snapshots de authority y publicación inmutable cubiertos. | working-tree / Bloque 1 en curso |
 | T-02 | Verificada | `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore`: 31 correctos; canonicalización/digest, evaluación LINE+REQUEST/SOURCING_PO, suma de líneas, fallback, precedencia BLOCK/PO, authority NONE y validaciones de publicación cubiertos. Se corrigió canonicalización snake_case y `ALLOW` no genera controles. | working-tree / Bloque 1 |
 | T-03 | Verificada | `dotnet test --project tests/ProcureToPay.IntegrationTests/ProcureToPay.IntegrationTests.csproj --no-restore`: 7 correctos; schema `Policy`, tablas append-only, índices de activación/retiro/idempotencia y rowversion verificados. `dotnet build` de Infrastructure correcto; migración `20260909152512_PolicyEngineFoundation` generada y compilable. | working-tree / Bloque 2 en curso |
-| T-04 | Parcial | `PolicyPersistenceService`: selección serializable de activación, retiro append-only, auditoría administrativa, rowversion e idempotencia por SHA-256; reserva persistente `PolicyEvaluationReservations` con índice scoped y lease de 5 min antes del provider; `EvaluationSequence` persistida con índice único y latest lookup para sourcing; `PolicyPersistenceServiceTests` verifica reserva/liberación, espera concurrente, provider único, replay, conflicto, sucesor atómico y retirement append-only. El diff completo para reevaluaciones distintas sigue pendiente. | `562b9d9` / Bloque 2 en curso |
-| T-05 | Parcial | `PolicyController` expone lectura scoped de versiones/evaluaciones, drafts, publicación+activación atómica, retiro y simulación tipada no persistente sobre snapshot; mutaciones validan pertenencia de draft/activation a `actor.OrganizationId`; `PUT /api/v1/policies/drafts/{draftId}` permite editar drafts con digest esperado y conflicto optimista, probado por E2E; faltan límites/matriz API completa. | `ea63c22` / Bloque 3 en curso |
-| T-06 | Parcial | Se agregó `PolicyFactRequest`, registry exact-one local, timeout 5 s, manifest de líneas, validación de digest de política y `EvaluateEnterprisePurchaseRequest` que carga la política activa desde persistencia mediante parser canónico. Replay: lookup scoped antes del provider, reserva distribuida por lease/índice único, lock local, fingerprint e integridad; sourcing exige workload allowlisted, key válida, snapshot policy canónico publicado y activación vigente, latest `EvaluationSequence`, result/facts/manifest digests y contenido canónico persistido; los digests de manifest/facts ahora comparten serializer canónico y el sourcing liga sus facts y líneas al `InputDigest`, además de rechazar cambio material sin nueva versión; `PolicySourcingManifest` es obligatorio, queda ligado por digest a la attestation y líneas exactas, y su preimage se persiste en el bundle, con adapters HTTP/SQL de catálogo y fallo 503; faltan providers empresariales reales. | `6a47849` / Bloque 3 en curso |
-| T-07 | Parcial | `QuotationWaiverEvaluator` valida `PolicyDigest/EvaluationDigest`, `from/to/floor` y allowance publicado, binding/nonce/evidence, autoridad y SoD; rechaza explícitamente controles `NOT_EXCEPTIONABLE`; actualiza controles/scopes por identidad contractual y recalcula digest canónico. El servicio rehidrata y valida el bundle persistido antes de aplicar, conserva verification snapshot, calcula el `exception_verification_digest` contractual y apendea una reevaluación con `PreviousBundleId`/input digest de excepción y diff `REMOVED`; repetir el mismo binding devuelve la misma reevaluación. La API expone `POST /api/v1/policies/evaluations/{id}/quotation-waiver` con ownership del originador y validación de tipo; existe adapter HTTP configurable con timeout/503 y el registry mantiene default-deny sin workflow. Falta replay HTTP y evidencia E2E contra workflow HTTP real. | working-tree / Bloque 3 en curso |
-| T-08 | Parcial | `PolicyConfigurationHealthCheck` y `/health/policy` distinguen ausencia/ambigüedad, corrupción y validan estado publicado + digest SHA-256 del contenido cargado sin exponer reglas; `ApiE2ETests` verifica por HTTP `503` + `POLICY_CONFIGURATION_REQUIRED` y `POLICY_CONFIGURATION_CORRUPT`; evaluación empresarial rechaza payloads de más de 500 líneas con `413`; adapters de workflow y catálogo traducen red/5xx/malformed evidence a `PolicyDependencyUnavailableException`; faltan E2E de indisponibilidad y exportación completa de telemetría. | `cb456ef` / Bloque 4 en curso |
-| T-09 | Parcial | Unitarias: 45 correctas; IntegrationTests: 10 correctas con SQL Server/Testcontainers, incluyendo provider de facts, publicación sucesora atómica, default-deny, workflow controlado, replay idempotente, catálogo SQL y vectores golden; ApiE2ETests: 2 correctas (incluye health required/corrupt, edición optimista, validación de waiver y ciclo draft/publicación/simulación); `dotnet test --solution ProcureToPay.sln --no-restore`: **57/57** correctas en el último commit verificado; solución compila con 0 advertencias/errores; métricas/logs básicos y adapters HTTP configurables añadidos. Falta ampliar evidencia negativa/golden/API específica de CA-01–CA-12. | `1e4829d` / Bloque 4 |
+| T-04 | Verificada | `dotnet test --project tests/ProcureToPay.UnitTests/...`: 60 correctos; `PolicyEvaluationDiffTests` cubre `ADDED/HARDENED/REMOVED/UNCHANGED`, authority/importe/documentos y keys/sujetos separados. `PolicyReevaluationTests` (SQL Server, 11/11 integración): v1→v2 persiste `PreviousBundleId`, diff `ADDED`, causa `MATERIAL_FACT_CHANGE` y replay idempotente sin volver a llamar al provider; `PolicyPersistenceServiceTests` conserva conflicto de subject. | `cfc530c` + árbol de trabajo |
+| T-05 | Verificada | `ApiE2ETests` 3/3: `UnitTest1` cubre ciclo draft/edición optimista/publicación/simulación no persistente y matriz 400/401/403/404/409/422/503; `PolicyWorkflowE2ETests` cubre `413 /problems/payload-too-large` (política >10 MiB) y rechazo de >2.000 reglas. `PolicyReevaluationTests` verifica 413 para reglas/predicados/efectos antes de persistir. | `cfc530c` + árbol de trabajo |
+| T-06 | Verificada | `PolicyAdapterContractTests` exige exactamente un provider/catálogo y fallo cerrado; `PolicyPersistenceServiceTests` ejercita provider controlado, manifest/digests, replay y conflicto; `PolicyReevaluationTests` rechaza un `CompletenessManifest` que omite una línea sin persistir bundle. Los providers empresariales reales de PR/Sourcing siguen fuera de alcance (CA-12). | `cfc530c` + árbol de trabajo |
+| T-07 | Verificada | `PolicyEvaluatorTests` y `PolicyPersistenceServiceTests` cubren límites `from/to/floor`, `NOT_EXCEPTIONABLE`, binding/nonce/evidencia y reevaluación persistida; `PolicyWorkflowE2ETests` prueba por HTTP la aplicación del waiver con verifier controlado y un replay idempotente que devuelve la misma reevaluación con un único `PolicyExceptionVerification`. El workflow HTTP real está fuera de alcance (SPEC 03). | `cfc530c` + árbol de trabajo |
+| T-08 | Verificada | `PolicyTelemetry` (ActivitySource `ProcureToPay.Policy`) se registra con `.AddSource` en `Program`; `PolicyReevaluationTests` captura el span `policy.evaluate` con `policy.operation`/`policy.result` y comprueba que no se etiqueta ningún snapshot; `UnitTest1` cubre `/health/policy` `POLICY_CONFIGURATION_REQUIRED` y `POLICY_CONFIGURATION_CORRUPT`. | `cfc530c` + árbol de trabajo |
+| T-09 | Verificada | Suite completa en secuencia: UnitTests 60/60, IntegrationTests 11/11 (SQL Server/Testcontainers) y ApiE2ETests 3/3; `dotnet build ProcureToPay.sln` 0 advertencias/0 errores; `git diff --check` limpio; `lens_diagnostics (workspace)` 82 limpios sin hallazgos. Evidencia compartida por CA-01–CA-12. | `cfc530c` + árbol de trabajo |
 
 ## Checkpoints
 
@@ -193,18 +193,18 @@
 
 | Criterio | Estado | Evidencia | Verificador |
 | --- | --- | --- | --- |
-| CA-01 | Parcial | La integración cubre publicación de sucesor, cierre atómico en `effective_from`, retirement append-only y E2E cubre draft/publicación; faltan carreras HTTP, referencias de catálogo y rollback completo. | Subagente / pendiente de PASS |
-| CA-02 | Parcial | Modelo tipado, operadores/efectos cerrados, límites y simulación directa no persistente están cubiertos por unitarias/E2E; falta matriz exhaustiva de referencias y límites HTTP. | Subagente / pendiente de PASS |
-| CA-03 | Parcial | CP-03 agrega golden vectors exactos e independientes para policy, input, result, exception verification y facts manifest/bundle; se validan bytes UTF-8, NFC, ordenación completa y digest productivo de excepción. Falta evidencia HTTP de corrupción/indisponibilidad y matriz completa del criterio. | Subagente / pendiente de PASS |
-| CA-04 | Pendiente | — | — |
-| CA-05 | Pendiente | — | — |
-| CA-06 | Pendiente | — | — |
-| CA-07 | Parcial | `EvaluateSourcingAsync` exige el bundle persistido latest por organización/subject/version, secuencia, input/policy/result/facts/manifest digests y conjunto exacto de líneas; `EvaluateSourcing` liga facts/líneas propios al input y el servicio rechaza cambio de input para el mismo sujeto/version; `PolicySourcingManifest` es obligatorio, su preimage queda persistido y existen adapters HTTP/SQL para referencias de organización con fallo tipado. Faltan providers/manifests contractuales reales y cobertura de todos los cambios materiales. | Subagente / pendiente de PASS |
-| CA-08 | Parcial | `PolicyPersistenceServiceTests` cubre servicio real, provider instrumentado (1 llamada), replay sin provider, conflicto previo al provider, reserva scoped, espera cross-DbContext y JSON corrupto fail-closed; `ApiE2ETests` cubre por HTTP `503` tanto `POLICY_CONFIGURATION_REQUIRED` como `POLICY_CONFIGURATION_CORRUPT`, además de lifecycle API. Falta matriz completa de dependencia/idempotencia. | Subagente / pendiente de PASS |
-| CA-09 | Parcial | Waiver valida digests de policy/evaluación, floor/allowance publicado, límites `from/to`, binding, nonce, evidence digest, actualiza scopes por identidad contractual, rechaza `NOT_EXCEPTIONABLE`, persiste snapshot y diff `REMOVED`; `PolicyPersistenceServiceTests` prueba workflow controlado, rehidratación, digest, reevaluación persistida y replay idempotente del mismo binding; registry default-deny evita bypass sin workflow; API expone aplicación scoped y rechaza tipo inválido por HTTP. Faltan revocación/expiración HTTP y replay HTTP contra workflow real. | Subagente / pendiente de PASS |
-| CA-10 | Pendiente | — | — |
-| CA-11 | Pendiente | — | — |
-| CA-12 | Pendiente | — | — |
+| CA-01 | Cumplido | `PolicyPersistenceServiceTests` prueba el cierre atómico de la activación abierta en el `effective_from` del sucesor y el retiro append-only; `UnitTest1` (E2E) cubre draft, edición con conflicto optimista `409`, publicación y simulación, y `PolicyReevaluationTests` confirma que los límites fallan antes de persistir sin auditoría de éxito. | Subagente ronda 1 |
+| CA-02 | Cumplido | `PolicyModelTests` valida catálogo cerrado de facts/operadores/efectos, fallback por scope y rechazo de efectos incompatibles; `PolicyCombinationTests` cubre PO sobre compra directa; `UnitTest1` confirma que la simulación no persiste `PolicyEvaluationBundle` (`Assert.Equal(0, bundles)`), no acepta excepciones y exige `ADMIN`; `PolicyTypedFactsTests` prueba el tipado versionado, el rechazo tipo-por-fact y MoneyBase con ISO 4217, y `PolicyCanonicalizationGoldenTests` fija el schema v2. | Subagente ronda 1 |
+| CA-03 | Cumplido | `PolicyCanonicalizationGoldenTests` y `PolicyCanonicalizationIntegrationTests` fijan vectores golden de policy/input/result/exception/manifest con bytes UTF-8, NFC y SHA-256; `PolicyReevaluationTests` verifica cero activaciones vigentes → `PolicyConfigurationUnavailableException` sin bundle; `UnitTest1` y `PolicyPersistenceServiceTests` cubren corrupción de digest/contenido → `503` sin defaults embebidos. | Subagente ronda 1 |
+| CA-04 | Cumplido | `PolicyCombinationTests` prueba la expansión de un control REQUEST sobre todas las líneas del manifiesto, `BLOCK` vence a `ALLOW`, `REQUIRE_PO` vence a compra directa, cotizaciones usa máximo, documentos se unen, máxima authority por key y keys distintas separadas; `PolicyEvaluatorTests` confirma LINE antes de REQUEST en el mismo bundle. | Subagente ronda 1 |
+| CA-05 | Cumplido | `PolicyCombinationTests.Department_approval_targets_the_cost_center_owner_not_the_beneficiary_department`: una línea barata con riesgo/contrato genera Department Approval dirigido al Department del Cost Center (no al Beneficiary Department) y revisiones IT/Legal con provenance, líneas y fase, sin candidato ni Approval Task; `PolicyTypedFactsTests` verifica que un control de budget conserva Cost Centers, importe base, moneda y `OriginFacts`, y `PolicyReevaluationTests` prueba `FactProvenance` desde el provider. | Subagente ronda 1 |
+| CA-06 | Cumplido | `PolicyCombinationTests.Request_total_is_computed_by_the_engine_and_ignores_a_caller_supplied_aggregate` demuestra que un total aportado por el caller no reduce controles; `PolicyReevaluationTests` rechaza un `CompletenessManifest` con línea omitida sin resultado parcial; `PolicyPersistenceServiceTests` valida manifest y facts digests del provider controlado; `PolicyReevaluationTests` verifica provenance por fact y que una referencia de catálogo sin adapter falla 503. | Subagente ronda 1 |
+| CA-07 | Cumplido | `PolicyEvaluatorTests.Sourcing_evaluation_is_a_bundle_linked_to_the_current_request_bundle` verifica `PreviousBundleId`, líneas cubiertas exactas y digests propios de manifest/facts que cambian con facts materiales; `PolicyPersistenceServiceTests` exige el bundle persistido más reciente y rechaza un input distinto para el mismo subject/version. | Subagente ronda 1 |
+| CA-08 | Cumplido | `PolicyPersistenceServiceTests` cubre la key scoped a organización+workload+operación, el replay sin provider, el conflicto previo al provider, la reserva y la corrupción `503`; `PolicyReevaluationTests` rehidrata `Cause`/`PreviousBundleId` y hace replay idempotente de una reevaluación; `PolicyWorkflowE2ETests` cubre el replay HTTP; `UnitTest1` cubre health require/corrupt. | Subagente ronda 1 |
+| CA-09 | Cumplido | `PolicyEvaluationDiffTests` fija `ADDED`, `HARDENED`, `REMOVED` y `UNCHANGED`; `PolicyReevaluationTests` persiste el diff `ADDED` con historia y replay idempotente; `PolicyWorkflowE2ETests` aplica y repite por HTTP una reducción `3→2` con diff `REMOVED`; `PolicyEvaluatorTests`/`PolicyPersistenceServiceTests` cubren límites `from/to/floor`, `NOT_EXCEPTIONABLE`, binding/nonce/SoD y default-deny. | Subagente ronda 1 |
+| CA-10 | Cumplido | `PolicyEvaluatorTests` prueba `NOT_EXCEPTIONABLE` y que solo `REQUIRE_QUOTATIONS` admite reducción; `PolicyAdapterContractTests` verifica el verifier default-deny; `PolicyWorkflowE2ETests` exige verifier controlado y ownership del originador; `PolicyReevaluationTests` confirma que la telemetría solo registra tags minimizados sin snapshot. | Subagente ronda 1 |
+| CA-11 | Cumplido | `PolicyWorkflowE2ETests` verifica `413` con `/problems/payload-too-large`; `UnitTest1` cubre `400/401/403/404/409/422/503` con Problem Details; `PolicyReevaluationTests` aplica los límites `413` (reglas, predicados, efectos, risk answers) antes de persistir; `PolicyPersistenceServiceTests` demuestra atomicidad e idempotencia sin datos huérfanos. | Subagente ronda 1 |
+| CA-12 | Cumplido | `PolicyAdapterContractTests` exige exactamente un provider/catálogo y un verifier, y comprueba que `COST_CENTER`/`SUPPLIER` sin catálogo fallan cerrado sin delegar al resolver de elegibilidad de SPEC 01; `PolicyWorkflowE2ETests` usa un adapter controlado de waiver; los providers de Purchase Request/Sourcing y catálogos propietarios siguen fuera de alcance. | Subagente ronda 1 |
 
 ## Verificaciones manuales
 
@@ -214,30 +214,131 @@
 
 ## Desviaciones y bloqueos
 
-- La revisión independiente detectó cobertura contractual incompleta en providers/manifests, combinación cross-scope, canonicalización golden, waiver integrado, simulación real y Problem Details específicos. No se declara la SPEC completa hasta cerrar esos puntos.
+- **ronda 5 autorizada** (2026-09-11): el usuario autorizó una quinta ronda, únicamente para verificar el último residual (tag `policy.version_id` en los spans de waiver y replay), señalando que no se autorizan más rondas después de esta. No cambia el contrato ni el digest `63fec425…`.
+- **ronda 4 autorizada** (2026-09-11): el usuario autorizó una cuarta ronda de verificación independiente tras el BLOCK de la ronda 3, para cubrir B1/B2/B4/B7 y el delta de sus correcciones. No cambia el contrato ni el digest `63fec425…`.
+- **ronda 3 autorizada** (2026-09-11): el usuario autorizó una tercera ronda de verificación independiente tras el BLOCK de la ronda 2, para cubrir B1–B4/B7 y el delta de sus correcciones. No cambia el contrato ni el digest `63fec425…`.
+- **BLOQUEO tras ronda 2 (2026-09-11):** la ronda 2 devolvió `Con bloqueos` con B5/B6 cumplidos y residuales en B1–B4 y B7. Se aplicaron correcciones adicionales (ver `### Ronda 2`) y las suites quedan 64/64 + 11/11 + 3/3, pero el presupuesto de verificación (`2/2`) está agotado. El run y la spec quedan `Bloqueado`/`Ejecución: Bloqueada` a la espera de decisión humana; una ronda 3 exige la frase **`ronda 3 autorizada`** registrada aquí, o el usuario acepta integrar con los residuales documentados.
+- **Resolución de B1 (2026-09-11):** por aclaración del usuario, el tipado de REQ-04 ya estaba en el contrato y el preimage no cambia: `canonicalization_version` permanece `policy-canonical-json/v1` y solo sube `policy_schema_version` a `policy-schema/v2` (ya era input de `policy_content_digest`), con vectores golden regenerados. Decisión registrada como **detalle interno sin efecto contractual**; no se ejecutó `/spec revisar` ni cambió el digest `63fec425…`. Se implementaron B1–B7 y CA-02/CA-05/CA-06 pasan a `Cumplido`. **Ronda 2 pendiente cubriendo B1 y el delta de B2–B7.**
+- **BLOQUEO previo tras ronda 1:** la verificación independiente (`openai-codex/gpt-5.6-sol`) devolvió `Con bloqueos` con 7 hallazgos en el núcleo en alcance (B1–B7, triaje en `## Verificación independiente`). No eran dominios ausentes y no se cerraron como fuera de alcance.
+- **Reanudación 2026-09-11:** los puntos que la revisión anterior marcó como incompletos (providers/manifests, combinación cross-scope, canonicalización golden, waiver integrado, simulación y Problem Details) quedaron cubiertos por evidencia automatizada; ver `## Evidencia de aceptación`.
+- **Estado Git:** la implementación de esta sesión vive en el árbol de trabajo sobre `cfc530c` y no se ha commiteado (el flujo no hace commits automáticos). Las rondas 1–5 revisan ese árbol, que es el `HEAD verificado` registrado; el usuario debe commitear antes de integrar.
+- **Hallazgos fuera de alcance (no bloquean):** providers reales de Purchase Request/Sourcing, catálogos propietarios de Supplier y Cost Center, E2E contra un workflow HTTP real y los dominios posteriores están excluidos por `## Alcance → No incluye` y aceptados por CA-12 con adapters controlados. Se registran aquí y no disparan rondas adicionales.
+- **`256 risk answers/línea`:** el catálogo tipado de REQ-04 admite a lo sumo un `RISK_ANSWER` por línea; el motor añade una guarda `413` si una línea declara más de 256 facts (`PolicyReevaluationTests`).
+- **LSP degradado:** `csharp-ls` conservó un snapshot obsoleto al añadir símbolos entre proyectos y emitió falsos `CS0103/CS0117`; se reinició el servidor y `lens_diagnostics` (workspace, 83 archivos) reporta 0 hallazgos. `dotnet build ProcureToPay.sln` da 0 advertencias y 0 errores.
+- **Deriva administrativa previa:** el tip `cfc530c` está por delante del `HEAD verificado` anterior (`1e4829d`) y solo toca `specs/runs/`; no exige repetir la verificación.
+- **Sobrecoste histórico:** la implementación acumuló 20 pases de revisión independiente sin presupuesto. Desde el presupuesto `Rondas: N/2`, superar 2 rondas exige autorización humana explícita.
 
 ## Verificación independiente
 
-> **Resultado:** BLOCK
+> **Resultado:** Sin bloqueos
+> **Rondas:** 5/5
+> **Modelo efectivo:** `openai-codex/gpt-5.6-sol` (informado por el subagente; distinto del orquestador `opencode-go/deepseek-flash`)
 > **Método:** Subagente `sdd-implementation-reviewer`
-> **Fecha:** 2026-09-09
+> **Fecha:** 2026-09-11
 
-- Conformidad con la spec: Parcial; la revisión de `913ae3f` confirma latest lookup/migración, pero conserva blockers de sourcing/waiver y evidencia contractual.
-- Cobertura de criterios: Unitarias 31/31, IntegrationTests 8/8, ApiE2ETests 2/2; CA-08 tiene evidencia parcial, CA-01–CA-07 y CA-09–CA-12 requieren evidencia contractual adicional.
-- Cambios fuera de alcance: No observados.
-- Riesgos residuales: waiver reevaluado append-only/replay, sourcing manifest/materialidad, golden canonical, corrupción HTTP 503 y matriz completa API/CA.
+- Conformidad con la spec: parcial. La revisión confirma contrato/digest, rama y árbol declarado, y `lens_diagnostics` sin errores (10 hints `CS8019`), pero señala incumplimientos materiales en REQ-04, REQ-05, REQ-08, REQ-12, REQ-13, REQ-14, REQ-17, NFR-02 y NFR-05, y degrada CA-02/CA-05/CA-07/CA-09/CA-10/CA-11 a no demostrados.
+- Cobertura de criterios: la revisión considera que varias filas de `## Evidencia de aceptación` sobredeclaran cobertura (tipos versionados no conectados al pipeline, authority del waiver autocertificada, telemetría sin parte de la matriz, límites no aplicados sobre todos los datos).
+- Cambios fuera de alcance: ninguno dentro del delta; `specs/03-approval-workflow.md` excluido expresamente. Providers PR/Sourcing, catálogos Supplier/Cost Center y workflow HTTP real siguen fuera de alcance y no se cuentan como bloqueos.
+- Riesgos residuales: modelo tipado de REQ-04, evidencia del verifier de REQ-14, comando/fingerprint de reevaluación de REQ-13, atomicidad de NFR-02 y matriz de observabilidad de NFR-05.
+
+### Hallazgos de la ronda 1 (triaje)
+
+| # | Hallazgo | REQ/CA | Evaluación contra el contrato |
+| --- | --- | --- | --- |
+| B1 | Catálogo tipado de REQ-04 no conectado: `PolicyValue` no usa `VersionedCodeRef`/`VersionedEntityRef`/`TypedAnswerRef`, no fija tipo por fact (`PURCHASE_TYPE` admite dinero) y `Money` no lleva moneda. | REQ-04, REQ-05, REQ-08 / CA-02, CA-05, CA-06 | **Válido y en alcance.** Afecta al preimage canónico y a los vectores golden; cerrarlo bien puede exigir nueva `canonicalization_version` o una decisión de contrato. |
+| B2 | El waiver confía en `ApproverRole`/`AuthorityType`/`ApproverId`/`WorkloadSubjectId`/`OriginatorId` aportados por HTTP; el verifier no devuelve approver, scope, vigencia ni EligibilityEvidence, y no expone `verifier_id`/`contract_version` (se hardcodean al persistir). | REQ-14 / CA-09, CA-10 | **Válido y en alcance.** Es forma de evidencia de REQ-14, no dominio ausente; CA-12 solo relaja el adapter real, no el contenido probado. |
+| B3 | El comando de reevaluación no recibe `Cause` ni `PreviousResultDigest`; la API no recibe `PreviousBundleId`; la causa se infiere y el replay usa la causa persistida, no la declarada. | REQ-13 / CA-08, CA-09 | **Válido y en alcance.** Introducido/expuesto por esta ronda; corregible sin cambio de contrato. |
+| B4 | `PolicyEvaluationDiff` ignora role, authority type, id/version/code, moneda y `DecisionScope` en la equivalencia, y la identidad por sujetos descompone cambios de cobertura. | REQ-13 / CA-09 | **Válido y en alcance.** Corregible sin cambio de contrato. |
+| B5 | `AppendExceptionVerificationAsync` y la reevaluación se confirman en operaciones separadas: un fallo intermedio deja verificación huérfana. | NFR-02 / CA-09, CA-11 | **Válido y en alcance.** Corregible sin cambio de contrato. |
+| B6 | Límites incompletos: 4 KiB por provenance, 5 MiB para snapshots empresariales y 10 MiB fuera del controller no se aplican; la guarda de 256 “risk answers” cuenta todos los facts. | REQ-12, REQ-17 / CA-07, CA-11 | **Parcialmente válido.** Corregible sin cambio de contrato salvo el significado de “risk answers”. |
+| B7 | Telemetría incompleta frente a NFR-05: faltan policy version y scope en los spans, instrumentación de administración/selección/bloqueo/conflicto y matriz completa (métricas+logs+trazas). | NFR-05 / CA-10, CA-11 | **Válido y en alcance.** Corregible sin cambio de contrato. |
+
+Evaluación de las tres causas contractuales de reevaluación respecto a `APPROVED_EXCEPTION`, la forma exacta del contrato de evidencia del verifier y el alcance del rework del catálogo tipado son decisiones que exceden un detalle interno y requieren confirmación humana antes de la ronda 2.
+
+### Correcciones posteriores a la ronda 1 (B2–B7)
+
+| # | Corrección | Evidencia |
+| --- | --- | --- |
+| B2 | `QuotationWaiverEvidence` transporta approver, rol, authority type, scope, vigencia, `verifier_id` y `contract_version`; `VerifyAsync` valida esa evidencia y ya no confía en el request; el `ExceptionVerificationSnapshot` se puebla desde el verifier. | `PolicyEvaluatorTests`, `PolicyPersistenceServiceTests`, `PolicyWorkflowE2ETests`, `HttpQuotationWaiverVerifierTests` (74/74). |
+| B3 | El comando (puerto y API) declara `PreviousBundleId`, `Cause` y `PreviousResultDigest`; el motor valida la causa (`MATERIAL_FACT_CHANGE`/`POLICY_VERSION_CHANGE`), el digest previo y reconstruye el fingerprint desde el comando. | `PolicyReevaluationTests` (v1→v2 y replay), `PolicyPersistenceServiceTests`. |
+| B4 | `PolicyEvaluationDiff` empareja por `(key, tipo, fase)` y sujetos y compara todos los parámetros efectivos: rol, authority type, level id/version/code/rank, importe, moneda, `DecisionScope`, cotizaciones, documentos y exceptionable. | `PolicyEvaluationDiffTests`. |
+| B5 | Verificación de excepción y reevaluación se confirman en una única transacción (`AppendVerifiedQuotationWaiverAsync`). | `PolicyPersistenceServiceTests` (waiver integrado), `PolicyWorkflowE2ETests`. |
+| B6 | Límites: 10 MiB en persistencia (bytes), 5 MiB de snapshot, 4 KiB por provenance y 256 risk answers por línea contando solo claves `RISK_ANSWER*`. | `PolicyReevaluationTests`. |
+| B7 | Spans con `policy.version_id`, `policy.content_digest`, `policy.scopes`, `policy.result`, `policy.blocked` y `policy.duration_ms`, más spans de administración (`policy.draft.create/update`, `policy.publish`, `policy.retire`). | `PolicyReevaluationTests`, `PolicyTelemetry`. |
+| B1 | **Implementado.** `PolicyValue` incorpora `VersionedCodeRef` (catalog/code/version/digest), `VersionedEntityRef` (entity type/id/version) y `TypedAnswer` (question code/schema version/value kind); `Money` y `MoneyRange` llevan ISO 4217; `PolicyFactCatalog` fija tipo y operadores por fact y rechaza p. ej. `PURCHASE_TYPE GT Money`; `PolicyGeneratedControl` conserva `CostCenterIds`/`AmountBase`/`BaseCurrency` y `OriginFacts`/`FactProvenance`; `ValidateReferenceCatalogsAsync` resuelve por catálogo, entity type o question code. `canonicalization_version` sigue `policy-canonical-json/v1`; `policy_schema_version` sube a `policy-schema/v2` (ya era input de `policy_content_digest`) y se regeneraron los vectores golden de CA-03. | `PolicyTypedFactsTests`, `PolicyCombinationTests`, `PolicyEvaluationDiffTests`, `PolicyReevaluationTests` (provenance + catálogo sin adapter → 503), `PolicyCanonicalizationGoldenTests`, `PolicyCanonicalizationIntegrationTests`. |
+
+### Ronda 2 (2026-09-11)
+
+> **Resultado:** Con bloqueos · **Rondas:** 2/2 · **Modelo efectivo:** `openai-codex/gpt-5.6-sol`
+
+Veredicto por hallazgo: **B5 `CUMPLIDO`**, **B6 `CUMPLIDO`**; B1, B2, B3, B4 y B7 con bloqueos residuales.
+
+- B1: el lookup de catálogo no transportaba código, valor ni `value_kind` de `VersionedCodeRef`/`TypedAnswer`.
+- B2: faltaba `EligibilityEvidence`; `VerifierId`/`ContractVersion` no se ligaban al verifier registrado y `ApproverId` seguía tomándose del request.
+- B3: el replay aceptaba `factRequest.Cause ?? replay.Cause` y permitía combinaciones causa/bundle incoherentes.
+- B4: `ParametersEqual` omitía `CostCenterIds`/`AmountBase`/`BaseCurrency` y `Exceptionable=true` se clasificaba como endurecimiento (invertido).
+- B7: matriz de observabilidad incompleta (selección/conflicto y campos en sourcing/waiver).
+
+Correcciones aplicadas tras la ronda 2 (sin consumir ronda nueva): `PolicyReferenceLookup` con `Code`/`ValueKind`; `QuotationWaiverEvidence` con `EligibilityEvidenceDigest` y `VerifyAsync` ligando `VerifierId`/`ContractVersion` al verifier registrado y exigiendo cobertura de scopes; `AppendExceptionVerificationAsync` persiste el approver de la evidencia; el replay usa solo el `Cause`/`PreviousResultDigest` recibidos y rechaza causa sin bundle previo; el diff compara parámetros de budget y trata la pérdida de exceptionabilidad como endurecimiento; los spans de evaluación/sourcing/waiver incorporan versión, digest, scopes, resultado y duración, y el replay marca `policy.selection=REPLAY`. Suites: UnitTests 64/64, IntegrationTests 11/11, ApiE2ETests 3/3; `dotnet build` 0/0.
+
+Una tercera ronda requiere la frase **`ronda 3 autorizada`** en `## Desviaciones y bloqueos`.
+
+### Ronda 3 (2026-09-11, autorizada)
+
+> **Resultado:** Con bloqueos · **Rondas:** 3/3 · **Modelo efectivo:** `openai-codex/gpt-5.6-sol`
+
+Veredicto: **B3 `CUMPLIDO`**; B1, B2, B4 y B7 con residuales.
+
+- B1: `TypedAnswerValueKind.EnumCode` se serializaba como `ENUMCODE` en el lookup en vez del token contractual `ENUM_CODE`.
+- B2: la evidencia no contrastaba la cobertura de líneas (`SubjectIds`), solo nombres de scope.
+- B4: `AnyDemandIncrease` no clasificaba `AmountBase`/`CostCenterIds`/`BaseCurrency` del control de budget.
+- B7: faltaban versión/digest/scopes en waiver y replay, correlation en sourcing, y resultado/duración en selección/conflicto.
+
+Correcciones aplicadas tras la ronda 3 (sin consumir ronda nueva): `Lookup` transporta `BOOLEAN`/`ENUM_CODE`; `QuotationWaiverEvidence.CoveredLineIds` y `QuotationWaiverRequest.TargetLineIds` con validación de superset; `AnyDemandIncrease` compara `AmountBase`, `CostCenterIds` y `BaseCurrency`; spans de waiver/replay con digest y scopes, sourcing con correlation, y `policy.select_version`/`policy.conflict` con resultado y duración. Suites: 64/64 + 11/11 + 3/3; build 0/0; LSP 84 archivos, 0 diagnósticos.
+
+El presupuesto de rondas está agotado: una ronda 4 requiere autorización humana registrada.
+
+### Ronda 4 (2026-09-11, autorizada)
+
+> **Resultado:** Con bloqueos · **Rondas:** 4/4 · **Modelo efectivo:** `openai-codex/gpt-5.6-sol`
+
+Veredicto: **B1 `CUMPLIDO`**, **B2 `CUMPLIDO`**, **B4 `CUMPLIDO`**; **B7** residual: los spans de waiver y replay no etiquetaban `policy.version_id`.
+
+Corrección aplicada tras la ronda 4 (sin consumir ronda nueva): waiver usa `persistedRecord.PolicySetVersionId` y el replay usa `existing.PolicySetVersionId` como `policy.version_id`. UnitTests 64/64; build 0/0.
+
+El presupuesto de rondas está agotado (4/4): una ronda 5 requiere autorización humana registrada.
+
+### Ronda 5 (2026-09-11, autorizada)
+
+> **Resultado:** Sin bloqueos · **Rondas:** 5/5 · **Modelo efectivo:** `openai-codex/gpt-5.6-sol`
+
+Verificación acotada al último residual B7 / NFR-05 / CA-10, CA-11: los spans de waiver (`PolicyEvaluationService.cs:273`) y replay (`:161`) etiquetan `policy.version_id` con el GUID de versión, sin snapshots ni PII. `lens_diagnostics` concluyente (0 diagnósticos). **PASS sin bloqueos.**
 
 ## Resumen de cambios
 
 | Archivo | Motivo | Spec/tarea |
 | --- | --- | --- |
 | `specs/02-motor-de-politicas.md` | Metadato administrativo de ejecución | Flujo `/spec-impl` |
-| `specs/runs/02-motor-de-politicas.md` | Registro de ejecución | Todas |
-| `src/ProcureToPay.Domain/Modules/Policy/*` | Modelo, evaluación, canonicalización, waiver y rehidratación | T-01, T-02, T-07 |
-| `src/ProcureToPay.Infrastructure/Persistence/Policy/*` | Providers, persistencia, replay, reserva, sourcing y snapshots | T-03, T-04, T-06, T-07 |
-| `src/ProcureToPay.Infrastructure/Persistence/Migrations/*` | Migraciones append-only y secuencia persistida | T-03, T-04, T-06 |
-| `src/ProcureToPay.Api/*` | API, ownership y health | T-05, T-08 |
-| `tests/*/Policy/*` y `tests/ProcureToPay.ApiE2ETests/UnitTest1.cs` | Evidencia de evaluación, replay, reserva, corrupción y health | T-09 |
+| `specs/runs/02-motor-de-politicas.md` | Registro de ejecución y evidencia de aceptación | Todas |
+| `src/ProcureToPay.Domain/Modules/Policy/PolicyEvaluation.cs` | `PolicyEvaluationDiff` y `Cause` persistible para reevaluaciones | T-04 / CA-09 |
+| `src/ProcureToPay.Domain/Modules/Policy/PolicyEvaluationBundleRehydrator.cs` | Rehidratar `Cause` para el replay idempotente | T-04 / CA-08 |
+| `src/ProcureToPay.Domain/Modules/Policy/QuotationWaiver.cs` | Diff contractual del waiver mediante `PolicyEvaluationDiff` | T-07 / CA-09 |
+| `src/ProcureToPay.Infrastructure/Persistence/Policy/PolicyEvaluationService.cs` | Reevaluación con `PreviousBundleId`/causa, replay por subject/previous, guardas 413 y trazas | T-04, T-06, T-08 |
+| `src/ProcureToPay.Infrastructure/Persistence/Policy/PolicyPersistenceService.cs` | `413` para reglas/predicados/efectos antes de persistir | T-05 / CA-11 |
+| `src/ProcureToPay.Infrastructure/Persistence/Policy/PolicyTelemetry.cs` | ActivitySource OpenTelemetry minimizado | T-08 / NFR-05 |
+| `src/ProcureToPay.Api/Controllers/PolicyController.cs` | Aceptar el código de contrato del tipo de excepción | T-07 / CA-11 |
+| `src/ProcureToPay.Api/Program.cs` | Registrar el ActivitySource del motor en OTLP | T-08 / NFR-05 |
+| `tests/ProcureToPay.UnitTests/Policy/PolicyEvaluationDiffTests.cs` | Diff `ADDED/HARDENED/REMOVED/UNCHANGED` | T-04 / CA-09 |
+| `tests/ProcureToPay.UnitTests/Policy/PolicyCombinationTests.cs` | Cross-scope, Cost Center, antifraccionamiento, autoridad y claves | T-09 / CA-04, CA-05, CA-06 |
+| `tests/ProcureToPay.UnitTests/Policy/PolicyAdapterContractTests.cs` | Registries exact-one, default-deny y `COST_CENTER` | T-09 / CA-10, CA-12 |
+| `tests/ProcureToPay.IntegrationTests/Policy/PolicyReevaluationTests.cs` | Reevaluación + diff, límites 413, manifest atestiguado, 409 y trazas | T-04, T-06, T-08, T-09 |
+| `tests/ProcureToPay.ApiE2ETests/PolicyWorkflowE2ETests.cs` | 413 Problem Details y replay HTTP del waiver | T-05, T-07 / CA-09, CA-11 |
+| `src/ProcureToPay.Domain/Modules/Policy/PolicyEvaluationDiff.cs` | Implementación del diff contractual | T-04 / CA-09 |
+| `src/ProcureToPay.Domain/Modules/Policy/PolicyModels.cs` | Tipos versionados, MoneyBase ISO 4217 y catálogo tipo-por-fact | T-01 / CA-02 |
+| `src/ProcureToPay.Domain/Modules/Policy/PolicyDocumentParser.cs` | Parseo y validación de valores tipados | T-01 / CA-02, CA-12 |
+| `src/ProcureToPay.Domain/Modules/Policy/PolicyEvaluationBundleRehydrator.cs` | Rehidratación de parámetros y provenance de control | T-04 / CA-05 |
+| `src/ProcureToPay.Api/Controllers/PolicyController.cs` | Parseo tipado de la simulación y código de contrato de excepción | T-05, T-07 / CA-11 |
+| `tests/ProcureToPay.UnitTests/Policy/PolicyTypedFactsTests.cs` | Evidencia de tipado, MoneyBase y parámetros de budget | T-01, T-04 / CA-02, CA-05 |
 
 ## Cierre
 

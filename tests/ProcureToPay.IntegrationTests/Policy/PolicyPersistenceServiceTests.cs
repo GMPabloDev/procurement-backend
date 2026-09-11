@@ -97,7 +97,7 @@ public sealed class PolicyPersistenceServiceTests
                 new PolicySubjectReference(Guid.NewGuid(), 1),
                 new Dictionary<string, PolicyValue>
                 {
-                    ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(10)
+                    ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(10, "PEN")
                 })]);
         var bundle = PolicyEvaluator.EvaluateRequest(
             policy,
@@ -298,6 +298,9 @@ public sealed class PolicyPersistenceServiceTests
 
     private sealed class AcceptedWaiverVerifier(string evidenceDigest) : IQuotationWaiverVerifier
     {
+        public string VerifierId => "APPROVAL_WORKFLOW";
+        public string ContractVersion => "policy-exception-verifier/v1";
+
         public Task<QuotationWaiverEvidence?> VerifyAsync(
             QuotationWaiverRequest request,
             CancellationToken cancellationToken = default) =>
@@ -311,7 +314,16 @@ public sealed class PolicyPersistenceServiceTests
                 WorkflowDecisionVersion = 1,
                 WorkflowDecisionDigest = new string('d', 64),
                 AuthorityEvidenceDigest = new string('e', 64),
-                SegregationSatisfied = true
+                EligibilityEvidenceDigest = new string('f', 64),
+                CoveredLineIds = request.TargetLineIds,
+                SegregationSatisfied = true,
+                ApproverId = request.ApproverId,
+                ApproverRole = "PROCUREMENT_APPROVER",
+                AuthorityType = "PROCUREMENT",
+                Scope = "LINE",
+                ValidFrom = DateTimeOffset.UtcNow.AddMinutes(-1),
+                VerifierId = "APPROVAL_WORKFLOW",
+                VerifierContractVersion = "policy-exception-verifier/v1"
             });
     }
 
