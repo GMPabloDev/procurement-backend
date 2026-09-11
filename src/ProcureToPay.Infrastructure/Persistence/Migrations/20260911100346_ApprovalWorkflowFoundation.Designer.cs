@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using ProcureToPay.Infrastructure.Persistence;
 
@@ -11,9 +12,11 @@ using ProcureToPay.Infrastructure.Persistence;
 namespace ProcureToPay.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ProcureToPayDbContext))]
-    partial class ProcureToPayDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260911100346_ApprovalWorkflowFoundation")]
+    partial class ApprovalWorkflowFoundation
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -60,10 +63,7 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TaskId")
-                        .IsUnique()
-                        .HasDatabaseName("IX_ApprovalAssignments_TaskId_Current")
-                        .HasFilter("[ReleasedAt] IS NULL");
+                    b.HasIndex("TaskId");
 
                     b.HasIndex("OrganizationId", "AssigneeUserId", "ReleasedAt");
 
@@ -293,9 +293,6 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("RequirementId")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<int>("RequirementVersion")
-                        .HasColumnType("int");
-
                     b.Property<byte[]>("RowVersion")
                         .IsConcurrencyToken()
                         .IsRequired()
@@ -304,9 +301,6 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
 
                     b.Property<Guid?>("TaskId")
                         .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("TaskVersion")
-                        .HasColumnType("int");
 
                     b.Property<int>("Version")
                         .HasColumnType("int");
@@ -457,8 +451,6 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.HasIndex("CaseId");
 
                     b.HasIndex("State", "NextAttemptAt", "CreatedAt");
-
-                    b.HasIndex("OrganizationId", "State", "NextAttemptAt", "CreatedAt");
 
                     b.ToTable("ApprovalOutboxEvents", "Approval");
                 });

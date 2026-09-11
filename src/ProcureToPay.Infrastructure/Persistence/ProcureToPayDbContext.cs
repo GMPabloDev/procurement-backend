@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 
@@ -22,6 +23,18 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<PolicyEvaluationBundleRecord> PolicyEvaluationBundles => Set<PolicyEvaluationBundleRecord>();
     public DbSet<PolicyEvaluationReservationRecord> PolicyEvaluationReservations => Set<PolicyEvaluationReservationRecord>();
     public DbSet<PolicyExceptionVerificationRecord> PolicyExceptionVerifications => Set<PolicyExceptionVerificationRecord>();
+    public DbSet<ApprovalCaseRecord> ApprovalCases => Set<ApprovalCaseRecord>();
+    public DbSet<ApprovalRequirementRecord> ApprovalRequirements => Set<ApprovalRequirementRecord>();
+    public DbSet<ApprovalPrerequisiteRecord> ApprovalPrerequisites => Set<ApprovalPrerequisiteRecord>();
+    public DbSet<ApprovalPrerequisiteSignalRecord> ApprovalPrerequisiteSignals => Set<ApprovalPrerequisiteSignalRecord>();
+    public DbSet<ApprovalTaskRecord> ApprovalTasks => Set<ApprovalTaskRecord>();
+    public DbSet<ApprovalAssignmentRecord> ApprovalAssignments => Set<ApprovalAssignmentRecord>();
+    public DbSet<ApprovalDecisionRecord> ApprovalDecisions => Set<ApprovalDecisionRecord>();
+    public DbSet<ApprovalDecisionTargetRecord> ApprovalDecisionTargets => Set<ApprovalDecisionTargetRecord>();
+    public DbSet<ApprovalOutboxEventRecord> ApprovalOutboxEvents => Set<ApprovalOutboxEventRecord>();
+    public DbSet<ApprovalAuditEntryRecord> ApprovalAuditEntries => Set<ApprovalAuditEntryRecord>();
+    public DbSet<ApprovalSubmissionReservationRecord> ApprovalSubmissionReservations => Set<ApprovalSubmissionReservationRecord>();
+    public DbSet<ApprovalWorkflowStateRecord> ApprovalWorkflowStates => Set<ApprovalWorkflowStateRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -40,6 +53,18 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigurePolicyEvaluationReservation(modelBuilder);
         ConfigurePolicyEvaluationBundle(modelBuilder);
         ConfigurePolicyExceptionVerification(modelBuilder);
+        ConfigureApprovalCase(modelBuilder);
+        ConfigureApprovalRequirement(modelBuilder);
+        ConfigureApprovalPrerequisite(modelBuilder);
+        ConfigureApprovalPrerequisiteSignal(modelBuilder);
+        ConfigureApprovalTask(modelBuilder);
+        ConfigureApprovalAssignment(modelBuilder);
+        ConfigureApprovalDecision(modelBuilder);
+        ConfigureApprovalDecisionTarget(modelBuilder);
+        ConfigureApprovalOutboxEvent(modelBuilder);
+        ConfigureApprovalAudit(modelBuilder);
+        ConfigureApprovalSubmissionReservation(modelBuilder);
+        ConfigureApprovalWorkflowState(modelBuilder);
         base.OnModelCreating(modelBuilder);
     }
 
@@ -302,5 +327,219 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.Property(record => record.BeforeJson).HasColumnType("nvarchar(max)");
         entity.Property(record => record.AfterJson).HasColumnType("nvarchar(max)");
         entity.HasIndex(record => new { record.TargetType, record.TargetId, record.OccurredAt });
+    }
+
+    private static void ConfigureApprovalCase(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalCaseRecord>();
+        entity.ToTable("ApprovalCases", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.SubjectType).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Operation).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.SourceSnapshotDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.WorkloadIssuer).HasMaxLength(320).IsRequired();
+        entity.Property(record => record.WorkloadClientId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.SubmissionKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.SubmissionFingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.CorrelationReference).HasMaxLength(120).IsRequired();
+        entity.Property(record => record.CancellationReason).HasMaxLength(1000);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.WorkloadIssuer,
+            record.WorkloadClientId,
+            record.SubjectType,
+            record.Operation,
+            record.SubmissionKey
+        }).IsUnique();
+        entity.HasIndex(record => new { record.OrganizationId, record.SubjectId, record.SubjectVersion });
+    }
+
+    private static void ConfigureApprovalRequirement(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalRequirementRecord>();
+        entity.ToTable("ApprovalRequirements", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.SourceRequirementKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.WorkflowRequirementKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.StageCode).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.AuthorityJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.DecisionScopeJson).HasMaxLength(4000).IsRequired();
+        entity.Property(record => record.ExcludedUserIdsJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.TargetsJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.DependenciesJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.CaseId, record.WorkflowRequirementKey }).IsUnique();
+        entity.HasIndex(record => new { record.OrganizationId, record.Status });
+    }
+
+    private static void ConfigureApprovalPrerequisite(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalPrerequisiteRecord>();
+        entity.ToTable("ApprovalPrerequisites", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Key).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.OwnerAdapterId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.OwnerAdapterVersion).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.SourceControlType).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.SourceControlDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ParametersJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.TargetsJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.SignalKey).HasMaxLength(128);
+        entity.Property(record => record.SignalFingerprint).HasMaxLength(64);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.CaseId, record.Key }).IsUnique();
+        entity.HasIndex(record => new { record.OrganizationId, record.Status });
+    }
+
+    private static void ConfigureApprovalPrerequisiteSignal(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalPrerequisiteSignalRecord>();
+        entity.ToTable("ApprovalPrerequisiteSignals", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.SignalKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.SignalFingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ActorType).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.EvidenceReference).HasMaxLength(256);
+        entity.Property(record => record.CorrelationReference).HasMaxLength(120).IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.PrerequisiteId, record.SignalKey }).IsUnique();
+        entity.HasIndex(record => record.CaseId);
+    }
+
+    private static void ConfigureApprovalTask(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalTaskRecord>();
+        entity.ToTable("ApprovalTasks", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => record.RequirementId).IsUnique();
+        entity.HasIndex(record => new { record.OrganizationId, record.Status, record.CurrentAssigneeUserId });
+        entity.HasIndex(record => new { record.CaseId, record.Status });
+    }
+
+    private static void ConfigureApprovalAssignment(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalAssignmentRecord>();
+        entity.ToTable("ApprovalAssignments", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Cause).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.EligibilityEvidenceJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.AssigneeUserId, record.ReleasedAt });
+        // Exactly one current assignment per task (REQ-10, CA-04): released history is append-only.
+        entity.HasIndex(record => record.TaskId)
+            .IsUnique()
+            .HasFilter("[ReleasedAt] IS NULL")
+            .HasDatabaseName("IX_ApprovalAssignments_TaskId_Current");
+    }
+
+    private static void ConfigureApprovalDecision(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalDecisionRecord>();
+        entity.ToTable("ApprovalDecisions", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Reason).HasMaxLength(1000).IsRequired();
+        entity.Property(record => record.DecisionKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Fingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.DecisionDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.AuthorityEvidenceDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.EligibilityEvidenceJson).HasColumnType("nvarchar(max)").IsRequired();
+        // Stored fingerprint preimage versions (REQ-06): a replay must reproduce the digest.
+        entity.Property(record => record.RequirementVersion).IsRequired();
+        entity.Property(record => record.TaskVersion).IsRequired();
+        entity.Property(record => record.CorrelationReference).HasMaxLength(120).IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.OrganizationId, record.ActorUserId, record.DecisionKey }).IsUnique();
+        entity.HasIndex(record => record.RequirementId);
+        entity.HasIndex(record => new { record.OrganizationId, record.ActorUserId, record.DecidedAt });
+    }
+
+    private static void ConfigureApprovalDecisionTarget(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalDecisionTargetRecord>();
+        entity.ToTable("ApprovalDecisionTargets", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.TargetType).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.MaterialSnapshotDigest).HasMaxLength(64).IsRequired();
+        entity.HasIndex(record => new
+        {
+            record.RequirementId,
+            record.TargetType,
+            record.TargetId,
+            record.TargetVersion,
+            record.MaterialSnapshotDigest
+        }).IsUnique();
+        entity.HasIndex(record => record.DecisionId);
+    }
+
+    private static void ConfigureApprovalOutboxEvent(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalOutboxEventRecord>();
+        entity.ToTable("ApprovalOutboxEvents", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.TargetType).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.MaterialSnapshotDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Result).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.ContractVersion).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.PayloadJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.LastError).HasMaxLength(400);
+        entity.Property(record => record.CorrelationReference).HasMaxLength(120).IsRequired();
+        entity.Property(record => record.LockOwner).HasMaxLength(120);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.State, record.NextAttemptAt, record.CreatedAt });
+        entity.HasIndex(record => record.CaseId);
+        // Dispatcher and backlog hot path: due events of one organization in creation order (REQ-10).
+        entity.HasIndex(record => new { record.OrganizationId, record.State, record.NextAttemptAt, record.CreatedAt });
+    }
+
+    private static void ConfigureApprovalAudit(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalAuditEntryRecord>();
+        entity.ToTable("ApprovalAuditEntries", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.ActorType).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.Action).HasMaxLength(120).IsRequired();
+        entity.Property(record => record.TargetType).HasMaxLength(120).IsRequired();
+        entity.Property(record => record.ScopeJson).HasMaxLength(4000).IsRequired();
+        entity.Property(record => record.Reason).HasMaxLength(1000).IsRequired();
+        entity.Property(record => record.CorrelationReference).HasMaxLength(120).IsRequired();
+        entity.Property(record => record.BeforeJson).HasColumnType("nvarchar(max)");
+        entity.Property(record => record.AfterJson).HasColumnType("nvarchar(max)");
+        entity.HasIndex(record => new { record.OrganizationId, record.OccurredAt });
+        entity.HasIndex(record => new { record.TargetType, record.TargetId, record.OccurredAt });
+    }
+
+    private static void ConfigureApprovalSubmissionReservation(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalSubmissionReservationRecord>();
+        entity.ToTable("ApprovalSubmissionReservations", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.WorkloadIssuer).HasMaxLength(320).IsRequired();
+        entity.Property(record => record.WorkloadClientId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.SubjectType).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Operation).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.SubmissionKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Fingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.WorkloadIssuer,
+            record.WorkloadClientId,
+            record.SubjectType,
+            record.Operation,
+            record.SubmissionKey
+        }).IsUnique();
+        entity.HasIndex(record => record.CaseId).IsUnique();
+    }
+
+    private static void ConfigureApprovalWorkflowState(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalWorkflowStateRecord>();
+        entity.ToTable("ApprovalWorkflowStates", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.LastReconciliationOwner).HasMaxLength(120);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => record.OrganizationId).IsUnique();
     }
 }

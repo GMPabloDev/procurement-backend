@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Domain.Modules.Policy;
+using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Application.Abstractions.Files;
 using ProcureToPay.Infrastructure.Persistence;
@@ -82,6 +83,23 @@ public static class DependencyInjection
         services.AddScoped<PolicyEvaluationService>();
         services.AddScoped<IOrganizationEligibilityService>(provider =>
             provider.GetRequiredService<OrganizationEligibilityService>());
+
+        services.AddSingleton<ApprovalWorkloadAllowlist>();
+        services.AddScoped<IApprovalSubmissionAdapterRegistry>(provider =>
+            new ApprovalSubmissionAdapterRegistry(provider.GetServices<IApprovalSubmissionAdapter>()));
+        services.AddScoped<ApprovalSubmissionService>();
+        services.AddScoped<ApprovalWorkflowService>();
+        services.AddScoped<ApprovalDecisionService>();
+        services.AddScoped<ApprovalQueryService>();
+        services.AddScoped<ApprovalScopeResolver>();
+        services.AddScoped<ApprovalAssignmentEngine>();
+        services.AddScoped<ApprovalReconciliationService>();
+        services.AddScoped<ApprovalOperationsQueryService>();
+        services.AddScoped<ApprovalInboxQueryService>();
+        services.AddScoped<ApprovalOutboxAdministrationService>();
+        services.AddScoped<IApprovalResultConsumerRegistry>(provider =>
+            new ApprovalResultConsumerRegistry(provider.GetServices<IApprovalResultConsumer>()));
+        services.AddScoped<ApprovalOutboxDispatcher>();
 
         services.AddDefaultAWSOptions(configuration.GetAWSOptions());
         services.AddAWSService<IAmazonS3>();

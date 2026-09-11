@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using ProcureToPay.Infrastructure.Persistence;
 
@@ -11,9 +12,11 @@ using ProcureToPay.Infrastructure.Persistence;
 namespace ProcureToPay.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ProcureToPayDbContext))]
-    partial class ProcureToPayDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260911111644_ApprovalDecisionEvidence")]
+    partial class ApprovalDecisionEvidence
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -457,8 +460,6 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.HasIndex("CaseId");
 
                     b.HasIndex("State", "NextAttemptAt", "CreatedAt");
-
-                    b.HasIndex("OrganizationId", "State", "NextAttemptAt", "CreatedAt");
 
                     b.ToTable("ApprovalOutboxEvents", "Approval");
                 });

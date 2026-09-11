@@ -10,6 +10,7 @@ using ProcureToPay.Api.Health;
 using ProcureToPay.Api.Identity;
 using ProcureToPay.Application;
 using ProcureToPay.Infrastructure;
+using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using Scalar.AspNetCore;
@@ -112,7 +113,8 @@ builder.Services
     .AddHealthChecks()
     .AddSqlServer(sqlServerConnectionString, name: "sqlserver", tags: ["ready"])
     .AddCheck<OrganizationBootstrapHealthCheck>("organization-bootstrap", tags: ["ready"])
-    .AddCheck<PolicyConfigurationHealthCheck>("policy-configuration", tags: ["ready"]);
+    .AddCheck<PolicyConfigurationHealthCheck>("policy-configuration", tags: ["ready"])
+    .AddCheck<ApprovalHealthCheck>("approval", tags: ["ready"]);
 
 var telemetryServiceName = builder.Configuration["OpenTelemetry:ServiceName"]
     ?? builder.Environment.ApplicationName;
@@ -121,9 +123,12 @@ builder.Services
     .ConfigureResource(resource => resource.AddService(telemetryServiceName))
     .WithTracing(tracing => tracing
         .AddSource(PolicyTelemetry.SourceName)
+        .AddSource(ApprovalTelemetry.SourceName)
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation()
-        .AddOtlpExporter());
+        .AddOtlpExporter())
+    .WithMetrics(metrics => metrics
+        .AddMeter(ApprovalTelemetry.SourceName));
 
 builder.Services.AddCors(options =>
 {
@@ -177,6 +182,25 @@ app.MapHealthChecks("/health/policy", new HealthCheckOptions
             : entry.Exception is not null
                 ? "POLICY_CONFIGURATION_UNAVAILABLE"
                 : entry.Description ?? "POLICY_CONFIGURATION_CORRUPT";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            status = report.Status.ToString().ToUpperInvariant(),
+            code
+        });
+    }
+});
+
+app.MapHealthChecks("/health/approval", new HealthCheckOptions
+{
+    Predicate = registration => registration.Name == "approval",
+    ResponseWriter = async (context, report) =>
+    {
+        var entry = report.Entries.Values.Single();
+        var code = report.Status == HealthStatus.Healthy
+            ? "APPROVAL_OK"
+            : entry.Exception is not null
+                ? "APPROVAL_UNAVAILABLE"
+                : entry.Description ?? "APPROVAL_DEGRADED";
         await context.Response.WriteAsJsonAsync(new
         {
             status = report.Status.ToString().ToUpperInvariant(),

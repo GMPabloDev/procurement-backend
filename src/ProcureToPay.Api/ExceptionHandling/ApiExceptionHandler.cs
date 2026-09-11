@@ -2,6 +2,7 @@ using FluentValidation;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc;
+using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 
@@ -77,6 +78,20 @@ public sealed class ApiExceptionHandler(
                 Type = "/problems/policy-configuration-unavailable",
                 Detail = configurationException.Message
             },
+            ApprovalPayloadTooLargeException approvalTooLargeException => new ProblemDetails
+            {
+                Status = StatusCodes.Status413PayloadTooLarge,
+                Title = "Payload too large",
+                Type = "/problems/payload-too-large",
+                Detail = approvalTooLargeException.Message
+            },
+            ApprovalDependencyUnavailableException approvalDependencyException => new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Approval dependency unavailable",
+                Type = "/problems/approval-dependency-unavailable",
+                Detail = approvalDependencyException.Message
+            },
             PolicyDependencyUnavailableException dependencyException => new ProblemDetails
             {
                 Status = StatusCodes.Status503ServiceUnavailable,
@@ -107,8 +122,7 @@ public sealed class ApiExceptionHandler(
         };
 
         if (exception is DomainConflictException or PolicyConfigurationUnavailableException or PolicyDependencyUnavailableException)
-        {
-            using var conflictActivity = PolicyTelemetry.Source.StartActivity("policy.conflict");
+        {            using var conflictActivity = PolicyTelemetry.Source.StartActivity("policy.conflict");
             var conflictStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
             conflictActivity?.SetTag("policy.conflict_type", exception.GetType().Name);
             conflictActivity?.SetTag("policy.result", "CONFLICT");
