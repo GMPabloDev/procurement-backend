@@ -4,8 +4,8 @@
 > **Estado:** Aprobada
 > **Ejecución:** No iniciada
 > **Vigencia:** Pendiente
-> **Revisión:** 1
-> **Digest contractual:** c3d423675ad1ee7522e4296c6b3bb3eaec5305c9f1b93202f118bd0afbc38219
+> **Revisión:** 2
+> **Digest contractual:** 82ed4ebe75e522106d9b9b281feb3b9dd2a5702efece9b4d21c13ce3960e7299
 > **Fecha:** 2026-09-10
 > **Actualizada:** 2026-09-11
 > **Aprobada el:** 2026-09-11
@@ -139,29 +139,29 @@ Todos los criterios se verifican automáticamente. Los casos negativos incluyen 
 
 ### Bloque 1 — Casos y grafo
 
-- **T-01 — Ingreso y contrato tipado.** Implementar adapters exact-one, idempotencia, `decision-scope/v1`, targets, agrupación, límites y validaciones. Cubre: REQ-01, REQ-02, REQ-09, REQ-10, CA-01, CA-02.
-- **T-02 — DAG y lifecycle.** Implementar dependencias humanas/externas, señales, propagación, estados y cancelación. Cubre: REQ-03, REQ-07, REQ-10, CA-03, CA-06.
+- **T-01 — Ingreso, contrato y evidencia de frontera.** Implementar adapters exact-one, idempotencia, `decision-scope/v1`, targets, agrupación, límites y validaciones. Añadir unitarias de schema/fingerprint/límites, integración SQL de unicidad/replay, contrato del adapter controlado y API/E2E de workload no allowlisted (`403`) y límites canónicos (`413`). Cubre: REQ-01, REQ-02, REQ-09, REQ-10, CA-01, CA-02.
+- **T-02 — DAG, lifecycle y evidencia de transición.** Implementar dependencias humanas/externas, señales, propagación, estados, cancelación y sus superficies de workload. Añadir tabla unitaria de DAG/state machine, integración de propagación/outbox y API/E2E de signals, cancelación y conflictos. Cubre: REQ-03, REQ-07, REQ-10, NFR-02, NFR-04, CA-03, CA-06.
 
-**Resultado verificable:** un adapter controlado crea una sola vez un caso válido y el DAG habilita o bloquea exclusivamente los targets correctos.
+**Resultado verificable:** las suites unitarias, de integración y contrato demuestran que un adapter crea una sola vez un caso válido; API/E2E demuestra que señales y cancelación habilitan o bloquean exclusivamente los targets correctos.
 
 ### Bloque 2 — Routing y decisiones
 
-- **T-03 — Assignment y reconciliación.** Integrar `IOrganizationEligibilityService`, menor carga, exclusiones, `UNASSIGNED` y reconciliación. Cubre: REQ-04, REQ-05, REQ-10, NFR-01, NFR-03, NFR-04, CA-04, CA-05.
-- **T-04 — Decisión y evidencia.** Implementar acciones, revalidación, idempotencia, canonicalización, digests y atomicidad. Cubre: REQ-06, REQ-08, REQ-10, NFR-01, NFR-02, CA-05, CA-06, CA-07.
+- **T-03 — Assignment, reconciliación y evidencia de autoridad.** Integrar `IOrganizationEligibilityService`, menor carga, exclusiones, `UNASSIGNED`, reconciliación y su operación administrativa. Añadir unitarias deterministas con fake clock, pruebas de contrato contra el resolver de SPEC 01, integración SQL multi-DbContext y API/E2E de actor excluido, role revocado, `ADMIN` y cero candidatos. Cubre: REQ-04, REQ-05, REQ-09, REQ-10, NFR-01, NFR-03, NFR-04, CA-04, CA-05, CA-08.
+- **T-04 — Decisión, evidencia y pruebas de atomicidad.** Implementar acciones y superficie del assignee, revalidación, idempotencia, canonicalización, digests y atomicidad. Añadir golden vectors unitarios, integración con carreras/fallo forzado y API/E2E de replay, versión obsoleta, decisión concurrente y `403` administrativo. Cubre: REQ-06, REQ-08, REQ-09, REQ-10, NFR-01, NFR-02, CA-05, CA-06, CA-07, CA-08.
 
-**Resultado verificable:** solo el assignee aún elegible decide una vez y la evidencia reproducible queda ligada a audit y outbox.
+**Resultado verificable:** las pruebas de routing demuestran el assignee determinista y la reconciliación en 60 segundos; las de decisión prueban que solo el assignee aún elegible decide una vez y que decisión, audit y outbox son atómicos y reproducibles.
 
 ### Bloque 3 — Persistencia y entrega
 
-- **T-05 — Schema y workers.** Mapear agregados append-only, índices, rowversion, leases, dispatcher, retries, health y migración aditiva. Cubre: REQ-04, REQ-07, REQ-08, REQ-10, NFR-02, NFR-03, NFR-04, NFR-05, CA-04, CA-06, CA-07.
+- **T-05 — Schema, workers y evidencia operativa.** Mapear agregados append-only, índices, rowversion, leases, dispatcher, retries, health y migración aditiva. Añadir integración Testcontainers de exactly-one/recovery, contrato de consumer ante eventos duplicados, pruebas operativas de dos instancias, restart, backlog, dead letter, replay y reversión, y captura de métricas/logs/trazas de workers sin PII. Cubre: REQ-04, REQ-07, REQ-08, REQ-10, NFR-02, NFR-03, NFR-04, NFR-05, CA-04, CA-06, CA-07, CA-08.
 
-**Resultado verificable:** dos instancias no crean dos assignments/decisiones y recuperan outbox o reconciliación tras restart.
+**Resultado verificable:** SQL Server y los escenarios operativos prueban que dos instancias no duplican assignments, decisiones o eventos y recuperan outbox/reconciliación tras restart.
 
-### Bloque 4 — API y verificación
+### Bloque 4 — Lectura y observabilidad
 
-- **T-06 — Superficies y pruebas.** Exponer bandeja, caso, decisión, señal, cancelación, reconciliación y auditoría; cubrir seguridad, límites, telemetría y toda la estrategia. Cubre: REQ-01, REQ-02, REQ-03, REQ-04, REQ-05, REQ-06, REQ-07, REQ-08, REQ-09, REQ-10, NFR-01, NFR-02, NFR-03, NFR-04, NFR-05, CA-01, CA-02, CA-03, CA-04, CA-05, CA-06, CA-07, CA-08.
+- **T-06 — Bandeja, visibilidad y evidencia HTTP.** Exponer bandeja mínima, estado de caso, historia y auditoría con autorización, Problem Details y telemetría minimizada. Añadir API/E2E de assignee, originador, workload, `AUDITOR`, `ADMIN`, ocultación `404`, categorías de error y captura de métricas/logs/trazas HTTP sin PII. Cubre: REQ-09, REQ-10, NFR-04, NFR-05, CA-08.
 
-**Resultado verificable:** `dotnet test ProcureToPay.sln` demuestra el núcleo y sus fallos cerrados sin depender de SPEC 04 ni SPEC 05.
+**Resultado verificable:** API/E2E demuestra visibilidad mínima, permisos y errores; `dotnet test ProcureToPay.sln --no-restore` agrega la evidencia distribuida de los cuatro bloques sin depender de SPEC 04 ni SPEC 05.
 
 ## Criterios de aceptación
 
