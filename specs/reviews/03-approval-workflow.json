@@ -1,0 +1,45 @@
+{
+  "format": "sdd-review/v1",
+  "spec": "03-approval-workflow.md",
+  "revision": 3,
+  "digest": "f0b61a917c4c4b4adcaee598c75352ef93d03c3bf25b76d15f80177ba3446234",
+  "dependencies": {
+    "01-organizacion-identidad-roles-autoridades-aprobacion.md": "c5f194a4dca2597aff6cbbace581b1f9212197416c2918559e1a124484de458e"
+  },
+  "verdict": "PASS",
+  "mode": "delta",
+  "baseline_digest": "42f85e143a41e4cf4171071d013c22395b87670eafeb464c301e98c39b161b62",
+  "review_count": 9,
+  "reviewer": "sdd-contract-reviewer; openai-codex/gpt-5.6-luna; effort high; task subtask_sdd-contract-reviewer_1789192018521_b778fc86",
+  "reviewed_at": "2026-09-12",
+  "coverage": {
+    "behavior": "REQ-08, DEC-14 y CA-06/CA-07 resuelven PEND-04/PEND-05: effect key queda ligado a entidad fuente y decision_digest queda ligado al workflow digest sin contradicción observable.",
+    "boundaries": "Datos/contratos y contrato canónico definen effect_source/result_source como {id,key,type}; approval-result/v2 declara decision_digest=workflow_decision_digest cuando no es nulo.",
+    "failure_modes": "La regla de automatic_effect_key cubre dos ExternalPrerequisite distintos sobre mismo caso/target/raíz; retry reutiliza misma key y preimage distinta es conflicto.",
+    "acceptance": "T-02, T-04, T-05, CA-06 y CA-07 exigen pruebas de colisión de prerequisites, contrato del consumer y payload v2 con digest correcto; specctl check 03 queda válido con solo avisos de densidad.",
+    "implementation_readiness": "El recorrido decisión -> audit/outbox y cancelación de prerequisite tiene puntos de integración y tests previstos; el código actual aún refleja contrato anterior, clasificado como trabajo de implementación no bloqueo contractual."
+  },
+  "findings": [
+    {
+      "id": "R1",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "PEND-04: automatic_effect_key no distinguía ExternalPrerequisite distintos del mismo caso/target/raíz.",
+      "resolution": "REQ-08/Datos/DEC-14 incorporan effect_source {id,key,type}; T-02 y CA-06 exigen prueba de dos prerequisites sobre el mismo target sin colisión."
+    },
+    {
+      "id": "R2",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "PEND-05: approval-result/v2.decision_digest podía confundirse con decision_fingerprint.",
+      "resolution": "REQ-08, Datos y contrato canónico declaran que decision_digest no nulo es exactamente workflow_decision_digest y nunca decision_fingerprint; T-04/T-05/CA-07 lo verifican."
+    },
+    {
+      "id": "R3",
+      "severity": "warning",
+      "status": "open",
+      "evidence": "El revisor observó que el código actual conserva nombres/esquemas previos para ApprovalOutboxEvent y goldens v1.",
+      "resolution": "No bloquea la aprobación del contrato: queda como trabajo esperado de /spec-impl para alinear implementación y pruebas al contrato revisado."
+    }
+  ]
+}
