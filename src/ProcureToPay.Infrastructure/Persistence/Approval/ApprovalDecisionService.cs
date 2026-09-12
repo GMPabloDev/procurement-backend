@@ -31,8 +31,10 @@ public sealed record ApprovalDecisionOutcome(
 /// <summary>
 /// Authorized, immutable and idempotent decisions (REQ-06, REQ-08, NFR-01, NFR-02): only the
 /// current assignee of a pending task decides, authority is re-resolved inside the transaction
-/// with the server clock, the fingerprint is reproducible from the stored preimage versions,
-/// and decision, targets, assignment release, audit and outbox commit together.
+/// with the server clock, the fingerprint is reproducible from the stored preimage versions, and
+/// the root audit, its automatic effects, the decision, its targets, the assignment release and
+/// the <c>approval-result/v2</c> events commit together. A replay returns the artifacts of the
+/// original decision, not the current state (NFR-01).
 /// </summary>
 public sealed class ApprovalDecisionService(
     ProcureToPayDbContext dbContext,
@@ -53,6 +55,7 @@ public sealed class ApprovalDecisionService(
         var utcNow = occurredAt.ToUniversalTime();
         var reason = ApprovalLimits.RequireReason(command.Reason, "Decision reason");
         var decisionKey = ApprovalLimits.RequireKey(command.DecisionKey, "decision_key");
+        var correlation = ApprovalLimits.RequireCorrelation(command.CorrelationReference);
 
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken);
@@ -106,6 +109,15 @@ public sealed class ApprovalDecisionService(
                 throw new DomainConflictException("The decision key was already used with different content.");
             }
 
+            // NFR-01: a replay returns the original artifacts, not the state the case advanced to.
+            var replayedEvents = await dbContext.ApprovalOutboxEvents
+                .AsNoTracking()
+                .Where(record => record.OrganizationId == caseRecord.OrganizationId &&
+                                 record.SourceCommandId == existing.Id)
+                .OrderBy(record => record.CreatedAt)
+                .ThenBy(record => record.Id)
+                .Select(record => record.Id)
+                .ToArrayAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             ApprovalTelemetry.RecordDecision(command.Action.ToString(), "REPLAYED");
             return new ApprovalDecisionOutcome(
@@ -114,12 +126,12 @@ public sealed class ApprovalDecisionService(
                 task.Id,
                 existing.Id,
                 ((ApprovalDecisionAction)existing.Action).ToString().ToUpperInvariant(),
-                ((ApprovalRequirementStatus)requirementRecord.Status).ToString().ToUpperInvariant(),
-                ((ApprovalTaskStatus)taskRecord.Status).ToString().ToUpperInvariant(),
-                ((ApprovalCaseStatus)caseRecord.Status).ToString().ToUpperInvariant(),
-            caseRecord.Version,
-            Replayed: true,
-            []);
+                ((ApprovalRequirementStatus)existing.RequirementStatusAfter).ToString().ToUpperInvariant(),
+                ((ApprovalTaskStatus)existing.TaskStatusAfter).ToString().ToUpperInvariant(),
+                ((ApprovalCaseStatus)existing.CaseStatusAfter).ToString().ToUpperInvariant(),
+                existing.CaseVersionAfter,
+                Replayed: true,
+                replayedEvents);
         }
 
         if (task.Status != ApprovalTaskStatus.Pending)
@@ -194,7 +206,29 @@ public sealed class ApprovalDecisionService(
             authorityDigest,
             eligibilityJson,
             requirement.Targets,
-            command.CorrelationReference);
+            correlation);
+
+        var result = ResultCode(command.Action);
+
+        // The command root audit exists before its automatic effects reference it (REQ-08).
+        var rootAudit = ApprovalEvidence.Root(
+            approvalCase,
+            ApprovalAuditActor.User(command.ActorUserId),
+            $"DECISION_{result}",
+            nameof(ApprovalDecision),
+            decision.Id,
+            requirement.DecisionScopeJson,
+            reason,
+            null,
+            ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+                ("action", ApprovalCanonicalJson.String(command.Action)),
+                ("actor_user_id", ApprovalCanonicalJson.String(command.ActorUserId)),
+                ("decision_digest", ApprovalCanonicalJson.String(decisionDigest)),
+                ("task_id", ApprovalCanonicalJson.String(task.Id)))),
+            utcNow,
+            correlation,
+            requirement.Id);
+        dbContext.ApprovalAuditEntries.Add(rootAudit);
 
         dbContext.ApprovalDecisions.Add(new ApprovalDecisionRecord
         {
@@ -245,50 +279,50 @@ public sealed class ApprovalDecisionService(
         }
 
         approvalCase.ApplyDecision(task, command.Action);
+        var resultSource = approvalCase.SourceOf(requirement);
+        var outboxIds = new List<Guid>();
         if (command.Action == ApprovalDecisionAction.Approve)
         {
-            // An approval enables its dependent edges; they are routed in this transaction (REQ-04).
+            // An approval enables its dependent edges; they are routed in this transaction and the
+            // engine materializes every activation/assignment effect of the root audit (REQ-04, REQ-08).
             await assignmentEngine.AssignUnassignedAsync(
-                approvalCase, utcNow, command.CorrelationReference, cancellationToken);
+                approvalCase, utcNow, correlation, rootAudit.Id, cancellationToken);
+        }
+        else
+        {
+            // A rejection propagates CANCELLED to linked descendants: each one keeps its own audit
+            // effect and its own event per target (REQ-08, DEC-07).
+            foreach (var effect in approvalCase.DrainAutomaticEffects())
+            {
+                var (scopeJson, requirementId) = EffectScope(approvalCase, effect);
+                dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.Effect(
+                    approvalCase, rootAudit.Id, effect, scopeJson, utcNow, correlation, requirementId));
+                if (effect.Action == "REQUIREMENT_CANCELLED")
+                {
+                    var cancelled = approvalCase.RequireRequirement(effect.TargetId);
+                    foreach (var target in cancelled.Targets)
+                    {
+                        outboxIds.Add(AddOutbox(
+                            approvalCase, approvalCase.SourceOf(cancelled), target, "CANCELLED", null, null,
+                            decision.Id, utcNow, correlation));
+                    }
+                }
+            }
+        }
+
+        foreach (var target in requirement.Targets)
+        {
+            outboxIds.Add(AddOutbox(
+                approvalCase, resultSource, target, result, decision.Id, decisionDigest, decision.Id,
+                utcNow, correlation));
         }
 
         ApprovalStateSync.Apply(approvalCase, caseRecord, requirementRecords, taskRecords, prerequisiteRecords);
-
-        var result = ResultCode(command.Action);
-        var outboxIds = new List<Guid>();
-        foreach (var target in requirement.Targets)
-        {
-            var outbox = ApprovalEvidence.Outbox(
-                approvalCase,
-                requirement,
-                target,
-                result,
-                decision.Id,
-                decisionDigest,
-                utcNow,
-                command.CorrelationReference);
-            dbContext.ApprovalOutboxEvents.Add(outbox);
-            outboxIds.Add(outbox.Id);
-        }
-
-        dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.Audit(
-            approvalCase,
-            "USER",
-            command.ActorUserId,
-            $"DECISION_{result}",
-            nameof(ApprovalDecision),
-            decision.Id,
-            requirement.DecisionScopeJson,
-            reason,
-            null,
-            ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
-                ("action", ApprovalCanonicalJson.String(command.Action)),
-                ("actor_user_id", ApprovalCanonicalJson.String(command.ActorUserId)),
-                ("decision_digest", ApprovalCanonicalJson.String(decisionDigest)),
-                ("task_id", ApprovalCanonicalJson.String(task.Id)))),
-            utcNow,
-            command.CorrelationReference,
-            requirement.Id));
+        var decisionRecord = dbContext.ApprovalDecisions.Local.Single(record => record.Id == decision.Id);
+        decisionRecord.RequirementStatusAfter = (int)requirement.Status;
+        decisionRecord.TaskStatusAfter = (int)task.Status;
+        decisionRecord.CaseStatusAfter = (int)approvalCase.Status;
+        decisionRecord.CaseVersionAfter = approvalCase.Version;
 
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -314,6 +348,38 @@ public sealed class ApprovalDecisionService(
             Replayed: false,
             outboxIds);
     }
+
+    private Guid AddOutbox(
+        ApprovalCase approvalCase,
+        ApprovalEntitySource source,
+        ApprovalTarget target,
+        string result,
+        Guid? decisionId,
+        string? decisionDigest,
+        Guid sourceCommandId,
+        DateTimeOffset occurredAt,
+        string correlationReference)
+    {
+        var outbox = ApprovalEvidence.Outbox(
+            approvalCase,
+            source,
+            target,
+            result,
+            decisionId,
+            decisionDigest,
+            sourceCommandId,
+            occurredAt,
+            correlationReference);
+        dbContext.ApprovalOutboxEvents.Add(outbox);
+        return outbox.Id;
+    }
+
+    private static (string ScopeJson, Guid? RequirementId) EffectScope(
+        ApprovalCase approvalCase,
+        ApprovalAutomaticEffect effect) =>
+        effect.Source.Type == ApprovalEntitySourceType.ApprovalRequirement
+            ? (approvalCase.RequireRequirement(effect.Source.Id).DecisionScopeJson, effect.Source.Id)
+            : ("[]", null);
 
     private static string ResultCode(ApprovalDecisionAction action) => action switch
     {

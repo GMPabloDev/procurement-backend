@@ -42,6 +42,7 @@ public static class ApprovalCaseHydrator
                 record.Key,
                 record.OwnerAdapterId,
                 record.OwnerAdapterVersion,
+                new ApprovalWorkloadIdentity(record.OwnerWorkloadIssuer, record.OwnerWorkloadClientId),
                 record.SourceControlType,
                 record.SourceControlDigest,
                 record.ParametersJson,
@@ -119,10 +120,12 @@ public static class ApprovalCaseHydrator
 /// <summary>Audit and outbox writers shared by the approval services.</summary>
 public static class ApprovalEvidence
 {
-    public static ApprovalAuditEntryRecord Audit(
+    /// <summary>
+    /// Root audit of a direct command: USER or WORKLOAD actor, no cause and no effect key (REQ-08).
+    /// </summary>
+    public static ApprovalAuditEntryRecord Root(
         ApprovalCase approvalCase,
-        string actorType,
-        Guid actorId,
+        ApprovalAuditActor actor,
         string action,
         string targetType,
         Guid targetId,
@@ -133,14 +136,187 @@ public static class ApprovalEvidence
         DateTimeOffset occurredAt,
         string correlationReference,
         Guid? requirementId = null) =>
+        Audit(
+            approvalCase, actor, causedBy: null, automaticEffectKey: null, action, targetType, targetId,
+            scopeJson, reason, beforeJson, afterJson, occurredAt, correlationReference, requirementId);
+
+    /// <summary>
+    /// Root audit of a run triggered by an organization change: SYSTEM actor with the immutable
+    /// ORGANIZATION causal link and no effect key (it is the cause, not an effect of it).
+    /// </summary>
+    public static ApprovalAuditEntryRecord OrganizationRoot(
+        Guid organizationId,
+        Guid triggerAuditId,
+        Guid rootAuditId,
+        string action,
+        Guid targetId,
+        string reason,
+        DateTimeOffset occurredAt,
+        string correlationReference) =>
         new()
+        {
+            Id = rootAuditId,
+            OrganizationId = organizationId,
+            CaseId = null,
+            RequirementId = null,
+            ActorType = "SYSTEM",
+            ActorUserId = null,
+            ActorWorkloadIssuer = null,
+            ActorWorkloadClientId = null,
+            ActorSystemId = ApprovalSystemActors.ApprovalWorkflow,
+            CausedByAuditStream = "ORGANIZATION",
+            CausedByAuditId = triggerAuditId,
+            AutomaticEffectKey = null,
+            OccurredAt = occurredAt.ToUniversalTime(),
+            Action = action,
+            TargetType = "RECONCILIATION_RUN",
+            TargetId = targetId,
+            ScopeJson = "[]",
+            Reason = reason,
+            BeforeJson = null,
+            AfterJson = null,
+            CorrelationReference = correlationReference
+        };
+
+    /// <summary>
+    /// Root audit without a case (run requests): the persistence record is the only consumer, so
+    /// the typed union is validated here instead of on <see cref="ApprovalAuditRecord"/>.
+    /// </summary>
+    public static ApprovalAuditEntryRecord RootForOrganization(
+        Guid organizationId,
+        ApprovalAuditActor actor,
+        Guid rootAuditId,
+        string action,
+        string targetType,
+        Guid targetId,
+        string scopeJson,
+        string reason,
+        DateTimeOffset occurredAt,
+        string correlationReference)
+    {
+        ArgumentNullException.ThrowIfNull(actor);
+        if (actor.Type == ApprovalAuditActorType.System)
+        {
+            throw new DomainValidationException(
+                "A case-less root audit cannot be a SYSTEM effect; use the organization root.");
+        }
+
+        return new ApprovalAuditEntryRecord
+        {
+            Id = rootAuditId,
+            OrganizationId = organizationId,
+            CaseId = null,
+            RequirementId = null,
+            ActorType = actor.Type == ApprovalAuditActorType.User ? "USER" : "WORKLOAD",
+            ActorUserId = actor.UserId,
+            ActorWorkloadIssuer = actor.WorkloadIssuer,
+            ActorWorkloadClientId = actor.WorkloadClientId,
+            ActorSystemId = null,
+            CausedByAuditStream = null,
+            CausedByAuditId = null,
+            AutomaticEffectKey = null,
+            OccurredAt = occurredAt.ToUniversalTime(),
+            Action = action,
+            TargetType = targetType,
+            TargetId = targetId,
+            ScopeJson = scopeJson,
+            Reason = reason,
+            BeforeJson = null,
+            AfterJson = null,
+            CorrelationReference = correlationReference
+        };
+    }
+    /// <summary>
+    /// Automatic effect over a case/task: SYSTEM/APPROVAL_WORKFLOW, immutable causal link to the
+    /// root audit and the unique effect key of the transition (REQ-08).
+    /// </summary>
+    public static ApprovalAuditEntryRecord Effect(
+        ApprovalCase approvalCase,
+        Guid rootAuditId,
+        ApprovalAutomaticEffect effect,
+        string scopeJson,
+        DateTimeOffset occurredAt,
+        string correlationReference,
+        Guid? requirementId = null)
+    {
+        var causedBy = ApprovalCausalLink.Approval(rootAuditId);
+        var effectKey = ApprovalFingerprints.AutomaticEffectKey(
+            effect.Action,
+            effect.BeforeVersion,
+            effect.AfterVersion,
+            approvalCase.Id,
+            causedBy,
+            effect.Source,
+            approvalCase.OrganizationId,
+            effect.TargetType,
+            effect.TargetId);
+        return Audit(
+            approvalCase,
+            ApprovalAuditActor.System(),
+            causedBy,
+            effectKey,
+            effect.Action,
+            effect.TargetType,
+            effect.TargetId,
+            scopeJson,
+            effect.Reason,
+            effect.BeforeJson,
+            effect.AfterJson,
+            occurredAt,
+            correlationReference,
+            requirementId);
+    }
+
+    public static ApprovalAuditEntryRecord Audit(
+        ApprovalCase approvalCase,
+        ApprovalAuditActor actor,
+        ApprovalCausalLink? causedBy,
+        string? automaticEffectKey,
+        string action,
+        string targetType,
+        Guid targetId,
+        string scopeJson,
+        string reason,
+        string? beforeJson,
+        string? afterJson,
+        DateTimeOffset occurredAt,
+        string correlationReference,
+        Guid? requirementId = null)
+    {
+        ArgumentNullException.ThrowIfNull(actor);
+        if (actor.Type == ApprovalAuditActorType.System)
+        {
+            if (causedBy is null || automaticEffectKey is null)
+            {
+                throw new DomainValidationException(
+                    "A system effect audit requires its causal link and automatic effect key.");
+            }
+        }
+        else if (causedBy is not null || automaticEffectKey is not null)
+        {
+            throw new DomainValidationException(
+                "A root audit cannot carry a causal link or an automatic effect key.");
+        }
+
+        return new ApprovalAuditEntryRecord
         {
             Id = Guid.NewGuid(),
             OrganizationId = approvalCase.OrganizationId,
             CaseId = approvalCase.Id,
             RequirementId = requirementId,
-            ActorType = actorType,
-            ActorId = actorId,
+            ActorType = actor.Type switch
+            {
+                ApprovalAuditActorType.User => "USER",
+                ApprovalAuditActorType.Workload => "WORKLOAD",
+                _ => "SYSTEM"
+            },
+            ActorUserId = actor.UserId,
+            ActorWorkloadIssuer = actor.WorkloadIssuer,
+            ActorWorkloadClientId = actor.WorkloadClientId,
+            ActorSystemId = actor.SystemId,
+            CausedByAuditStream = causedBy?.StreamCode,
+            CausedByAuditId = causedBy?.AuditId,
+            AutomaticEffectKey = automaticEffectKey,
             OccurredAt = occurredAt.ToUniversalTime(),
             Action = action,
             TargetType = targetType,
@@ -151,25 +327,31 @@ public static class ApprovalEvidence
             AfterJson = afterJson,
             CorrelationReference = correlationReference
         };
+    }
 
     public static ApprovalOutboxEventRecord Outbox(
         ApprovalCase approvalCase,
-        ApprovalRequirement? requirement,
+        ApprovalEntitySource resultSource,
         ApprovalTarget target,
         string result,
         Guid? decisionId,
         string? decisionDigest,
+        Guid? sourceCommandId,
         DateTimeOffset occurredAt,
         string correlationReference)
     {
-        ApprovalOutboxPolicy.ValidateResultCode(result);
+        ArgumentNullException.ThrowIfNull(resultSource);
+        ApprovalOutboxPolicy.ValidateResultCombination(resultSource.Type, result);
         var eventId = Guid.NewGuid();
         return new ApprovalOutboxEventRecord
         {
             Id = eventId,
             CaseId = approvalCase.Id,
             OrganizationId = approvalCase.OrganizationId,
-            RequirementId = requirement?.Id,
+            ResultSourceType = resultSource.Code,
+            ResultSourceId = resultSource.Id,
+            ResultSourceKey = resultSource.Key,
+            SourceCommandId = sourceCommandId,
             TargetType = target.Type,
             TargetId = target.Id,
             TargetVersion = target.Version,
@@ -180,7 +362,7 @@ public static class ApprovalEvidence
                 eventId,
                 ApprovalOutboxPolicy.ContractVersion,
                 approvalCase,
-                requirement,
+                resultSource,
                 target,
                 result,
                 decisionId,

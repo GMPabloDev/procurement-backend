@@ -68,3 +68,60 @@ public sealed class ApprovalWorkloadAllowlist(IConfiguration configuration) : IA
         }
     }
 }
+
+/// <summary>
+/// Configuration-backed prerequisite owner registry:
+/// <c>Approval:OwnerWorkloads:0:AdapterId|AdapterVersion|Issuer|ClientId</c> (REQ-03, DEC-11).
+/// Zero or several matches, or a workload outside the allowlist, return <c>503</c> before any case
+/// is created.
+/// </summary>
+public sealed class ApprovalOwnerWorkloadRegistry(
+    IConfiguration configuration,
+    ApprovalWorkloadAllowlist allowlist) : IApprovalOwnerWorkloadRegistry
+{
+    private readonly IReadOnlyList<(string AdapterId, string AdapterVersion, ApprovalWorkloadIdentity Workload)> entries =
+        configuration
+            .GetSection("Approval:OwnerWorkloads")
+            .GetChildren()
+            .Select(child => (
+                AdapterId: child["AdapterId"] ?? string.Empty,
+                AdapterVersion: child["AdapterVersion"] ?? string.Empty,
+                Issuer: child["Issuer"] ?? string.Empty,
+                ClientId: child["ClientId"] ?? string.Empty))
+            .Where(entry => entry.AdapterId.Length > 0 && entry.AdapterVersion.Length > 0 &&
+                            entry.Issuer.Length > 0 && entry.ClientId.Length > 0)
+            .Select(entry => (
+                entry.AdapterId,
+                entry.AdapterVersion,
+                Workload: new ApprovalWorkloadIdentity(entry.Issuer, entry.ClientId)))
+            .ToArray();
+
+    public ApprovalWorkloadIdentity ResolveExactlyOne(string ownerAdapterId, string ownerAdapterVersion)
+    {
+        _ = ApprovalLimits.RequireKey(ownerAdapterId, "prerequisite owner adapter");
+        _ = ApprovalLimits.RequireKey(ownerAdapterVersion, "prerequisite owner version");
+        var matches = entries
+            .Where(entry => string.Equals(entry.AdapterId, ownerAdapterId, StringComparison.Ordinal) &&
+                            string.Equals(entry.AdapterVersion, ownerAdapterVersion, StringComparison.Ordinal))
+            .ToArray();
+        if (matches.Length == 0)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                "No workload is registered as the owner of the external prerequisite.");
+        }
+
+        if (matches.Length > 1)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                "More than one workload matches the owner of the external prerequisite.");
+        }
+
+        if (!allowlist.IsAllowed(matches[0].Workload))
+        {
+            throw new ApprovalDependencyUnavailableException(
+                "The owner workload of the external prerequisite is not allowlisted.");
+        }
+
+        return matches[0].Workload;
+    }
+}

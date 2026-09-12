@@ -175,7 +175,7 @@ public sealed class ApprovalOutboxIntegrationTests
             Assert.Null(record.LastError);
             Assert.Contains(
                 await verification.ApprovalAuditEntries.ToArrayAsync(cancellationToken),
-                entry => entry.Action == "OUTBOX_REPLAYED" && entry.ActorId == ActorId);
+                entry => entry.Action == "OUTBOX_REPLAYED" && entry.ActorUserId == ActorId);
         }
 
         // With the consumer repaired the replayed event is delivered.
@@ -218,7 +218,25 @@ public sealed class ApprovalOutboxIntegrationTests
         var consumer = new RecordingConsumer();
         var (dispatcher, administration) = environment.CreateDispatcher(consumer);
 
-        // One open case makes a reconciliation due, and an old pending event makes the backlog overdue.
+        // An existing run that has not completed within its 60 second budget is what makes the
+        // reconciliation overdue under REQ-10 (run-based, not a stale last-completed timestamp).
+        await using (var seeding = environment.CreateContext())
+        {
+            seeding.ApprovalReconciliationRuns.Add(new ApprovalReconciliationRunRecord
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = OrganizationId,
+                Trigger = ApprovalReconciliationCodes.TriggerAdmin,
+                ActorUserId = Guid.NewGuid(),
+                ReconciliationKey = "reconcile-overdue",
+                Status = ApprovalReconciliationCodes.StatusPending,
+                RequestedAt = Clock.AddMinutes(-2),
+                RootAuditId = Guid.NewGuid(),
+                Version = 1
+            });
+            await seeding.SaveChangesAsync(cancellationToken);
+        }
+
         await environment.SeedOpenCaseAsync(cancellationToken);
         await environment.SeedPendingAsync(Clock, cancellationToken);
 
@@ -276,12 +294,13 @@ public sealed class ApprovalOutboxIntegrationTests
         var dispatch = Assert.Single(activities);
         Assert.Equal("approval.dispatch", dispatch.OperationName);
         Assert.Equal("DELIVERED", dispatch.GetTagItem("approval.outcome"));
-        Assert.NotNull(dispatch.GetTagItem("approval.correlation_reference"));
+        // NFR-05: the correlation reference is an opaque projection and never telemetry content.
+        Assert.Null(dispatch.GetTagItem("approval.correlation_reference"));
         Assert.Null(dispatch.GetTagItem("approval.reason"));
     }
 
     [Fact]
-    public async Task Additive_migrations_revert_and_reapply_while_preserving_history()
+    public async Task Additive_migrations_are_non_destructive_and_keep_history()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var environment = await SqlEnvironment.StartAsync(cancellationToken);
@@ -293,21 +312,67 @@ public sealed class ApprovalOutboxIntegrationTests
         var migrator = context.GetService<IMigrator>();
         Assert.True(await environment.HasColumnAsync("ApprovalDecisions", "TaskVersion", cancellationToken));
 
-        // Revert the additive Approval migrations down to the foundation of the feature.
-        await migrator.MigrateAsync("20260911100346_ApprovalWorkflowFoundation", cancellationToken);
+        // SPEC 03 forbids a destructive downgrade: reverting the application keeps the schema and
+        // its history, so migrating down throws instead of dropping durable evidence (REQ-10).
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            migrator.MigrateAsync("20260911100346_ApprovalWorkflowFoundation", cancellationToken));
 
-        // The revert removes only what the additive migrations added: durable history survives
-        // and no case, assignment, decision, audit or outbox row is destroyed (REQ-10).
-        Assert.False(await environment.HasColumnAsync("ApprovalDecisions", "TaskVersion", cancellationToken));
-        Assert.Equal(1, await environment.CountCasesAsync(cancellationToken));
-        Assert.Equal(1, await environment.CountOutboxAsync(cancellationToken));
-
-        // Recovery corrects forward and the same durable history is still there.
+        // Forward recovery keeps the same durable history and the additive columns intact.
         await migrator.MigrateAsync(targetMigration: null, cancellationToken);
         Assert.True(await environment.HasColumnAsync("ApprovalDecisions", "TaskVersion", cancellationToken));
         Assert.Equal(1, await environment.CountCasesAsync(cancellationToken));
         Assert.Equal(1, await environment.CountOutboxAsync(cancellationToken));
         Assert.Equal(eventId, await environment.OnlyOutboxIdAsync(cancellationToken));
+    }
+
+    [Fact]
+    public async Task V2_preflight_blocks_a_legacy_event_baseline()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await SqlEnvironment.StartAsync(cancellationToken);
+
+        // A clean baseline passes: v2 is the first publishable contract version.
+        await using (var clean = environment.CreateContext())
+        {
+            var preflight = new ApprovalContractPreflight(
+                clean, Microsoft.Extensions.Logging.Abstractions.NullLogger<ApprovalContractPreflight>.Instance);
+            await preflight.EnsureV2BaselineAsync(cancellationToken);
+        }
+
+        // Any v1 event in any state blocks the rollout without dispatching or rewriting it (REQ-08).
+        await using (var legacy = environment.CreateContext())
+        {
+            legacy.ApprovalOutboxEvents.Add(new ApprovalOutboxEventRecord
+            {
+                Id = Guid.NewGuid(),
+                CaseId = Guid.NewGuid(),
+                OrganizationId = OrganizationId,
+                ResultSourceType = "APPROVAL_REQUIREMENT",
+                ResultSourceId = Guid.NewGuid(),
+                ResultSourceKey = "WR-00000000000000000000000000000000",
+                TargetType = "LINE",
+                TargetId = TargetId,
+                TargetVersion = 1,
+                MaterialSnapshotDigest = new string('c', 64),
+                Result = "APPROVED",
+                ContractVersion = "approval-result/v1",
+                PayloadJson = "{\"contract_version\":\"approval-result/v1\"}",
+                State = (int)ApprovalOutboxState.DeadLetter,
+                Attempts = ApprovalOutboxPolicy.MaxAttempts,
+                NextAttemptAt = Clock,
+                CreatedAt = Clock,
+                CorrelationReference = "correlation-legacy",
+                Version = ApprovalOutboxPolicy.MaxAttempts + 1
+            });
+            await legacy.SaveChangesAsync(cancellationToken);
+        }
+
+        await using var blocked = environment.CreateContext();
+        var blockedPreflight = new ApprovalContractPreflight(
+            blocked, Microsoft.Extensions.Logging.Abstractions.NullLogger<ApprovalContractPreflight>.Instance);
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            blockedPreflight.EnsureV2BaselineAsync(cancellationToken));
+        Assert.Contains("legacy", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class RecordingConsumer : IApprovalResultConsumer
@@ -375,14 +440,16 @@ public sealed class ApprovalOutboxIntegrationTests
                 Id = eventId,
                 CaseId = CaseId,
                 OrganizationId = OrganizationId,
-                RequirementId = null,
+                ResultSourceType = "APPROVAL_REQUIREMENT",
+                ResultSourceId = Guid.NewGuid(),
+                ResultSourceKey = "WR-00000000000000000000000000000000",
                 TargetType = "LINE",
                 TargetId = TargetId,
                 TargetVersion = 1,
                 MaterialSnapshotDigest = new string('c', 64),
                 Result = "APPROVED",
                 ContractVersion = ApprovalOutboxPolicy.ContractVersion,
-                PayloadJson = "{\"contract_version\":\"approval-result/v1\",\"event_id\":\"" + eventId + "\"}",
+                PayloadJson = "{\"contract_version\":\"approval-result/v2\",\"event_id\":\"" + eventId + "\"}",
                 State = (int)ApprovalOutboxState.Pending,
                 Attempts = 0,
                 NextAttemptAt = createdAt,

@@ -28,17 +28,12 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
         }
 
         /// <inheritdoc />
-        protected override void Down(MigrationBuilder migrationBuilder)
+protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "RequirementVersion",
-                schema: "Approval",
-                table: "ApprovalDecisions");
-
-            migrationBuilder.DropColumn(
-                name: "TaskVersion",
-                schema: "Approval",
-                table: "ApprovalDecisions");
+            // SPEC 03 forbids destructive down migrations: reverting the application keeps the
+            // Approval schema and its history, so a downgrade that would drop data is not supported.
+            throw new NotSupportedException(
+                "The Approval schema has no destructive downgrade; revert the application and keep the schema.");
         }
     }
 }

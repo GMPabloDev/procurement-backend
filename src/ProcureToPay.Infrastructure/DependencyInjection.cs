@@ -85,6 +85,12 @@ public static class DependencyInjection
             provider.GetRequiredService<OrganizationEligibilityService>());
 
         services.AddSingleton<ApprovalWorkloadAllowlist>();
+        services.AddSingleton<ApprovalInstanceIdentity>();
+        services.AddSingleton<IApprovalOwnerWorkloadRegistry>(provider =>
+            new ApprovalOwnerWorkloadRegistry(
+                configuration,
+                provider.GetRequiredService<ApprovalWorkloadAllowlist>()));
+        services.AddScoped<ApprovalContractPreflight>();
         services.AddScoped<IApprovalSubmissionAdapterRegistry>(provider =>
             new ApprovalSubmissionAdapterRegistry(provider.GetServices<IApprovalSubmissionAdapter>()));
         services.AddScoped<ApprovalSubmissionService>();

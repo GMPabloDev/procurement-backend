@@ -35,6 +35,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<ApprovalAuditEntryRecord> ApprovalAuditEntries => Set<ApprovalAuditEntryRecord>();
     public DbSet<ApprovalSubmissionReservationRecord> ApprovalSubmissionReservations => Set<ApprovalSubmissionReservationRecord>();
     public DbSet<ApprovalWorkflowStateRecord> ApprovalWorkflowStates => Set<ApprovalWorkflowStateRecord>();
+    public DbSet<ApprovalReconciliationRunRecord> ApprovalReconciliationRuns => Set<ApprovalReconciliationRunRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -65,6 +66,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigureApprovalAudit(modelBuilder);
         ConfigureApprovalSubmissionReservation(modelBuilder);
         ConfigureApprovalWorkflowState(modelBuilder);
+        ConfigureApprovalReconciliationRun(modelBuilder);
         base.OnModelCreating(modelBuilder);
     }
 
@@ -382,6 +384,9 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.Property(record => record.Key).HasMaxLength(128).IsRequired();
         entity.Property(record => record.OwnerAdapterId).HasMaxLength(128).IsRequired();
         entity.Property(record => record.OwnerAdapterVersion).HasMaxLength(128).IsRequired();
+        // Owner workload identity resolved exactly once at ingestion (REQ-03, DEC-11).
+        entity.Property(record => record.OwnerWorkloadIssuer).HasMaxLength(320).IsRequired();
+        entity.Property(record => record.OwnerWorkloadClientId).HasMaxLength(128).IsRequired();
         entity.Property(record => record.SourceControlType).HasMaxLength(128).IsRequired();
         entity.Property(record => record.SourceControlDigest).HasMaxLength(64).IsRequired();
         entity.Property(record => record.ParametersJson).HasColumnType("nvarchar(max)").IsRequired();
@@ -447,6 +452,11 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         // Stored fingerprint preimage versions (REQ-06): a replay must reproduce the digest.
         entity.Property(record => record.RequirementVersion).IsRequired();
         entity.Property(record => record.TaskVersion).IsRequired();
+        // Artifacts of the decision instant so a replay returns them instead of the current state.
+        entity.Property(record => record.RequirementStatusAfter).IsRequired();
+        entity.Property(record => record.TaskStatusAfter).IsRequired();
+        entity.Property(record => record.CaseStatusAfter).IsRequired();
+        entity.Property(record => record.CaseVersionAfter).IsRequired();
         entity.Property(record => record.CorrelationReference).HasMaxLength(120).IsRequired();
         entity.Property(record => record.RowVersion).IsRowVersion();
         entity.HasIndex(record => new { record.OrganizationId, record.ActorUserId, record.DecisionKey }).IsUnique();
@@ -479,6 +489,8 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.HasKey(record => record.Id);
         entity.Property(record => record.TargetType).HasMaxLength(128).IsRequired();
         entity.Property(record => record.MaterialSnapshotDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ResultSourceType).HasMaxLength(32);
+        entity.Property(record => record.ResultSourceKey).HasMaxLength(128);
         entity.Property(record => record.Result).HasMaxLength(32).IsRequired();
         entity.Property(record => record.ContractVersion).HasMaxLength(64).IsRequired();
         entity.Property(record => record.PayloadJson).HasColumnType("nvarchar(max)").IsRequired();
@@ -488,6 +500,8 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.Property(record => record.RowVersion).IsRowVersion();
         entity.HasIndex(record => new { record.State, record.NextAttemptAt, record.CreatedAt });
         entity.HasIndex(record => record.CaseId);
+        // Replay artifacts: events produced by one decision or signal command (NFR-01).
+        entity.HasIndex(record => new { record.SourceCommandId });
         // Dispatcher and backlog hot path: due events of one organization in creation order (REQ-10).
         entity.HasIndex(record => new { record.OrganizationId, record.State, record.NextAttemptAt, record.CreatedAt });
     }
@@ -498,6 +512,12 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.ToTable("ApprovalAuditEntries", "Approval");
         entity.HasKey(record => record.Id);
         entity.Property(record => record.ActorType).HasMaxLength(32).IsRequired();
+        // Closed actor union: exactly one variant is populated and an empty UUID is never used.
+        entity.Property(record => record.ActorWorkloadIssuer).HasMaxLength(320);
+        entity.Property(record => record.ActorWorkloadClientId).HasMaxLength(128);
+        entity.Property(record => record.ActorSystemId).HasMaxLength(64);
+        entity.Property(record => record.CausedByAuditStream).HasMaxLength(32);
+        entity.Property(record => record.AutomaticEffectKey).HasMaxLength(64);
         entity.Property(record => record.Action).HasMaxLength(120).IsRequired();
         entity.Property(record => record.TargetType).HasMaxLength(120).IsRequired();
         entity.Property(record => record.ScopeJson).HasMaxLength(4000).IsRequired();
@@ -507,6 +527,11 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.Property(record => record.AfterJson).HasColumnType("nvarchar(max)");
         entity.HasIndex(record => new { record.OrganizationId, record.OccurredAt });
         entity.HasIndex(record => new { record.TargetType, record.TargetId, record.OccurredAt });
+        // Exactly one audit per automatic effect key in the organization (REQ-08).
+        entity.HasIndex(record => new { record.OrganizationId, record.AutomaticEffectKey })
+            .IsUnique()
+            .HasFilter("[AutomaticEffectKey] IS NOT NULL")
+            .HasDatabaseName("IX_ApprovalAuditEntries_OrganizationId_AutomaticEffectKey");
     }
 
     private static void ConfigureApprovalSubmissionReservation(ModelBuilder modelBuilder)
@@ -541,5 +566,28 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.Property(record => record.LastReconciliationOwner).HasMaxLength(120);
         entity.Property(record => record.RowVersion).IsRowVersion();
         entity.HasIndex(record => record.OrganizationId).IsUnique();
+    }
+
+    private static void ConfigureApprovalReconciliationRun(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalReconciliationRunRecord>();
+        entity.ToTable("ApprovalReconciliationRuns", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Trigger).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.Status).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.ReconciliationKey).HasMaxLength(128);
+        entity.Property(record => record.LeaseOwner).HasMaxLength(120);
+        entity.Property(record => record.LastError).HasMaxLength(200);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        // Idempotency of the two request triggers (REQ-10): one run per admin key and organization audit.
+        entity.HasIndex(record => new { record.OrganizationId, record.ActorUserId, record.ReconciliationKey })
+            .IsUnique()
+            .HasFilter("[ReconciliationKey] IS NOT NULL")
+            .HasDatabaseName("IX_ApprovalReconciliationRuns_AdminKey");
+        entity.HasIndex(record => new { record.OrganizationId, record.TriggerAuditId })
+            .IsUnique()
+            .HasFilter("[TriggerAuditId] IS NOT NULL")
+            .HasDatabaseName("IX_ApprovalReconciliationRuns_TriggerAudit");
+        entity.HasIndex(record => new { record.OrganizationId, record.Status, record.RequestedAt });
     }
 }

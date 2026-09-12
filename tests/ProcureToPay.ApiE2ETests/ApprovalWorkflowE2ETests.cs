@@ -57,8 +57,7 @@ public sealed class ApprovalWorkflowE2ETests
         string SignalKey,
         int ExpectedVersion,
         string? EvidenceReference,
-        string? EvidenceDigest,
-        string? CorrelationReference);
+        string? EvidenceDigest);
 
     private sealed record CancelBody(string Reason, int ExpectedVersion);
 
@@ -190,7 +189,7 @@ public sealed class ApprovalWorkflowE2ETests
                 .SingleAsync(record => record.Key == "RISK_CHECK", cancellationToken)).Id;
         }
 
-        var budgetSignal = new SignalBody(true, "signal-budget", 1, "evidence://budget", new string('e', 64), "corr-budget");
+        var budgetSignal = new SignalBody(true, "signal-budget", 1, "evidence://budget", new string('e', 64));
 
         // An allowlisted workload that does not own the prerequisite cannot signal it (REQ-03).
         using (var forbidden = await foreign.PostAsJsonAsync(
@@ -215,7 +214,8 @@ public sealed class ApprovalWorkflowE2ETests
             Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
             var response = await replay.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
             Assert.True(response.GetProperty("replayed").GetBoolean());
-            Assert.Equal(0, response.GetProperty("outboxEventIds").GetArrayLength());
+            // NFR-01: the replay returns the original artifacts, not an empty list.
+            Assert.Equal(2, response.GetProperty("outboxEventIds").GetArrayLength());
         }
 
         // The same signal key with different content is a conflict.
@@ -483,6 +483,11 @@ public sealed class ApprovalWorkflowE2ETests
             builder.UseSetting("Approval:Workloads:0:ClientId", OwnerClientId);
             builder.UseSetting("Approval:Workloads:1:Issuer", WorkloadIssuer);
             builder.UseSetting("Approval:Workloads:1:ClientId", ForeignClientId);
+            // The owner adapter/version of the prerequisites resolves exact-one to the owner workload.
+            builder.UseSetting("Approval:OwnerWorkloads:0:AdapterId", OwnerClientId);
+            builder.UseSetting("Approval:OwnerWorkloads:0:AdapterVersion", "v1");
+            builder.UseSetting("Approval:OwnerWorkloads:0:Issuer", WorkloadIssuer);
+            builder.UseSetting("Approval:OwnerWorkloads:0:ClientId", OwnerClientId);
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
@@ -494,7 +499,11 @@ public sealed class ApprovalWorkflowE2ETests
                     ["Approval:Workloads:0:Issuer"] = WorkloadIssuer,
                     ["Approval:Workloads:0:ClientId"] = OwnerClientId,
                     ["Approval:Workloads:1:Issuer"] = WorkloadIssuer,
-                    ["Approval:Workloads:1:ClientId"] = ForeignClientId
+                    ["Approval:Workloads:1:ClientId"] = ForeignClientId,
+                    ["Approval:OwnerWorkloads:0:AdapterId"] = OwnerClientId,
+                    ["Approval:OwnerWorkloads:0:AdapterVersion"] = "v1",
+                    ["Approval:OwnerWorkloads:0:Issuer"] = WorkloadIssuer,
+                    ["Approval:OwnerWorkloads:0:ClientId"] = OwnerClientId
                 }));
             builder.ConfigureTestServices(services =>
             {

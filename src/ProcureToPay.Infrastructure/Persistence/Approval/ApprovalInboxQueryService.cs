@@ -49,6 +49,26 @@ public sealed record ApprovalCaseDecisionView(
     string AuthorityEvidenceDigest,
     int TargetCount);
 
+/// <summary>
+/// One audit record of a case for an organizational AUDITOR (REQ-09): the closed actor union and
+/// the causal link of an automatic effect, so the chain root -> effect stays readable.
+/// </summary>
+public sealed record ApprovalCaseAuditView(
+    Guid AuditId,
+    string ActorType,
+    Guid? ActorUserId,
+    string? ActorWorkloadIssuer,
+    string? ActorWorkloadClientId,
+    string? ActorSystemId,
+    string? CausedByAuditStream,
+    Guid? CausedByAuditId,
+    string? AutomaticEffectKey,
+    string Action,
+    string TargetType,
+    Guid TargetId,
+    string Reason,
+    DateTimeOffset OccurredAt);
+
 /// <summary>Assignment history of a case, including the frozen eligibility evidence (REQ-09).</summary>
 public sealed record ApprovalCaseAssignmentView(
     Guid AssignmentId,
@@ -221,6 +241,42 @@ public sealed class ApprovalInboxQueryService(ProcureToPayDbContext dbContext)
                 record.AssignedAt,
                 record.ReleasedAt,
                 record.EligibilityEvidenceJson))
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Organizational audit read of a case (REQ-09): every record keeps its actor variant and, for
+    /// automatic effects, the immutable link to the root audit that caused it.
+    /// </summary>
+    public async Task<IReadOnlyList<ApprovalCaseAuditView>> GetCaseAuditAsync(
+        Guid organizationId,
+        Guid caseId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureCaseVisibleAsync(organizationId, caseId, cancellationToken);
+        var records = await dbContext.ApprovalAuditEntries
+            .AsNoTracking()
+            .Where(record => record.OrganizationId == organizationId && record.CaseId == caseId)
+            .OrderBy(record => record.OccurredAt)
+            .ThenBy(record => record.Id)
+            .ToArrayAsync(cancellationToken);
+
+        return records
+            .Select(record => new ApprovalCaseAuditView(
+                record.Id,
+                record.ActorType,
+                record.ActorUserId,
+                record.ActorWorkloadIssuer,
+                record.ActorWorkloadClientId,
+                record.ActorSystemId,
+                record.CausedByAuditStream,
+                record.CausedByAuditId,
+                record.AutomaticEffectKey,
+                record.Action,
+                record.TargetType,
+                record.TargetId,
+                record.Reason,
+                record.OccurredAt))
             .ToArray();
     }
 

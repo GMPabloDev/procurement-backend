@@ -26,10 +26,11 @@ public sealed record ApprovalSignalBody(
     string SignalKey,
     int ExpectedVersion,
     string? EvidenceReference,
-    string? EvidenceDigest,
-    string? CorrelationReference);
+    string? EvidenceDigest);
 
 public sealed record ApprovalCancelBody(string Reason, int ExpectedVersion);
+
+public sealed record ApprovalReconcileBody(string ReconciliationKey);
 
 public sealed record ApprovalDecisionBody(
     string Action,
@@ -63,6 +64,7 @@ public sealed class ApprovalController(
     ApprovalOutboxAdministrationService outboxAdministrationService,
     // pi-lens-ignore: lsp:CS0246
     ApprovalInboxQueryService inboxQueryService,
+    ApprovalInstanceIdentity instanceIdentity,
     ProcureToPayDbContext dbContext,
     CurrentUserProvisioningService provisioningService) : ControllerBase
 {
@@ -86,7 +88,7 @@ public sealed class ApprovalController(
                 request.SubmissionKey,
                 request.RequesterId,
                 request.OriginatorId,
-                HttpContext.TraceIdentifier),
+                Correlation()),
             DateTimeOffset.UtcNow,
             cancellationToken);
         return Ok(new ApprovalSubmissionResponse(outcome.CaseId, outcome.Status, outcome.Version, outcome.Replayed));
@@ -109,7 +111,7 @@ public sealed class ApprovalController(
                 request.ExpectedVersion,
                 request.EvidenceReference,
                 request.EvidenceDigest,
-                request.CorrelationReference ?? HttpContext.TraceIdentifier),
+                Correlation()),
             DateTimeOffset.UtcNow,
             cancellationToken);
         return Ok(new ApprovalWorkloadResponse(
@@ -129,7 +131,7 @@ public sealed class ApprovalController(
             workload,
             request.Reason,
             request.ExpectedVersion,
-            HttpContext.TraceIdentifier,
+            Correlation(),
             DateTimeOffset.UtcNow,
             cancellationToken);
         return Ok(new ApprovalWorkloadResponse(
@@ -152,15 +154,14 @@ public sealed class ApprovalController(
             throw new DomainForbiddenException("The local user profile is not active.");
         }
 
-        var isAdministrativeReader = await dbContext.RoleAssignments.AnyAsync(
+        var isAuditor = await dbContext.RoleAssignments.AnyAsync(
             assignment => assignment.UserProfileId == actor.Id &&
                           assignment.Status == (int)AssignmentStatus.Active &&
                           assignment.ScopeJson == GlobalScopeJson &&
-                          (assignment.Role == (int)SystemRole.Admin ||
-                           assignment.Role == (int)SystemRole.Auditor),
+                          assignment.Role == (int)SystemRole.Auditor,
             cancellationToken);
         var visible = await queryService.GetCaseAsync(actor.OrganizationId, caseId, cancellationToken);
-        if (!isAdministrativeReader && visible.OriginatorId != actor.Id)
+        if (!isAuditor && visible.OriginatorId != actor.Id)
         {
             throw new DomainNotFoundException("The approval case is not visible.");
         }
@@ -199,7 +200,7 @@ public sealed class ApprovalController(
                 request.DecisionKey,
                 request.ExpectedTaskVersion,
                 profile.Id,
-                HttpContext.TraceIdentifier),
+                Correlation()),
             DateTimeOffset.UtcNow,
             cancellationToken));
     }
@@ -226,18 +227,23 @@ public sealed class ApprovalController(
     }
 
     /// <summary>
-    /// ADMIN triggers an idempotent reconciliation (REQ-04, REQ-09). It restores operation but
-    /// cannot choose an assignee, create authority evidence or change a terminal decision.
+    /// ADMIN triggers an idempotent reconciliation with its required key (REQ-04, REQ-09). It
+    /// restores operation but cannot choose an assignee, create authority evidence or change a
+    /// terminal decision.
     /// </summary>
     [HttpPost("operations/reconciliation")]
     // pi-lens-ignore: lsp:CS0246
-    public async Task<ActionResult<ApprovalReconciliationOutcome>> Reconcile(CancellationToken cancellationToken)
+    public async Task<ActionResult<ApprovalReconciliationOutcome>> Reconcile(
+        ApprovalReconcileBody request,
+        CancellationToken cancellationToken)
     {
         var profile = await RequireAdministrativeAsync(requireAdmin: true, cancellationToken);
         return Ok(await reconciliationService.ReconcileAsync(
             profile.OrganizationId,
-            $"admin:{profile.Id:D}",
-            HttpContext.TraceIdentifier,
+            profile.Id,
+            request.ReconciliationKey,
+            instanceIdentity.Owner,
+            Correlation(),
             DateTimeOffset.UtcNow,
             cancellationToken));
     }
@@ -303,28 +309,77 @@ public sealed class ApprovalController(
             profile.OrganizationId, profile.Id, cancellationToken));
     }
 
-    /// <summary>Organizational AUDITOR and ADMIN read of the decisions of a case (REQ-09).</summary>
+    /// <summary>Organizational AUDITOR read of the decisions of a case (REQ-09).</summary>
     [HttpGet("cases/{caseId:guid}/decisions")]
     // pi-lens-ignore: lsp:CS0246
     public async Task<ActionResult<IReadOnlyList<ApprovalCaseDecisionView>>> GetCaseDecisions(
         Guid caseId,
         CancellationToken cancellationToken)
     {
-        var profile = await RequireAdministrativeAsync(requireAdmin: false, cancellationToken);
+        var profile = await RequireAuditorAsync(cancellationToken);
         return Ok(await inboxQueryService.GetCaseDecisionsAsync(
             profile.OrganizationId, caseId, cancellationToken));
     }
 
-    /// <summary>Organizational AUDITOR and ADMIN read of the assignment history of a case (REQ-09).</summary>
+    /// <summary>Organizational AUDITOR read of the assignment history of a case (REQ-09).</summary>
     [HttpGet("cases/{caseId:guid}/assignments")]
     // pi-lens-ignore: lsp:CS0246
     public async Task<ActionResult<IReadOnlyList<ApprovalCaseAssignmentView>>> GetCaseAssignments(
         Guid caseId,
         CancellationToken cancellationToken)
     {
-        var profile = await RequireAdministrativeAsync(requireAdmin: false, cancellationToken);
+        var profile = await RequireAuditorAsync(cancellationToken);
         return Ok(await inboxQueryService.GetCaseAssignmentsAsync(
             profile.OrganizationId, caseId, cancellationToken));
+    }
+
+    /// <summary>
+    /// Organizational AUDITOR read of the audit trail of a case, including the actor union and the
+    /// immutable causal chain of automatic effects (REQ-09, CA-08).
+    /// </summary>
+    [HttpGet("cases/{caseId:guid}/audit")]
+    // pi-lens-ignore: lsp:CS0246
+    public async Task<ActionResult<IReadOnlyList<ApprovalCaseAuditView>>> GetCaseAudit(
+        Guid caseId,
+        CancellationToken cancellationToken)
+    {
+        var profile = await RequireAuditorAsync(cancellationToken);
+        return Ok(await inboxQueryService.GetCaseAuditAsync(
+            profile.OrganizationId, caseId, cancellationToken));
+    }
+
+    private async Task<UserProfileRecord> RequireAuditorAsync(CancellationToken cancellationToken)
+    {
+        var profile = await RequireActiveProfileAsync(cancellationToken);
+        var authorized = await dbContext.RoleAssignments.AnyAsync(
+            assignment => assignment.UserProfileId == profile.Id &&
+                          assignment.Status == (int)AssignmentStatus.Active &&
+                          assignment.ScopeJson == GlobalScopeJson &&
+                          assignment.Role == (int)SystemRole.Auditor,
+            cancellationToken);
+        if (!authorized)
+        {
+            throw new DomainForbiddenException(
+                "Organizational approval evidence requires the auditor role; administration does not grant it.");
+        }
+
+        return profile;
+    }
+
+    /// <summary>
+    /// Opaque server-projected correlation reference (REQ-08): the request cannot supply free text.
+    /// </summary>
+    private string Correlation()
+    {
+        var trace = HttpContext.TraceIdentifier;
+        if (!string.IsNullOrWhiteSpace(trace) &&
+            trace.Length <= 120 &&
+            trace.All(character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or ':' or '-'))
+        {
+            return trace;
+        }
+
+        return $"corr-{Guid.NewGuid():N}";
     }
 
     private async Task<UserProfileRecord> RequireActiveProfileAsync(CancellationToken cancellationToken)

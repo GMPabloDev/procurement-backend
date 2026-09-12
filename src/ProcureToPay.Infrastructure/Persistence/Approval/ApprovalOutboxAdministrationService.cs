@@ -56,34 +56,22 @@ public sealed class ApprovalOutboxAdministrationService(
     }
 
     /// <summary>
-    /// A reconciliation is due while the organization still has non-terminal cases and the last
-    /// completed pass is older than the 60 second budget (NFR-03). With no open work the check
-    /// stays healthy instead of alarming on every idle deployment.
+    /// A reconciliation is due while an existing run has not completed within the 60 second budget
+    /// (NFR-03, REQ-10). Idle deployments with no requested run stay healthy.
     /// </summary>
     public async Task<bool> IsReconciliationOverdueAsync(
         Guid organizationId,
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
-        var hasOpenWork = await dbContext.ApprovalCases
+        var utcNow = now.ToUniversalTime();
+        return await dbContext.ApprovalReconciliationRuns
             .AsNoTracking()
             .AnyAsync(
                 record => record.OrganizationId == organizationId &&
-                          (record.Status == (int)ApprovalCaseStatus.Open ||
-                           record.Status == (int)ApprovalCaseStatus.Blocked),
+                          record.Status != ApprovalReconciliationCodes.StatusCompleted &&
+                          record.RequestedAt <= utcNow - ApprovalReconciliationService.MaxReconciliationAge,
                 cancellationToken);
-        if (!hasOpenWork)
-        {
-            return false;
-        }
-
-        var last = await dbContext.ApprovalWorkflowStates
-            .AsNoTracking()
-            .Where(record => record.OrganizationId == organizationId)
-            .Select(record => (DateTimeOffset?)record.LastReconciliationCompletedAt)
-            .SingleOrDefaultAsync(cancellationToken);
-        return last is null ||
-               now.ToUniversalTime() - last.Value >= ApprovalReconciliationService.MaxReconciliationAge;
     }
 
     /// <summary>ADMIN replays a dead letter without editing its contractual payload (REQ-10).</summary>
@@ -123,9 +111,17 @@ public sealed class ApprovalOutboxAdministrationService(
             Id = Guid.NewGuid(),
             OrganizationId = organizationId,
             CaseId = record.CaseId,
-            RequirementId = record.RequirementId,
+            RequirementId = string.Equals(record.ResultSourceType, "APPROVAL_REQUIREMENT", StringComparison.Ordinal)
+                ? record.ResultSourceId
+                : null,
             ActorType = "USER",
-            ActorId = actorUserId,
+            ActorUserId = actorUserId,
+            ActorWorkloadIssuer = null,
+            ActorWorkloadClientId = null,
+            ActorSystemId = null,
+            CausedByAuditStream = null,
+            CausedByAuditId = null,
+            AutomaticEffectKey = null,
             OccurredAt = utcNow,
             Action = "OUTBOX_REPLAYED",
             TargetType = nameof(ApprovalOutboxEvent),

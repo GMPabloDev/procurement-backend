@@ -216,9 +216,15 @@ public sealed class ApprovalGraphTests
             Originator,
             definitions,
             prerequisites);
+        var prerequisiteOwners = prerequisite is null
+            ? new Dictionary<string, ApprovalWorkloadIdentity>(StringComparer.Ordinal)
+            : new Dictionary<string, ApprovalWorkloadIdentity>(StringComparer.Ordinal)
+            {
+                [prerequisite.Value.Key] = Workload
+            };
         return ApprovalCase.Create(
-            Guid.NewGuid(), submission, Adapter, Workload, new string('e', 64), DateTimeOffset.UtcNow,
-            "correlation");
+            Guid.NewGuid(), submission, Adapter, Workload, prerequisiteOwners, new string('e', 64),
+            DateTimeOffset.UtcNow, "correlation");
     }
 
     private static ApprovalRequirementDefinition BuildRequirement(

@@ -13,6 +13,7 @@ public sealed class ApprovalCase
     private readonly List<ApprovalRequirement> requirements = [];
     private readonly List<ApprovalTask> tasks = [];
     private readonly List<ExternalPrerequisite> prerequisites = [];
+    private readonly List<ApprovalAutomaticEffect> automaticEffects = [];
 
     private ApprovalCase(
         Guid id,
@@ -72,11 +73,31 @@ public sealed class ApprovalCase
     public IReadOnlyList<ApprovalTask> Tasks => tasks;
     public IReadOnlyList<ExternalPrerequisite> Prerequisites => prerequisites;
 
+    /// <summary>
+    /// Automatic transitions recorded since the last drain. The orchestrator materializes them as
+    /// <c>SYSTEM</c> audit effects with the root audit and its automatic effect key (REQ-08).
+    /// </summary>
+    public IReadOnlyList<ApprovalAutomaticEffect> DrainAutomaticEffects()
+    {
+        var drained = automaticEffects.ToArray();
+        automaticEffects.Clear();
+        return drained;
+    }
+
+    /// <summary>Requirement entity source used by events and automatic effects (REQ-08).</summary>
+    public ApprovalEntitySource SourceOf(ApprovalRequirement requirement) =>
+        ApprovalEntitySource.Requirement(requirement.Id, requirement.WorkflowRequirementKey);
+
+    /// <summary>Prerequisite entity source used by events and automatic effects (REQ-08).</summary>
+    public ApprovalEntitySource SourceOf(ExternalPrerequisite prerequisite) =>
+        ApprovalEntitySource.Prerequisite(prerequisite.Id, prerequisite.Key);
+
     public static ApprovalCase Create(
         Guid id,
         ApprovalSubmission submission,
         ApprovalAdapterDescriptor adapter,
         ApprovalWorkloadIdentity workload,
+        IReadOnlyDictionary<string, ApprovalWorkloadIdentity> prerequisiteOwners,
         string submissionFingerprint,
         DateTimeOffset createdAt,
         string correlationReference)
@@ -84,6 +105,7 @@ public sealed class ApprovalCase
         ArgumentNullException.ThrowIfNull(submission);
         ArgumentNullException.ThrowIfNull(adapter);
         ArgumentNullException.ThrowIfNull(workload);
+        ArgumentNullException.ThrowIfNull(prerequisiteOwners);
         if (id == Guid.Empty)
         {
             throw new DomainValidationException("A case id is required.");
@@ -112,7 +134,13 @@ public sealed class ApprovalCase
 
         foreach (var definition in submission.Prerequisites)
         {
-            approvalCase.prerequisites.Add(ExternalPrerequisite.Create(Guid.NewGuid(), id, definition));
+            if (!prerequisiteOwners.TryGetValue(definition.Key, out var ownerWorkload))
+            {
+                throw new DomainValidationException(
+                    $"The prerequisite '{definition.Key}' has no resolved owner workload.");
+            }
+
+            approvalCase.prerequisites.Add(ExternalPrerequisite.Create(Guid.NewGuid(), id, definition, ownerWorkload));
         }
 
         foreach (var requirement in approvalCase.requirements)
@@ -206,8 +234,19 @@ public sealed class ApprovalCase
         {
             if (requirement.Dependencies.All(IsDependencySatisfied))
             {
+                var before = requirement.Version;
                 requirement.Activate();
                 activated.Add(requirement);
+                automaticEffects.Add(ApprovalAutomaticEffect.Create(
+                    "REQUIREMENT_ACTIVATED",
+                    SourceOf(requirement),
+                    "REQUIREMENT",
+                    requirement.Id,
+                    before,
+                    requirement.Version,
+                    StatusJson("WAITING"),
+                    StatusJson("UNASSIGNED"),
+                    "Dependencies satisfied; the requirement became eligible for routing."));
             }
         }
 
@@ -250,10 +289,21 @@ public sealed class ApprovalCase
     {
         ArgumentNullException.ThrowIfNull(task);
         var requirement = RequireRequirement(task.RequirementId);
+        var before = task.Version;
         task.Assign(assignedAt, evidenceJson, cause);
         // The chosen candidate is part of the assignment, not a separate step (REQ-04).
         task.SetAssignee(assigneeUserId);
         requirement.MarkPending();
+        automaticEffects.Add(ApprovalAutomaticEffect.Create(
+            "TASK_ASSIGNED",
+            SourceOf(requirement),
+            "TASK",
+            task.Id,
+            before,
+            task.Version,
+            StatusJson("UNASSIGNED"),
+            AssignmentJson(assigneeUserId, load),
+            "Deterministic lowest-load assignment."));
         Version++;
         RecomputeStatus();
     }
@@ -262,10 +312,41 @@ public sealed class ApprovalCase
     {
         ArgumentNullException.ThrowIfNull(task);
         var requirement = RequireRequirement(task.RequirementId);
+        var before = task.Version;
         task.Unassign(occurredAt, cause);
         requirement.MarkUnassigned();
+        automaticEffects.Add(ApprovalAutomaticEffect.Create(
+            "TASK_RELEASED",
+            SourceOf(requirement),
+            "TASK",
+            task.Id,
+            before,
+            task.Version,
+            AssignmentJson(task.CurrentAssigneeUserId, 0),
+            StatusJson("UNASSIGNED"),
+            "The assignee lost eligibility and no candidate remains."));
         Version++;
         RecomputeStatus();
+    }
+
+    /// <summary>Reassignment keeps the task PENDING; the task version invalidates stale decisions.</summary>
+    public void ReassignTask(ApprovalTask task, Guid assigneeUserId)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        var requirement = RequireRequirement(task.RequirementId);
+        var before = task.Version;
+        task.ReassignTo(assigneeUserId);
+        automaticEffects.Add(ApprovalAutomaticEffect.Create(
+            "TASK_REASSIGNED",
+            SourceOf(requirement),
+            "TASK",
+            task.Id,
+            before,
+            task.Version,
+            null,
+            AssignmentJson(assigneeUserId, 0),
+            "Reassignment after authority change."));
+        Version++;
     }
 
     public void ApplyDecision(ApprovalTask task, ApprovalDecisionAction action)
@@ -305,17 +386,53 @@ public sealed class ApprovalCase
         var normalized = ApprovalLimits.RequireReason(reason);
         foreach (var requirement in requirements.Where(item => !item.IsTerminal))
         {
+            var before = requirement.Version;
+            var previous = requirement.Status;
             requirement.Cancel(normalized);
+            automaticEffects.Add(ApprovalAutomaticEffect.Create(
+                "REQUIREMENT_CANCELLED",
+                SourceOf(requirement),
+                "REQUIREMENT",
+                requirement.Id,
+                before,
+                requirement.Version,
+                StatusJson(RequirementStatus(previous)),
+                StatusJson("CANCELLED"),
+                normalized));
         }
 
         foreach (var task in tasks.Where(item => !item.IsTerminal))
         {
+            var before = task.Version;
+            var previous = task.Status;
             task.Cancel();
+            var requirement = RequireRequirement(task.RequirementId);
+            automaticEffects.Add(ApprovalAutomaticEffect.Create(
+                "TASK_CANCELLED",
+                SourceOf(requirement),
+                "TASK",
+                task.Id,
+                before,
+                task.Version,
+                StatusJson(TaskStatus(previous)),
+                StatusJson("CANCELLED"),
+                normalized));
         }
 
         foreach (var prerequisite in prerequisites.Where(item => item.Status == PrerequisiteStatus.Waiting))
         {
+            var before = prerequisite.Version;
             prerequisite.Cancel();
+            automaticEffects.Add(ApprovalAutomaticEffect.Create(
+                "PREREQUISITE_CANCELLED",
+                SourceOf(prerequisite),
+                "PREREQUISITE",
+                prerequisite.Id,
+                before,
+                prerequisite.Version,
+                StatusJson("WAITING"),
+                StatusJson("CANCELLED"),
+                normalized));
         }
 
         Status = ApprovalCaseStatus.Cancelled;
@@ -375,11 +492,69 @@ public sealed class ApprovalCase
             var requirement = requirements.Single(item => item.SourceRequirementKey == key);
             if (!requirement.IsTerminal)
             {
+                var before = requirement.Version;
+                var previous = requirement.Status;
                 requirement.Cancel("Cancelled because an upstream approval did not succeed.");
-                tasks.Single(task => task.RequirementId == requirement.Id).Cancel();
+                automaticEffects.Add(ApprovalAutomaticEffect.Create(
+                    "REQUIREMENT_CANCELLED",
+                    SourceOf(requirement),
+                    "REQUIREMENT",
+                    requirement.Id,
+                    before,
+                    requirement.Version,
+                    StatusJson(RequirementStatus(previous)),
+                    StatusJson("CANCELLED"),
+                    "Cancelled because an upstream approval did not succeed."));
+                var task = tasks.Single(item => item.RequirementId == requirement.Id);
+                var taskBefore = task.Version;
+                var taskPrevious = task.Status;
+                task.Cancel();
+                automaticEffects.Add(ApprovalAutomaticEffect.Create(
+                    "TASK_CANCELLED",
+                    SourceOf(requirement),
+                    "TASK",
+                    task.Id,
+                    taskBefore,
+                    task.Version,
+                    StatusJson(TaskStatus(taskPrevious)),
+                    StatusJson("CANCELLED"),
+                    "Cancelled because an upstream approval did not succeed."));
             }
         }
     }
+
+    private static string StatusJson(string status) =>
+        ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+            ("status", ApprovalCanonicalJson.String(status))));
+
+    private static string AssignmentJson(Guid? assigneeUserId, int load) =>
+        ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+            ("assignee_user_id", ApprovalCanonicalJson.StringOrNull(assigneeUserId)),
+            ("load", ApprovalCanonicalJson.Number(load)),
+            ("status", ApprovalCanonicalJson.String("PENDING"))));
+
+    private static string RequirementStatus(ApprovalRequirementStatus status) => status switch
+    {
+        ApprovalRequirementStatus.Waiting => "WAITING",
+        ApprovalRequirementStatus.Unassigned => "UNASSIGNED",
+        ApprovalRequirementStatus.Pending => "PENDING",
+        ApprovalRequirementStatus.Approved => "APPROVED",
+        ApprovalRequirementStatus.Rejected => "REJECTED",
+        ApprovalRequirementStatus.ChangesRequested => "CHANGES_REQUESTED",
+        ApprovalRequirementStatus.Cancelled => "CANCELLED",
+        _ => throw new DomainValidationException("The requirement status is invalid.")
+    };
+
+    private static string TaskStatus(ApprovalTaskStatus status) => status switch
+    {
+        ApprovalTaskStatus.Unassigned => "UNASSIGNED",
+        ApprovalTaskStatus.Pending => "PENDING",
+        ApprovalTaskStatus.Approved => "APPROVED",
+        ApprovalTaskStatus.Rejected => "REJECTED",
+        ApprovalTaskStatus.ChangesRequested => "CHANGES_REQUESTED",
+        ApprovalTaskStatus.Cancelled => "CANCELLED",
+        _ => throw new DomainValidationException("The task status is invalid.")
+    };
 }
 
 public sealed class ApprovalRequirement
@@ -682,16 +857,20 @@ public sealed class ExternalPrerequisite
         string key,
         string ownerAdapterId,
         string ownerAdapterVersion,
+        ApprovalWorkloadIdentity ownerWorkload,
         string sourceControlType,
         string sourceControlDigest,
         string parametersJson,
         IEnumerable<ApprovalTarget> targets)
     {
+        ArgumentNullException.ThrowIfNull(ownerWorkload);
         Id = id;
         CaseId = caseId;
         Key = key;
         OwnerAdapterId = ownerAdapterId;
         OwnerAdapterVersion = ownerAdapterVersion;
+        OwnerWorkloadIssuer = ownerWorkload.Issuer;
+        OwnerWorkloadClientId = ownerWorkload.ClientId;
         SourceControlType = sourceControlType;
         SourceControlDigest = sourceControlDigest;
         ParametersJson = parametersJson;
@@ -704,6 +883,10 @@ public sealed class ExternalPrerequisite
     public string Key { get; }
     public string OwnerAdapterId { get; }
     public string OwnerAdapterVersion { get; }
+    /// <summary>Workload identity resolved exact-one at ingestion and persisted (REQ-03, DEC-11).</summary>
+    public string OwnerWorkloadIssuer { get; }
+    public string OwnerWorkloadClientId { get; }
+    public ApprovalWorkloadIdentity OwnerWorkload => new(OwnerWorkloadIssuer, OwnerWorkloadClientId);
     public string SourceControlType { get; }
     public string SourceControlDigest { get; }
     public string ParametersJson { get; }
@@ -714,9 +897,13 @@ public sealed class ExternalPrerequisite
     public string? SignalFingerprint { get; private set; }
     public DateTimeOffset? ResolvedAt { get; private set; }
 
-    public static ExternalPrerequisite Create(Guid id, Guid caseId, ExternalPrerequisiteDefinition definition) =>
+    public static ExternalPrerequisite Create(
+        Guid id,
+        Guid caseId,
+        ExternalPrerequisiteDefinition definition,
+        ApprovalWorkloadIdentity ownerWorkload) =>
         new(
-            id, caseId, definition.Key, definition.OwnerAdapterId, definition.OwnerAdapterVersion,
+            id, caseId, definition.Key, definition.OwnerAdapterId, definition.OwnerAdapterVersion, ownerWorkload,
             definition.SourceControlType, definition.SourceControlDigest, definition.ParametersJson,
             definition.Targets);
 
@@ -726,6 +913,7 @@ public sealed class ExternalPrerequisite
         string key,
         string ownerAdapterId,
         string ownerAdapterVersion,
+        ApprovalWorkloadIdentity ownerWorkload,
         string sourceControlType,
         string sourceControlDigest,
         string parametersJson,
@@ -737,8 +925,8 @@ public sealed class ExternalPrerequisite
         DateTimeOffset? resolvedAt)
     {
         var prerequisite = new ExternalPrerequisite(
-            id, caseId, key, ownerAdapterId, ownerAdapterVersion, sourceControlType, sourceControlDigest,
-            parametersJson, targets)
+            id, caseId, key, ownerAdapterId, ownerAdapterVersion, ownerWorkload, sourceControlType,
+            sourceControlDigest, parametersJson, targets)
         {
             Status = status,
             Version = version,

@@ -6,7 +6,7 @@ using ProcureToPay.Domain.SharedKernel;
 namespace ProcureToPay.Domain.Modules.Approval;
 
 /// <summary>
-/// Canonical JSON writer for <c>approval-canonical-json/v1</c> (SPEC 03 REQ-08):
+/// Canonical JSON writer for <c>approval-canonical-json/v2</c> (SPEC 03 REQ-08):
 /// UTF-8 without BOM or whitespace, known properties always present, object keys
 /// ordered ordinal, strings normalized to NFC, UUID lowercase D, UTC timestamps with
 /// seven decimals, uppercase enums, invariant decimals and sets sorted by canonical
@@ -14,7 +14,7 @@ namespace ProcureToPay.Domain.Modules.Approval;
 /// </summary>
 public static class ApprovalCanonicalJson
 {
-    public const string CanonicalizationVersion = "approval-canonical-json/v1";
+    public const string CanonicalizationVersion = "approval-canonical-json/v2";
 
     public static CanonicalValue String(string value) => new CanonicalString(
         (value ?? throw new DomainValidationException("Canonical strings cannot be null."))

@@ -6,18 +6,20 @@ using ProcureToPay.Domain.Modules.Approval;
 namespace ProcureToPay.Infrastructure.Persistence.Approval;
 
 public sealed record ApprovalReconciliationOutcome(
+    Guid RunId,
     Guid OrganizationId,
     int Scanned,
     int Reassigned,
     int Unassigned,
     int Unchanged,
+    bool Completed,
     DateTimeOffset CompletedAt);
 
 /// <summary>
-/// Idempotent authority reconciliation (REQ-04, NFR-03): re-evaluates every PENDING requirement
-/// in an organization against the current profiles, roles, grants and scopes, and reassigns or
-/// releases only the tasks whose assignee stopped being eligible. A decided task never changes.
-/// Each case is one transaction so assignment, audit and status stay atomic (NFR-02).
+/// Durable, idempotent authority reconciliation (REQ-04, REQ-10, NFR-03). Every run has exactly
+/// one root audit; a conditional UPDATE claims a 30 second lease with a fencing token, the holder
+/// renews at most every ten seconds, each case transaction re-validates the lease, and a crash
+/// reuses the same run, root and UUID-D cursor. A decided task never changes.
 /// </summary>
 public sealed class ApprovalReconciliationService(
     ProcureToPayDbContext dbContext,
@@ -27,53 +29,279 @@ public sealed class ApprovalReconciliationService(
     /// <summary>A due reconciliation must complete within 60 seconds (NFR-03).</summary>
     public static readonly TimeSpan MaxReconciliationAge = TimeSpan.FromSeconds(60);
 
+    /// <summary>Persistent lease of the run holder (REQ-10).</summary>
+    public static readonly TimeSpan LeaseDuration = TimeSpan.FromSeconds(30);
+
+    /// <summary>The holder renews the lease at most every ten seconds (REQ-10).</summary>
+    public static readonly TimeSpan RenewalInterval = TimeSpan.FromSeconds(10);
+
     public async Task<bool> IsDueAsync(
         Guid organizationId,
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
-        var last = await dbContext.ApprovalWorkflowStates
+        var utcNow = now.ToUniversalTime();
+        return await dbContext.ApprovalReconciliationRuns
             .AsNoTracking()
-            .Where(record => record.OrganizationId == organizationId)
-            .Select(record => (DateTimeOffset?)record.LastReconciliationCompletedAt)
-            .SingleOrDefaultAsync(cancellationToken);
-        return last is null || now.ToUniversalTime() - last.Value >= MaxReconciliationAge;
+            .AnyAsync(
+                record => record.OrganizationId == organizationId &&
+                          record.Status != ApprovalReconciliationCodes.StatusCompleted &&
+                          record.RequestedAt <= utcNow - MaxReconciliationAge,
+                cancellationToken);
     }
 
-    public async Task<ApprovalReconciliationOutcome> ReconcileAsync(
+    /// <summary>
+    /// ADMIN requests a reconciliation with its idempotency key; the run and its USER root audit
+    /// are created atomically and an identical retry returns the same run (REQ-04, REQ-08).
+    /// </summary>
+    public async Task<Guid> RequestAdminAsync(
         Guid organizationId,
+        Guid actorUserId,
+        string reconciliationKey,
+        string correlationReference,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken = default)
+    {
+        var key = ApprovalLimits.RequireKey(reconciliationKey, "reconciliation_key");
+        var correlation = ApprovalLimits.RequireCorrelation(correlationReference);
+        var utcNow = occurredAt.ToUniversalTime();
+        var existing = await dbContext.ApprovalReconciliationRuns
+            .AsNoTracking()
+            .Where(record => record.OrganizationId == organizationId &&
+                             record.ActorUserId == actorUserId &&
+                             record.ReconciliationKey == key)
+            .Select(record => (Guid?)record.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (existing is not null)
+        {
+            return existing.Value;
+        }
+
+        var runId = Guid.NewGuid();
+        var rootAuditId = Guid.NewGuid();
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.ReadCommitted, cancellationToken);
+        dbContext.ApprovalReconciliationRuns.Add(Row(ApprovalReconciliationRun.CreateAdmin(
+            runId, organizationId, actorUserId, key, rootAuditId, utcNow)));
+        dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.RootForOrganization(
+            organizationId,
+            ApprovalAuditActor.User(actorUserId),
+            rootAuditId,
+            "RECONCILIATION_REQUESTED",
+            "RECONCILIATION_RUN",
+            runId,
+            "[]",
+            "Administrative reconciliation request.",
+            utcNow,
+            correlation));
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            dbContext.ChangeTracker.Clear();
+            var winner = await dbContext.ApprovalReconciliationRuns
+                .AsNoTracking()
+                .Where(record => record.OrganizationId == organizationId &&
+                                 record.ActorUserId == actorUserId &&
+                                 record.ReconciliationKey == key)
+                .Select(record => (Guid?)record.Id)
+                .SingleOrDefaultAsync(cancellationToken);
+            if (winner is null)
+            {
+                throw;
+            }
+
+            return winner.Value;
+        }
+
+        return runId;
+    }
+
+    /// <summary>
+    /// A confirmed organization change requests exactly one run per administrative audit; its root
+    /// audit is SYSTEM with the immutable ORGANIZATION causal link and no effect key (REQ-08).
+    /// </summary>
+    public async Task<Guid> RequestOrganizationChangeAsync(
+        Guid organizationId,
+        Guid triggerAuditId,
+        string correlationReference,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken = default)
+    {
+        var correlation = ApprovalLimits.RequireCorrelation(correlationReference);
+        var utcNow = occurredAt.ToUniversalTime();
+        var existing = await dbContext.ApprovalReconciliationRuns
+            .AsNoTracking()
+            .Where(record => record.OrganizationId == organizationId &&
+                             record.TriggerAuditId == triggerAuditId)
+            .Select(record => (Guid?)record.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (existing is not null)
+        {
+            return existing.Value;
+        }
+
+        var runId = Guid.NewGuid();
+        var rootAuditId = Guid.NewGuid();
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.ReadCommitted, cancellationToken);
+        dbContext.ApprovalReconciliationRuns.Add(Row(ApprovalReconciliationRun.CreateOrganizationChange(
+            runId, organizationId, triggerAuditId, rootAuditId, utcNow)));
+        dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.OrganizationRoot(
+            organizationId,
+            triggerAuditId,
+            rootAuditId,
+            "RECONCILIATION_REQUESTED",
+            runId,
+            "Reconciliation requested by an organization change.",
+            utcNow,
+            correlation));
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            dbContext.ChangeTracker.Clear();
+            var winner = await dbContext.ApprovalReconciliationRuns
+                .AsNoTracking()
+                .Where(record => record.OrganizationId == organizationId &&
+                                 record.TriggerAuditId == triggerAuditId)
+                .Select(record => (Guid?)record.Id)
+                .SingleOrDefaultAsync(cancellationToken);
+            if (winner is null)
+            {
+                throw;
+            }
+
+            return winner.Value;
+        }
+
+        return runId;
+    }
+
+    /// <summary>
+    /// Processes one run under its lease. A holder that lost the lease stops; an expired lease can
+    /// be reclaimed by another instance and continues from the persisted cursor (REQ-10).
+    /// </summary>
+    public async Task<ApprovalReconciliationOutcome> ProcessAsync(
+        Guid runId,
         string owner,
         string correlationReference,
         DateTimeOffset occurredAt,
         CancellationToken cancellationToken = default)
     {
+        var correlation = ApprovalLimits.RequireCorrelation(correlationReference);
         var utcNow = occurredAt.ToUniversalTime();
+
+        var claimed = await dbContext.ApprovalReconciliationRuns
+            .Where(record => record.Id == runId &&
+                             record.Status != ApprovalReconciliationCodes.StatusCompleted &&
+                             (record.LeaseOwner == null ||
+                              record.LockedUntil == null ||
+                              record.LockedUntil <= utcNow))
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(record => record.LeaseOwner, owner.Length > 120 ? owner[..120] : owner)
+                    .SetProperty(record => record.LockedUntil, utcNow + LeaseDuration)
+                    .SetProperty(record => record.FencingToken, record => record.FencingToken + 1)
+                    .SetProperty(record => record.Attempts, record => record.Attempts + 1)
+                    .SetProperty(record => record.StartedAt, record => record.StartedAt ?? utcNow)
+                    .SetProperty(record => record.Status, ApprovalReconciliationCodes.StatusRunning)
+                    .SetProperty(record => record.Version, record => record.Version + 1),
+                cancellationToken);
+        var runRecord = await dbContext.ApprovalReconciliationRuns
+            .AsNoTracking()
+            .SingleAsync(record => record.Id == runId, cancellationToken);
+        if (claimed == 0)
+        {
+            // Another holder owns the lease, or the run already completed. Nothing to do.
+            return Outcome(runRecord, scanned: 0, reassigned: 0, unassigned: 0, unchanged: 0, completed: false, utcNow);
+        }
+
+        var fencingToken = runRecord.FencingToken;
+        var rootAuditId = runRecord.RootAuditId;
+        var cursor = runRecord.CursorCaseId;
         var caseIds = await dbContext.ApprovalCases
             .AsNoTracking()
-            .Where(record =>
-                record.OrganizationId == organizationId &&
-                (record.Status == (int)ApprovalCaseStatus.Open ||
-                 record.Status == (int)ApprovalCaseStatus.Blocked))
+            .Where(record => record.OrganizationId == runRecord.OrganizationId &&
+                             (record.Status == (int)ApprovalCaseStatus.Open ||
+                              record.Status == (int)ApprovalCaseStatus.Blocked))
             .Select(record => record.Id)
             .ToArrayAsync(cancellationToken);
+        // Cursor and case order are UUID-D ascending (REQ-10), not SQL Server byte order.
+        var ordered = caseIds
+            .Select(id => (Id: id, D: id.ToString("D")))
+            .OrderBy(entry => entry.D, StringComparer.Ordinal)
+            .Where(entry => cursor is null ||
+                            string.CompareOrdinal(entry.D, cursor.Value.ToString("D")) > 0)
+            .Select(entry => entry.Id)
+            .ToArray();
 
         var scanned = 0;
         var reassigned = 0;
         var unassigned = 0;
         var unchanged = 0;
-
-        foreach (var caseId in caseIds.OrderBy(id => id.ToString("D"), StringComparer.Ordinal))
+        foreach (var caseId in ordered)
         {
-            scanned++;
+            var remaining = runRecord.LockedUntil is null
+                ? TimeSpan.Zero
+                : runRecord.LockedUntil.Value - utcNow;
+            if (remaining < LeaseDuration - RenewalInterval)
+            {
+                var renewed = await dbContext.ApprovalReconciliationRuns
+                    .Where(record => record.Id == runId &&
+                                     record.LeaseOwner == owner &&
+                                     record.FencingToken == fencingToken &&
+                                     record.LockedUntil > utcNow)
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(record => record.LockedUntil, utcNow + LeaseDuration)
+                            .SetProperty(record => record.Version, record => record.Version + 1),
+                        cancellationToken);
+                if (renewed == 0)
+                {
+                    // The lease was reclaimed by another instance: stop, the new holder continues.
+                    logger.LogWarning(
+                        "Reconciliation run {RunId} lease was lost by {Owner}; another holder continues it.",
+                        runId,
+                        owner);
+                    return Outcome(runRecord, scanned, reassigned, unassigned, unchanged, completed: false, utcNow);
+                }
+
+                runRecord.LockedUntil = utcNow + LeaseDuration;
+            }
+
             dbContext.ChangeTracker.Clear();
             await using var transaction = await dbContext.Database.BeginTransactionAsync(
                 IsolationLevel.Serializable, cancellationToken);
+            var holder = await dbContext.ApprovalReconciliationRuns
+                .AsNoTracking()
+                .Where(record => record.Id == runId)
+                .Select(record => new { record.LeaseOwner, record.FencingToken, record.LockedUntil, record.Status })
+                .SingleAsync(cancellationToken);
+            if (holder.Status == ApprovalReconciliationCodes.StatusCompleted ||
+                !string.Equals(holder.LeaseOwner, owner, StringComparison.Ordinal) ||
+                holder.FencingToken != fencingToken ||
+                holder.LockedUntil is null ||
+                holder.LockedUntil <= utcNow)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Outcome(runRecord, scanned, reassigned, unassigned, unchanged, completed: false, utcNow);
+            }
 
             var caseRecord = await dbContext.ApprovalCases
                 .SingleOrDefaultAsync(record => record.Id == caseId, cancellationToken);
             if (caseRecord is null)
             {
                 await transaction.CommitAsync(cancellationToken);
+                cursor = caseId;
                 continue;
             }
 
@@ -92,30 +320,88 @@ public sealed class ApprovalReconciliationService(
 
             var approvalCase = ApprovalCaseHydrator.Hydrate(
                 caseRecord, requirementRecords, prerequisiteRecords, taskRecords);
-            if (approvalCase.Status is not (ApprovalCaseStatus.Open or ApprovalCaseStatus.Blocked))
+            scanned++;
+            if (approvalCase.Status is ApprovalCaseStatus.Open or ApprovalCaseStatus.Blocked)
             {
-                await transaction.CommitAsync(cancellationToken);
-                continue;
+                var outcomes = await assignmentEngine.ReconcilePendingAsync(
+                    approvalCase, assignmentRecords, utcNow, correlation, rootAuditId, cancellationToken);
+                reassigned += outcomes.Count(outcome => outcome.Kind == ApprovalAssignmentOutcomeKind.Reassigned);
+                unassigned += outcomes.Count(outcome => outcome.Kind == ApprovalAssignmentOutcomeKind.Unassigned);
+                unchanged += outcomes.Count(outcome => outcome.Kind == ApprovalAssignmentOutcomeKind.Unchanged);
+                if (outcomes.Count > 0)
+                {
+                    ApprovalStateSync.Apply(
+                        approvalCase, caseRecord, requirementRecords, taskRecords, prerequisiteRecords);
+                }
             }
 
-            var outcomes = await assignmentEngine.ReconcilePendingAsync(
-                approvalCase, assignmentRecords, utcNow, correlationReference, cancellationToken);
-            if (outcomes.Count == 0)
-            {
-                await transaction.CommitAsync(cancellationToken);
-                continue;
-            }
-
-            ApprovalStateSync.Apply(
-                approvalCase, caseRecord, requirementRecords, taskRecords, prerequisiteRecords);
+            var runRow = await dbContext.ApprovalReconciliationRuns
+                .SingleAsync(record => record.Id == runId, cancellationToken);
+            runRow.CursorCaseId = caseId;
+            runRow.Version++;
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
-
-            reassigned += outcomes.Count(outcome => outcome.Kind == ApprovalAssignmentOutcomeKind.Reassigned);
-            unassigned += outcomes.Count(outcome => outcome.Kind == ApprovalAssignmentOutcomeKind.Unassigned);
-            unchanged += outcomes.Count(outcome => outcome.Kind == ApprovalAssignmentOutcomeKind.Unchanged);
+            cursor = caseId;
         }
 
+        var completed = await dbContext.ApprovalReconciliationRuns
+            .Where(record => record.Id == runId &&
+                             record.LeaseOwner == owner &&
+                             record.FencingToken == fencingToken &&
+                             record.LockedUntil > utcNow)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(record => record.Status, ApprovalReconciliationCodes.StatusCompleted)
+                    .SetProperty(record => record.CompletedAt, utcNow)
+                    .SetProperty(record => record.LockedUntil, (DateTimeOffset?)null)
+                    .SetProperty(record => record.LeaseOwner, (string?)null)
+                    .SetProperty(record => record.Version, record => record.Version + 1),
+                cancellationToken);
+
+        if (completed > 0)
+        {
+            await TouchWorkflowStateAsync(runRecord.OrganizationId, utcNow, owner, cancellationToken);
+        }
+
+        logger.LogInformation(
+            "Approval reconciliation run {RunId} for organization {OrganizationId} scanned {Scanned} cases: " +
+            "{Reassigned} reassigned, {Unassigned} unassigned, {Unchanged} unchanged.",
+            runId,
+            runRecord.OrganizationId,
+            scanned,
+            reassigned,
+            unassigned,
+            unchanged);
+
+        ApprovalTelemetry.RecordReconciliation(reassigned, unassigned);
+
+        return Outcome(runRecord, scanned, reassigned, unassigned, unchanged, completed > 0, utcNow);
+    }
+
+    /// <summary>
+    /// ADMIN requests and executes a reconciliation in one call; the API and worker share the same
+    /// durable run, so an identical retry is idempotent (REQ-04, REQ-09).
+    /// </summary>
+    public async Task<ApprovalReconciliationOutcome> ReconcileAsync(
+        Guid organizationId,
+        Guid actorUserId,
+        string reconciliationKey,
+        string owner,
+        string correlationReference,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken = default)
+    {
+        var runId = await RequestAdminAsync(
+            organizationId, actorUserId, reconciliationKey, correlationReference, occurredAt, cancellationToken);
+        return await ProcessAsync(runId, owner, correlationReference, occurredAt, cancellationToken);
+    }
+
+    private async Task TouchWorkflowStateAsync(
+        Guid organizationId,
+        DateTimeOffset utcNow,
+        string owner,
+        CancellationToken cancellationToken)
+    {
         var state = await dbContext.ApprovalWorkflowStates
             .SingleOrDefaultAsync(record => record.OrganizationId == organizationId, cancellationToken);
         if (state is null)
@@ -131,19 +417,45 @@ public sealed class ApprovalReconciliationService(
         state.LastReconciliationCompletedAt = utcNow;
         state.LastReconciliationOwner = owner.Length > 120 ? owner[..120] : owner;
         await dbContext.SaveChangesAsync(cancellationToken);
+    }
 
-        logger.LogInformation(
-            "Approval reconciliation for organization {OrganizationId} scanned {Scanned} cases: " +
-            "{Reassigned} reassigned, {Unassigned} unassigned, {Unchanged} unchanged.",
-            organizationId,
+    private static ApprovalReconciliationRunRecord Row(ApprovalReconciliationRun run) => new()
+    {
+        Id = run.Id,
+        OrganizationId = run.OrganizationId,
+        Trigger = ApprovalReconciliationCodes.Code(run.Trigger),
+        ActorUserId = run.ActorUserId,
+        ReconciliationKey = run.ReconciliationKey,
+        TriggerAuditId = run.TriggerAuditId,
+        Status = ApprovalReconciliationCodes.Code(run.Status),
+        RequestedAt = run.RequestedAt,
+        StartedAt = run.StartedAt,
+        CompletedAt = run.CompletedAt,
+        CursorCaseId = run.CursorCaseId,
+        LeaseOwner = run.LeaseOwner,
+        LockedUntil = run.LockedUntil,
+        FencingToken = run.FencingToken,
+        Attempts = run.Attempts,
+        LastError = run.LastError,
+        RootAuditId = run.RootAuditId,
+        Version = run.Version
+    };
+
+    private static ApprovalReconciliationOutcome Outcome(
+        ApprovalReconciliationRunRecord runRecord,
+        int scanned,
+        int reassigned,
+        int unassigned,
+        int unchanged,
+        bool completed,
+        DateTimeOffset now) =>
+        new(
+            runRecord.Id,
+            runRecord.OrganizationId,
             scanned,
             reassigned,
             unassigned,
-            unchanged);
-
-        ApprovalTelemetry.RecordReconciliation(reassigned, unassigned);
-
-        return new ApprovalReconciliationOutcome(
-            organizationId, scanned, reassigned, unassigned, unchanged, utcNow);
-    }
+            unchanged,
+            completed,
+            runRecord.CompletedAt ?? now);
 }

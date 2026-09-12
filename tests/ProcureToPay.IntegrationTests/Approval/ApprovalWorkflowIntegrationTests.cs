@@ -279,10 +279,15 @@ public sealed class ApprovalWorkflowIntegrationTests
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["Approval:Workloads:0:Issuer"] = Workload.Issuer,
-                    ["Approval:Workloads:0:ClientId"] = Workload.ClientId
+                    ["Approval:Workloads:0:ClientId"] = Workload.ClientId,
+                    ["Approval:OwnerWorkloads:0:AdapterId"] = "adapter",
+                    ["Approval:OwnerWorkloads:0:AdapterVersion"] = "v1",
+                    ["Approval:OwnerWorkloads:0:Issuer"] = Workload.Issuer,
+                    ["Approval:OwnerWorkloads:0:ClientId"] = Workload.ClientId
                 })
                 .Build();
             var allowlist = new ApprovalWorkloadAllowlist(configuration);
+            var ownerWorkloads = new ApprovalOwnerWorkloadRegistry(configuration, allowlist);
             var registry = new ApprovalSubmissionAdapterRegistry([adapter]);
             // One unit of work per service pair: the routing engine adds assignment and audit
             // rows that the transition service must save in its own transaction.
@@ -291,7 +296,7 @@ public sealed class ApprovalWorkflowIntegrationTests
                 context, new OrganizationEligibilityService(context), new ApprovalScopeResolver(context));
             return (
                 new ApprovalSubmissionService(
-                    context, registry, allowlist, assignmentEngine,
+                    context, registry, ownerWorkloads, allowlist, assignmentEngine,
                     loggerFactory.CreateLogger<ApprovalSubmissionService>()),
                 // pi-lens-ignore: lsp:CS1729
                 new ApprovalWorkflowService(

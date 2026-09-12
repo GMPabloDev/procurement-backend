@@ -110,7 +110,12 @@ public sealed class ApprovalDecisionIntegrationTests
         Assert.False(first.Replayed);
         Assert.True(replay.Replayed);
         Assert.Equal(first.DecisionId, replay.DecisionId);
-        Assert.Empty(replay.OutboxEventIds);
+        // NFR-01: the replay returns the original artifacts, including the events of the decision.
+        // The contract fixes identity, not list order, so the comparison is by set.
+        Assert.Equal(
+            first.OutboxEventIds.OrderBy(id => id).ToArray(),
+            replay.OutboxEventIds.OrderBy(id => id).ToArray());
+        Assert.Equal(2, replay.OutboxEventIds.Count);
         Assert.Equal("COMPLETED", replay.CaseStatus);
 
         await Assert.ThrowsAsync<DomainConflictException>(() => services.Decision.DecideAsync(
@@ -282,14 +287,17 @@ public sealed class ApprovalDecisionIntegrationTests
         Assert.Equal("COMPLETED", outcome.CaseStatus);
 
         await using var verification = environment.CreateContext();
-        Assert.Equal(2, await verification.ApprovalOutboxEvents.CountAsync(cancellationToken));
-        Assert.All(
-            await verification.ApprovalOutboxEvents.ToArrayAsync(cancellationToken),
-            record => Assert.Equal("REJECTED", record.Result));
-        // The dependent requirement is cancelled with its own task, and never reopens.
         var dependent = await verification.ApprovalRequirements
             .SingleAsync(
                 record => record.SourceRequirementKey == "FINANCE_REQ", cancellationToken);
+        var events = await verification.ApprovalOutboxEvents.ToArrayAsync(cancellationToken);
+        // The decided requirement publishes its own result per target; the cancelled descendant
+        // keeps its own CANCELLED result and its own source (REQ-08, DEC-07).
+        Assert.Equal(3, events.Length);
+        Assert.Equal(2, events.Count(record => record.Result == "REJECTED"));
+        var cancelledEvent = Assert.Single(events, record => record.Result == "CANCELLED");
+        Assert.Equal("APPROVAL_REQUIREMENT", cancelledEvent.ResultSourceType);
+        Assert.Equal(dependent.Id, cancelledEvent.ResultSourceId);
         Assert.Equal((int)ApprovalRequirementStatus.Cancelled, dependent.Status);
         Assert.Equal(
             (int)ApprovalTaskStatus.Cancelled,
@@ -372,7 +380,8 @@ public sealed class ApprovalDecisionIntegrationTests
             cancellationToken));
 
         await services.Reconciliation.ReconcileAsync(
-            OrganizationId, "integration-test", "correlation-metrics", DateTimeOffset.UtcNow, cancellationToken);
+            OrganizationId, AdminId, "reconcile-metrics-1", "integration-test", "correlation-metrics",
+            DateTimeOffset.UtcNow, cancellationToken);
 
         Assert.Contains(measurements, entry =>
             entry.Instrument == "approval.submissions" && entry.Outcome == "CREATED");
@@ -571,11 +580,13 @@ public sealed class ApprovalDecisionIntegrationTests
             var context = CreateContext();
             var assignmentEngine = new ApprovalAssignmentEngine(
                 context, new OrganizationEligibilityService(context), new ApprovalScopeResolver(context));
+            var allowlist = new ApprovalWorkloadAllowlist(configuration);
             return (
                 new ApprovalSubmissionService(
                     context,
                     new ApprovalSubmissionAdapterRegistry([new DepartmentAdapter(withDependentRequirement)]),
-                    new ApprovalWorkloadAllowlist(configuration),
+                    new ApprovalOwnerWorkloadRegistry(configuration, allowlist),
+                    allowlist,
                     assignmentEngine,
                     loggerFactory.CreateLogger<ApprovalSubmissionService>()),
                 // pi-lens-ignore: lsp:CS0246

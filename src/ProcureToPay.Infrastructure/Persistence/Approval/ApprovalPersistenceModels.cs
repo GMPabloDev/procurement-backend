@@ -51,6 +51,9 @@ public sealed class ApprovalPrerequisiteRecord
     public string Key { get; set; } = string.Empty;
     public string OwnerAdapterId { get; set; } = string.Empty;
     public string OwnerAdapterVersion { get; set; } = string.Empty;
+    // Owner workload identity resolved exactly once at ingestion (REQ-03, DEC-11).
+    public string OwnerWorkloadIssuer { get; set; } = string.Empty;
+    public string OwnerWorkloadClientId { get; set; } = string.Empty;
     public string SourceControlType { get; set; } = string.Empty;
     public string SourceControlDigest { get; set; } = string.Empty;
     public string ParametersJson { get; set; } = string.Empty;
@@ -127,6 +130,11 @@ public sealed class ApprovalDecisionRecord
     // original digest instead of recomputing it from state the decision already advanced (REQ-06).
     public int RequirementVersion { get; set; }
     public int TaskVersion { get; set; }
+    // Artifacts of the decision at its own instant: a replay must return them, not the current state.
+    public int RequirementStatusAfter { get; set; }
+    public int TaskStatusAfter { get; set; }
+    public int CaseStatusAfter { get; set; }
+    public int CaseVersionAfter { get; set; }
     public string CorrelationReference { get; set; } = string.Empty;
     public int Version { get; set; }
     public byte[] RowVersion { get; set; } = [];
@@ -150,7 +158,12 @@ public sealed class ApprovalOutboxEventRecord
     public Guid Id { get; set; }
     public Guid CaseId { get; set; }
     public Guid OrganizationId { get; set; }
-    public Guid? RequirementId { get; set; }
+    // Identity of the persisted entity that really transitioned (REQ-08). Nullable in storage so a
+    // clean-baseline upgrade never fabricates values for pre-existing rows; new events always set it.
+    public string? ResultSourceType { get; set; }
+    public Guid? ResultSourceId { get; set; }
+    public string? ResultSourceKey { get; set; }
+    public Guid? SourceCommandId { get; set; }
     public string TargetType { get; set; } = string.Empty;
     public Guid TargetId { get; set; }
     public int TargetVersion { get; set; }
@@ -171,14 +184,45 @@ public sealed class ApprovalOutboxEventRecord
     public byte[] RowVersion { get; set; } = [];
 }
 
+public sealed class ApprovalReconciliationRunRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string Trigger { get; set; } = string.Empty;
+    public Guid? ActorUserId { get; set; }
+    public string? ReconciliationKey { get; set; }
+    public Guid? TriggerAuditId { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public DateTimeOffset RequestedAt { get; set; }
+    public DateTimeOffset? StartedAt { get; set; }
+    public DateTimeOffset? CompletedAt { get; set; }
+    public Guid? CursorCaseId { get; set; }
+    public string? LeaseOwner { get; set; }
+    public DateTimeOffset? LockedUntil { get; set; }
+    public long FencingToken { get; set; }
+    public int Attempts { get; set; }
+    public string? LastError { get; set; }
+    public Guid RootAuditId { get; set; }
+    public int Version { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+}
+
 public sealed class ApprovalAuditEntryRecord
 {
     public Guid Id { get; set; }
     public Guid OrganizationId { get; set; }
     public Guid? CaseId { get; set; }
     public Guid? RequirementId { get; set; }
+    // Closed actor union: exactly one variant is populated and an empty UUID is never an identity.
     public string ActorType { get; set; } = string.Empty;
-    public Guid ActorId { get; set; }
+    public Guid? ActorUserId { get; set; }
+    public string? ActorWorkloadIssuer { get; set; }
+    public string? ActorWorkloadClientId { get; set; }
+    public string? ActorSystemId { get; set; }
+    // Causal link of an automatic effect or of an organization-triggered root audit.
+    public string? CausedByAuditStream { get; set; }
+    public Guid? CausedByAuditId { get; set; }
+    public string? AutomaticEffectKey { get; set; }
     public DateTimeOffset OccurredAt { get; set; }
     public string Action { get; set; } = string.Empty;
     public string TargetType { get; set; } = string.Empty;

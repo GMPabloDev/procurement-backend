@@ -39,3 +39,13 @@ public interface IApprovalWorkloadAllowlist
 {
     bool IsAllowed(ApprovalWorkloadIdentity workload);
 }
+
+/// <summary>
+/// Trusted exact-one resolution of a prerequisite owner (adapter id + version) to the workload
+/// identity that may signal it (REQ-03, DEC-11). Absence, ambiguity or a non-allowlisted result
+/// fails closed before the case exists.
+/// </summary>
+public interface IApprovalOwnerWorkloadRegistry
+{
+    ApprovalWorkloadIdentity ResolveExactlyOne(string ownerAdapterId, string ownerAdapterVersion);
+}

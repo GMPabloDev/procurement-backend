@@ -45,6 +45,7 @@ public sealed record ApprovalDispatchOutcome(int Leased, int Delivered, int Fail
 /// At-least-once outbox dispatcher with persistent leases (REQ-10, NFR-04): due events are
 /// claimed by compare-and-swap on the row version so two instances never dispatch the same
 /// event, retried with the contractual backoff, and parked as dead letters after ten attempts.
+/// Only a complete <c>approval-result/v2</c> payload reaches a consumer (REQ-08).
 /// </summary>
 public sealed class ApprovalOutboxDispatcher(
     ProcureToPayDbContext dbContext,
@@ -139,7 +140,7 @@ public sealed class ApprovalOutboxDispatcher(
                 .AsNoTracking()
                 .SingleAsync(record => record.Id == eventId, cancellationToken));
         var startedAt = ApprovalTelemetry.Now();
-        using var activity = ApprovalTelemetry.Start("dispatch", outboxEvent.CorrelationReference);
+        using var activity = ApprovalTelemetry.Start("dispatch");
         var result = DispatchResult.Delivered;
         string? error = null;
 
@@ -226,12 +227,16 @@ public sealed class ApprovalOutboxDispatcher(
         record.Id,
         record.CaseId,
         record.OrganizationId,
-        record.RequirementId,
+        ApprovalEntitySource.Restore(
+            ApprovalEntitySource.ParseCode(record.ResultSourceType),
+            record.ResultSourceId ?? Guid.Empty,
+            record.ResultSourceKey),
         new ApprovalTarget(record.TargetType, record.TargetId, record.TargetVersion, record.MaterialSnapshotDigest),
         record.Result,
         record.PayloadJson,
         record.CreatedAt,
         record.CorrelationReference,
+        record.SourceCommandId,
         (ApprovalOutboxState)record.State,
         record.Attempts,
         record.NextAttemptAt,

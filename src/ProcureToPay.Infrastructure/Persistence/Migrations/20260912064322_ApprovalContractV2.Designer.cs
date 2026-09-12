@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using ProcureToPay.Infrastructure.Persistence;
 
@@ -11,9 +12,11 @@ using ProcureToPay.Infrastructure.Persistence;
 namespace ProcureToPay.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ProcureToPayDbContext))]
-    partial class ProcureToPayDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260912064322_ApprovalContractV2")]
+    partial class ApprovalContractV2
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

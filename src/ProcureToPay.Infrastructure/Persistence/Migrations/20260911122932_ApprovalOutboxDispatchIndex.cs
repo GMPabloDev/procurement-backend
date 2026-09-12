@@ -18,12 +18,12 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
         }
 
         /// <inheritdoc />
-        protected override void Down(MigrationBuilder migrationBuilder)
+protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropIndex(
-                name: "IX_ApprovalOutboxEvents_OrganizationId_State_NextAttemptAt_CreatedAt",
-                schema: "Approval",
-                table: "ApprovalOutboxEvents");
+            // SPEC 03 forbids destructive down migrations: reverting the application keeps the
+            // Approval schema and its history, so a downgrade that would drop data is not supported.
+            throw new NotSupportedException(
+                "The Approval schema has no destructive downgrade; revert the application and keep the schema.");
         }
     }
 }

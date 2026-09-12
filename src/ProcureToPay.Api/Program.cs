@@ -8,6 +8,7 @@ using OpenTelemetry.Trace;
 using ProcureToPay.Api.ExceptionHandling;
 using ProcureToPay.Api.Health;
 using ProcureToPay.Api.Identity;
+using ProcureToPay.Api.Workers;
 using ProcureToPay.Application;
 using ProcureToPay.Infrastructure;
 using ProcureToPay.Infrastructure.Persistence.Approval;
@@ -142,6 +143,14 @@ builder.Services.AddCors(options =>
 });
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+
+// Productive workers (REQ-10): the outbox dispatcher and the reconciliation runs execute
+// automatically. Tests opt out and the host fails closed on a v1 baseline before starting.
+if (!builder.Environment.IsEnvironment("Testing") &&
+    builder.Configuration.GetValue("Approval:Worker:Enabled", true))
+{
+    builder.Services.AddHostedService<ApprovalWorkflowWorker>();
+}
 
 var app = builder.Build();
 

@@ -5,8 +5,8 @@ namespace ProcureToPay.Infrastructure.Persistence.Approval;
 
 /// <summary>
 /// Minimized OpenTelemetry instrumentation for the approval workflow (NFR-05). Tags carry only
-/// operation, outcome, stage, attempt counts, duration and the correlation reference: never
-/// decision reasons, snapshots, tokens, subject identifiers or any other personal data.
+/// operation, outcome, stage, attempt counts and duration: never decision reasons, snapshots,
+/// tokens, subject identifiers, correlation references or any other personal data.
 /// </summary>
 public static class ApprovalTelemetry
 {
@@ -53,11 +53,14 @@ public static class ApprovalTelemetry
         unit: "ms",
         description: "Duration of approval operations.");
 
-    public static Activity? Start(string operation, string correlationReference)
+    /// <summary>
+    /// Starts a minimized span. The correlation reference is deliberately excluded: it is only an
+    /// opaque server projection and never telemetry content (NFR-05).
+    /// </summary>
+    public static Activity? Start(string operation)
     {
         var activity = Source.StartActivity($"approval.{operation.ToLowerInvariant()}");
         activity?.SetTag("approval.operation", operation);
-        activity?.SetTag("approval.correlation_reference", correlationReference);
         return activity;
     }
 

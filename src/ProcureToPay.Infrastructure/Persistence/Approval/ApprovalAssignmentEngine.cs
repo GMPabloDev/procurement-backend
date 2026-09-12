@@ -1,9 +1,44 @@
+using System.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Organization;
+using ProcureToPay.Domain.SharedKernel;
 
 namespace ProcureToPay.Infrastructure.Persistence.Approval;
+
+/// <summary>
+/// Serializes selection, load reservation and assignment per organization (REQ-04). The lock is
+/// held by the caller's transaction, so a submission, a signal, a decision and a reconciliation
+/// cannot choose the same candidate from the same stale load.
+/// </summary>
+public static class ApprovalAssignmentLock
+{
+    public static async Task AcquireAsync(
+        ProcureToPayDbContext dbContext,
+        Guid organizationId,
+        CancellationToken cancellationToken = default)
+    {
+        if (dbContext.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "The assignment lock requires an open transaction that owns the critical section.");
+        }
+
+        var resource = $"approval:assign:{organizationId:D}";
+        var result = new SqlParameter("@result", SqlDbType.Int) { Direction = ParameterDirection.Output };
+        await dbContext.Database.ExecuteSqlRawAsync(
+            "EXEC @result = sp_getapplock @Resource = {0}, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 15000",
+            [resource, result],
+            cancellationToken);
+        if (result.Value is not int code || code < 0)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                "The approval assignment critical section could not be acquired.");
+        }
+    }
+}
 
 public enum ApprovalAssignmentOutcomeKind
 {
@@ -22,9 +57,11 @@ public sealed record ApprovalAssignmentOutcome(
 
 /// <summary>
 /// Deterministic routing of activation and reconciliation (REQ-04, REQ-05, NFR-01, NFR-03):
-/// converts the stored decision scope, asks the SPEC 01 resolver, picks the lowest current
-/// load with a canonical-UUID tie-break, and never falls back when no candidate exists.
-/// Selection, load reservation and assignment stay inside the caller's transaction.
+/// converts the stored decision scope, asks the SPEC 01 resolver, excludes active reserved-role
+/// holders (DEC-08), picks the lowest current load with a canonical-UUID tie-break, and never
+/// falls back when no candidate exists. Selection, load reservation and assignment stay inside
+/// the caller's transaction; every automatic change is written as a SYSTEM effect of the root
+/// audit that caused it (REQ-08).
 /// </summary>
 public sealed class ApprovalAssignmentEngine(
     ProcureToPayDbContext dbContext,
@@ -36,10 +73,12 @@ public sealed class ApprovalAssignmentEngine(
         ApprovalCase approvalCase,
         DateTimeOffset occurredAt,
         string correlationReference,
+        Guid rootAuditId,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(approvalCase);
         var utcNow = occurredAt.ToUniversalTime();
+        await ApprovalAssignmentLock.AcquireAsync(dbContext, approvalCase.OrganizationId, cancellationToken);
         var loads = await CurrentLoadsAsync(approvalCase.OrganizationId, cancellationToken);
         var outcomes = new List<ApprovalAssignmentOutcome>();
 
@@ -53,21 +92,7 @@ public sealed class ApprovalAssignmentEngine(
             {
                 ApprovalTelemetry.RecordUnassigned();
                 // No candidate: the single current task stays UNASSIGNED and the case BLOCKED,
-                // with no fallback (REQ-04). Recorded as evidence, not as an assignment.
-                dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.Audit(
-                    approvalCase,
-                    "SYSTEM",
-                    Guid.Empty,
-                    "REQUIREMENT_UNASSIGNED",
-                    nameof(ApprovalRequirement),
-                    requirement.Id,
-                    requirement.DecisionScopeJson,
-                    "No eligible candidate for the requirement.",
-                    null,
-                    null,
-                    utcNow,
-                    correlationReference,
-                    requirement.Id));
+                // with no fallback (REQ-04). No transition happened, so no effect is recorded.
                 outcomes.Add(new ApprovalAssignmentOutcome(
                     requirement.Id, task.Id, ApprovalAssignmentOutcomeKind.Unassigned, null, 0));
                 continue;
@@ -81,12 +106,11 @@ public sealed class ApprovalAssignmentEngine(
             dbContext.ApprovalAssignments.Add(Assignment(
                 approvalCase, requirement, task, chosen, load, ApprovalAssignmentCause.Initial, utcNow));
             ApprovalTelemetry.RecordAssignment("ASSIGNED");
-            dbContext.ApprovalAuditEntries.Add(ApprovalAudit(
-                approvalCase, requirement, chosen, "TASK_ASSIGNED", load, utcNow, correlationReference));
             outcomes.Add(new ApprovalAssignmentOutcome(
                 requirement.Id, task.Id, ApprovalAssignmentOutcomeKind.Assigned, chosen.User.Id, load));
         }
 
+        WriteEffects(approvalCase, rootAuditId, utcNow, correlationReference);
         return outcomes;
     }
 
@@ -100,10 +124,12 @@ public sealed class ApprovalAssignmentEngine(
         IEnumerable<ApprovalAssignmentRecord> assignmentRecords,
         DateTimeOffset occurredAt,
         string correlationReference,
+        Guid rootAuditId,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(approvalCase);
         var utcNow = occurredAt.ToUniversalTime();
+        await ApprovalAssignmentLock.AcquireAsync(dbContext, approvalCase.OrganizationId, cancellationToken);
         var loads = await CurrentLoadsAsync(approvalCase.OrganizationId, cancellationToken);
         var current = assignmentRecords
             .Where(record => record.ReleasedAt is null)
@@ -143,37 +169,22 @@ public sealed class ApprovalAssignmentEngine(
             {
                 ApprovalTelemetry.RecordUnassigned();
                 approvalCase.UnassignTask(task, utcNow, ApprovalAssignmentCause.Unassigned.ToString());
-                dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.Audit(
-                    approvalCase,
-                    "SYSTEM",
-                    Guid.Empty,
-                    "TASK_UNASSIGNED",
-                    nameof(ApprovalTask),
-                    task.Id,
-                    requirement.DecisionScopeJson,
-                    "The assignee lost eligibility and no candidate remains.",
-                    null,
-                    null,
-                    utcNow,
-                    correlationReference,
-                    requirement.Id));
                 outcomes.Add(new ApprovalAssignmentOutcome(
                     requirement.Id, task.Id, ApprovalAssignmentOutcomeKind.Unassigned, null, 0));
                 continue;
             }
 
             var load = LoadOf(loads, chosen.User.Id);
-            task.ReassignTo(chosen.User.Id);
+            approvalCase.ReassignTask(task, chosen.User.Id);
             loads[chosen.User.Id] = load + 1;
             dbContext.ApprovalAssignments.Add(Assignment(
                 approvalCase, requirement, task, chosen, load, ApprovalAssignmentCause.Reassigned, utcNow));
             ApprovalTelemetry.RecordAssignment("REASSIGNED");
-            dbContext.ApprovalAuditEntries.Add(ApprovalAudit(
-                approvalCase, requirement, chosen, "TASK_REASSIGNED", load, utcNow, correlationReference));
             outcomes.Add(new ApprovalAssignmentOutcome(
                 requirement.Id, task.Id, ApprovalAssignmentOutcomeKind.Reassigned, chosen.User.Id, load));
         }
 
+        WriteEffects(approvalCase, rootAuditId, utcNow, correlationReference);
         return outcomes;
     }
 
@@ -190,6 +201,31 @@ public sealed class ApprovalAssignmentEngine(
         return candidates.FirstOrDefault(candidate => candidate.User.Id == actorUserId);
     }
 
+    /// <summary>
+    /// Materializes every automatic effect recorded by the aggregate since the last drain as an
+    /// immutable SYSTEM audit linked to the root audit of the command that caused it (REQ-08).
+    /// </summary>
+    private void WriteEffects(
+        ApprovalCase approvalCase,
+        Guid rootAuditId,
+        DateTimeOffset occurredAt,
+        string correlationReference)
+    {
+        foreach (var effect in approvalCase.DrainAutomaticEffects())
+        {
+            var (scopeJson, requirementId) = EffectScope(approvalCase, effect);
+            dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.Effect(
+                approvalCase, rootAuditId, effect, scopeJson, occurredAt, correlationReference, requirementId));
+        }
+    }
+
+    private static (string ScopeJson, Guid? RequirementId) EffectScope(
+        ApprovalCase approvalCase,
+        ApprovalAutomaticEffect effect) =>
+        effect.Source.Type == ApprovalEntitySourceType.ApprovalRequirement
+            ? (approvalCase.RequireRequirement(effect.Source.Id).DecisionScopeJson, effect.Source.Id)
+            : ("[]", null);
+
     private async Task<IReadOnlyList<EligibleCandidate>> ResolveCandidatesAsync(
         ApprovalCase approvalCase,
         ApprovalRequirement requirement,
@@ -198,10 +234,49 @@ public sealed class ApprovalAssignmentEngine(
     {
         var descriptor = DecisionScopeDescriptor.Parse(requirement.DecisionScopeJson);
         var scope = await scopeResolver.ResolveAsync(descriptor, approvalCase.OrganizationId, cancellationToken);
-        return await eligibility.ResolveAsync(
+        var candidates = await eligibility.ResolveAsync(
             EligibilityRequest.Create(
                 requirement.Role, scope, requirement.Authority, evaluatedAt, requirement.ExcludedUserIds),
             cancellationToken);
+        if (candidates.Count == 0)
+        {
+            return candidates;
+        }
+
+        // DEC-08 / REQ-05: an active, already effective local ADMIN or AUDITOR assignment excludes
+        // the user from candidacy, assignment and new decisions regardless of scope or accumulated
+        // business roles and grants. The source of truth is queried at every evaluation.
+        var reserved = await ReservedRoleHoldersAsync(
+            approvalCase.OrganizationId,
+            candidates.Select(candidate => candidate.User.Id).Distinct().ToArray(),
+            cancellationToken);
+        return reserved.Count == 0
+            ? candidates
+            : candidates.Where(candidate => !reserved.Contains(candidate.User.Id)).ToArray();
+    }
+
+    private async Task<IReadOnlySet<Guid>> ReservedRoleHoldersAsync(
+        Guid organizationId,
+        IReadOnlyCollection<Guid> userIds,
+        CancellationToken cancellationToken)
+    {
+        if (userIds.Count == 0)
+        {
+            return new HashSet<Guid>();
+        }
+
+        var holders = await dbContext.RoleAssignments
+            .AsNoTracking()
+            .Where(assignment =>
+                userIds.Contains(assignment.UserProfileId) &&
+                assignment.Status == (int)AssignmentStatus.Active &&
+                (assignment.Role == (int)SystemRole.Admin || assignment.Role == (int)SystemRole.Auditor) &&
+                dbContext.UserProfiles.Any(profile =>
+                    profile.Id == assignment.UserProfileId && profile.OrganizationId == organizationId))
+            .Select(assignment => assignment.UserProfileId)
+            .Distinct()
+            .ToArrayAsync(cancellationToken);
+        return holders.ToHashSet();
     }
 
     /// <summary>Lowest current PENDING load, tie-broken by canonical ascending UUID (DEC-02).</summary>
@@ -255,30 +330,4 @@ public sealed class ApprovalAssignmentEngine(
             // pi-lens-ignore: lsp:CS0103
             EligibilityEvidenceJson = ApprovalEligibilityEvidence.Canonicalize(candidate.Evidence)
         };
-
-    private static ApprovalAuditEntryRecord ApprovalAudit(
-        ApprovalCase approvalCase,
-        ApprovalRequirement requirement,
-        EligibleCandidate candidate,
-        string action,
-        int load,
-        DateTimeOffset occurredAt,
-        string correlationReference) =>
-        ApprovalEvidence.Audit(
-            approvalCase,
-            "SYSTEM",
-            candidate.User.Id,
-            action,
-            nameof(ApprovalTask),
-            approvalCase.TaskFor(requirement.Id).Id,
-            requirement.DecisionScopeJson,
-            action == "TASK_ASSIGNED" ? "Deterministic lowest-load assignment." : "Reassignment after authority change.",
-            null,
-            ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
-                ("assignee_user_id", ApprovalCanonicalJson.String(candidate.User.Id)),
-                ("load", ApprovalCanonicalJson.Number(load)),
-                ("role_assignment_id", ApprovalCanonicalJson.String(candidate.RoleAssignment.Id)))),
-            occurredAt,
-            correlationReference,
-            requirement.Id);
 }

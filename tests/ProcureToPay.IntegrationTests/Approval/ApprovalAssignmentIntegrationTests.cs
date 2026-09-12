@@ -90,10 +90,8 @@ public sealed class ApprovalAssignmentIntegrationTests
             (int)ApprovalRequirementStatus.Unassigned,
             (await verification.ApprovalRequirements.SingleAsync(cancellationToken)).Status);
         Assert.Empty(await verification.ApprovalAssignments.ToArrayAsync(cancellationToken));
-        // The absence of a candidate is durable evidence, not a silent state.
-        Assert.Contains(
-            await verification.ApprovalAuditEntries.ToArrayAsync(cancellationToken),
-            entry => entry.Action == "REQUIREMENT_UNASSIGNED");
+        // The absence of a candidate is durable state (UNASSIGNED/BLOCKED) and never fabricates an
+        // assignment or a result event (REQ-04, REQ-08).
     }
 
     [Fact]
@@ -173,7 +171,8 @@ public sealed class ApprovalAssignmentIntegrationTests
         }
 
         var reconciled = await services.Reconciliation.ReconcileAsync(
-            OrganizationId, "integration-test", "correlation-reconcile", DateTimeOffset.UtcNow, cancellationToken);
+            OrganizationId, AdminId, "reconcile-revoke-1", "integration-test", "correlation-reconcile",
+            DateTimeOffset.UtcNow, cancellationToken);
         Assert.Equal(1, reconciled.Scanned);
         Assert.Equal(1, reconciled.Reassigned);
         Assert.Equal(0, reconciled.Unassigned);
@@ -195,11 +194,19 @@ public sealed class ApprovalAssignmentIntegrationTests
 
         // Idempotent: a second pass finds nothing to change and adds no history.
         var repeated = await services.Reconciliation.ReconcileAsync(
-            OrganizationId, "integration-test", "correlation-reconcile", DateTimeOffset.UtcNow, cancellationToken);
+            OrganizationId, AdminId, "reconcile-revoke-2", "integration-test", "correlation-reconcile-2",
+            DateTimeOffset.UtcNow, cancellationToken);
         Assert.Equal(1, repeated.Scanned);
         Assert.Equal(0, repeated.Reassigned);
         Assert.Equal(0, repeated.Unassigned);
         Assert.Equal(1, repeated.Unchanged);
+
+        // A request key identifies one run: repeating it never enqueues a second pass (REQ-04).
+        var replayed = await services.Reconciliation.ReconcileAsync(
+            OrganizationId, AdminId, "reconcile-revoke-1", "integration-test", "correlation-reconcile",
+            DateTimeOffset.UtcNow, cancellationToken);
+        Assert.Equal(reconciled.RunId, replayed.RunId);
+        Assert.Equal(0, replayed.Scanned);
 
         await using var final = environment.CreateContext();
         Assert.Equal(
@@ -231,7 +238,8 @@ public sealed class ApprovalAssignmentIntegrationTests
         }
 
         var reconciled = await services.Reconciliation.ReconcileAsync(
-            OrganizationId, "integration-test", "correlation-release", DateTimeOffset.UtcNow, cancellationToken);
+            OrganizationId, AdminId, "reconcile-release-1", "integration-test", "correlation-release",
+            DateTimeOffset.UtcNow, cancellationToken);
 
         Assert.Equal(1, reconciled.Unassigned);
         await using var verification = environment.CreateContext();
@@ -252,11 +260,17 @@ public sealed class ApprovalAssignmentIntegrationTests
         Assert.Equal(FirstApprover, released.AssigneeUserId);
         Assert.NotNull(released.ReleasedAt);
         Assert.DoesNotContain(history, record => record.ReleasedAt is null);
-        Assert.Contains(
-            await verification.ApprovalAuditEntries
-                .Where(record => record.CaseId == outcome.CaseId)
-                .ToArrayAsync(cancellationToken),
-            entry => entry.Action == "TASK_UNASSIGNED");
+        // The release is an automatic effect: SYSTEM/APPROVAL_WORKFLOW, linked to the run root and
+        // with its own effect key (REQ-08, CA-04).
+        var audit = await verification.ApprovalAuditEntries
+            .Where(record => record.CaseId == outcome.CaseId)
+            .ToArrayAsync(cancellationToken);
+        var effect = Assert.Single(audit, entry => entry.Action == "TASK_RELEASED");
+        Assert.Equal("SYSTEM", effect.ActorType);
+        Assert.Equal(ApprovalSystemActors.ApprovalWorkflow, effect.ActorSystemId);
+        Assert.Equal("APPROVAL", effect.CausedByAuditStream);
+        Assert.NotNull(effect.CausedByAuditId);
+        Assert.NotNull(effect.AutomaticEffectKey);
     }
 
     [Fact]
@@ -275,6 +289,91 @@ public sealed class ApprovalAssignmentIntegrationTests
         await using var verification = environment.CreateContext();
         Assert.Equal(0, await verification.ApprovalCases.CountAsync(cancellationToken));
         Assert.Equal(0, await verification.ApprovalAssignments.CountAsync(cancellationToken));
+    }
+
+    [Fact]
+    public async Task Reconciliation_lease_is_fenced_and_reclaimed_reusing_run_root_and_cursor()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await SqlEnvironment.StartAsync(cancellationToken);
+        await environment.SeedOrganizationAsync(cancellationToken);
+        await environment.SeedApproverAsync(FirstApprover, "approver-a", cancellationToken);
+        var services = environment.CreateServices(new DepartmentAdapter(DepartmentId, 1));
+        var submission = await services.Submission.SubmitAsync(
+            Command("submission-lease"), DateTimeOffset.UtcNow, cancellationToken);
+
+        // The approver loses the role, so the run has real work to do.
+        await using (var revoking = environment.CreateContext())
+        {
+            var assignment = await revoking.RoleAssignments.SingleAsync(cancellationToken);
+            assignment.Status = (int)AssignmentStatus.Revoked;
+            assignment.RevokedAt = AssignedAt;
+            assignment.RevokedBy = AdminId;
+            await revoking.SaveChangesAsync(cancellationToken);
+        }
+
+        var requestedAt = DateTimeOffset.UtcNow;
+        var runId = await services.Reconciliation.RequestAdminAsync(
+            OrganizationId, AdminId, "reconcile-lease-1", "correlation-lease", requestedAt, cancellationToken);
+        Guid rootAuditId;
+        await using (var seeding = environment.CreateContext())
+        {
+            var run = await seeding.ApprovalReconciliationRuns.SingleAsync(
+                record => record.Id == runId, cancellationToken);
+            rootAuditId = run.RootAuditId;
+            // Another instance holds a live lease: this holder must not claim nor change anything.
+            run.Status = ApprovalReconciliationCodes.StatusRunning;
+            run.LeaseOwner = "other-instance";
+            run.LockedUntil = requestedAt.AddMinutes(1);
+            run.FencingToken = 7;
+            await seeding.SaveChangesAsync(cancellationToken);
+        }
+
+        var blocked = await services.Reconciliation.ProcessAsync(
+            runId, "this-instance", "correlation-lease", requestedAt, cancellationToken);
+        Assert.False(blocked.Completed);
+        Assert.Equal(0, blocked.Scanned);
+        await using (var verification = environment.CreateContext())
+        {
+            var run = await verification.ApprovalReconciliationRuns
+                .AsNoTracking()
+                .SingleAsync(record => record.Id == runId, cancellationToken);
+            Assert.Equal("other-instance", run.LeaseOwner);
+            Assert.Equal(7, run.FencingToken);
+            Assert.Null(run.CompletedAt);
+        }
+
+        // The lease expires without completing: another instance reclaims the same run, root and cursor.
+        await using (var expiring = environment.CreateContext())
+        {
+            var run = await expiring.ApprovalReconciliationRuns.SingleAsync(
+                record => record.Id == runId, cancellationToken);
+            run.LockedUntil = requestedAt;
+            await expiring.SaveChangesAsync(cancellationToken);
+        }
+
+        var reclaimed = await services.Reconciliation.ProcessAsync(
+            runId, "this-instance", "correlation-lease", requestedAt.AddMinutes(2), cancellationToken);
+        Assert.True(reclaimed.Completed);
+        Assert.Equal(1, reclaimed.Scanned);
+        Assert.Equal(1, reclaimed.Unassigned);
+        await using (var verification = environment.CreateContext())
+        {
+            var run = await verification.ApprovalReconciliationRuns
+                .AsNoTracking()
+                .SingleAsync(record => record.Id == runId, cancellationToken);
+            Assert.Equal(ApprovalReconciliationCodes.StatusCompleted, run.Status);
+            Assert.Equal(rootAuditId, run.RootAuditId);
+            Assert.Equal(8, run.FencingToken);
+            Assert.NotNull(run.CompletedAt);
+            Assert.Equal(submission.CaseId, run.CursorCaseId);
+        }
+
+        // A stale holder cannot advance or reopen the completed run.
+        var stale = await services.Reconciliation.ProcessAsync(
+            runId, "other-instance", "correlation-lease", requestedAt.AddMinutes(3), cancellationToken);
+        Assert.False(stale.Completed);
+        Assert.Equal(0, stale.Scanned);
     }
 
     private static async Task<Guid?> AssigneeOfAsync(
@@ -442,6 +541,7 @@ public sealed class ApprovalAssignmentIntegrationTests
                 })
                 .Build();
             var allowlist = new ApprovalWorkloadAllowlist(configuration);
+            var ownerWorkloads = new ApprovalOwnerWorkloadRegistry(configuration, allowlist);
             var context = CreateContext();
             var assignmentEngine = new ApprovalAssignmentEngine(
                 context, new OrganizationEligibilityService(context), new ApprovalScopeResolver(context));
@@ -449,6 +549,7 @@ public sealed class ApprovalAssignmentIntegrationTests
                 new ApprovalSubmissionService(
                     context,
                     new ApprovalSubmissionAdapterRegistry([adapter]),
+                    ownerWorkloads,
                     allowlist,
                     assignmentEngine,
                     loggerFactory.CreateLogger<ApprovalSubmissionService>()),

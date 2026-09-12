@@ -90,6 +90,7 @@ public static class ApprovalLimits
 
     private static readonly Regex KeyPattern = new("^[A-Za-z0-9._:-]{1,128}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex CodePattern = new("^[A-Z][A-Z0-9_.:-]{0,127}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex CorrelationPattern = new("^[A-Za-z0-9._:-]{1,120}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public static string RequireKey(string? value, string field)
     {
@@ -130,6 +131,21 @@ public static class ApprovalLimits
         return normalized;
     }
 
+    /// <summary>
+    /// <c>correlation_reference</c> is opaque and server-projected: 1-120 ASCII characters of
+    /// <c>[A-Za-z0-9._:-]</c>. It is never an identity, idempotency key or cause (REQ-08).
+    /// </summary>
+    public static string RequireCorrelation(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || !CorrelationPattern.IsMatch(value))
+        {
+            throw new DomainValidationException(
+                "correlation_reference must contain 1-120 characters of [A-Za-z0-9._:-].");
+        }
+
+        return value;
+    }
+
     public static string RequireSha256(string? value, string field)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Length != 64 ||
@@ -140,8 +156,6 @@ public static class ApprovalLimits
 
         return value;
     }
-
-    public static int ScalarLength(string value) => value.EnumerateRunes().Count();
 }
 
 /// <summary>Immutable target identity: type, id, version and material snapshot digest (REQ-02).</summary>

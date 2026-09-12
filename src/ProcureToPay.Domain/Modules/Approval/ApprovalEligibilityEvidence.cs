@@ -5,7 +5,7 @@ namespace ProcureToPay.Domain.Modules.Approval;
 /// <summary>
 /// Canonical form of <see cref="EligibilityEvidence"/> (SPEC 03 REQ-08, NFR-01): the same
 /// resolver inputs and clock must produce the same bytes, so the evidence is serialized with
-/// <c>approval-canonical-json/v1</c> instead of a reflection-based serializer whose set order
+/// <c>approval-canonical-json/v2</c> instead of a reflection-based serializer whose set order
 /// is not contractual.
 /// </summary>
 public static class ApprovalEligibilityEvidence

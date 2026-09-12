@@ -470,55 +470,12 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
         }
 
         /// <inheritdoc />
-        protected override void Down(MigrationBuilder migrationBuilder)
+protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "ApprovalAssignments",
-                schema: "Approval");
-
-            migrationBuilder.DropTable(
-                name: "ApprovalAuditEntries",
-                schema: "Approval");
-
-            migrationBuilder.DropTable(
-                name: "ApprovalCases",
-                schema: "Approval");
-
-            migrationBuilder.DropTable(
-                name: "ApprovalDecisions",
-                schema: "Approval");
-
-            migrationBuilder.DropTable(
-                name: "ApprovalDecisionTargets",
-                schema: "Approval");
-
-            migrationBuilder.DropTable(
-                name: "ApprovalOutboxEvents",
-                schema: "Approval");
-
-            migrationBuilder.DropTable(
-                name: "ApprovalPrerequisites",
-                schema: "Approval");
-
-            migrationBuilder.DropTable(
-                name: "ApprovalPrerequisiteSignals",
-                schema: "Approval");
-
-            migrationBuilder.DropTable(
-                name: "ApprovalRequirements",
-                schema: "Approval");
-
-            migrationBuilder.DropTable(
-                name: "ApprovalSubmissionReservations",
-                schema: "Approval");
-
-            migrationBuilder.DropTable(
-                name: "ApprovalTasks",
-                schema: "Approval");
-
-            migrationBuilder.DropTable(
-                name: "ApprovalWorkflowStates",
-                schema: "Approval");
+            // SPEC 03 forbids destructive down migrations: reverting the application keeps the
+            // Approval schema and its history, so a downgrade that would drop data is not supported.
+            throw new NotSupportedException(
+                "The Approval schema has no destructive downgrade; revert the application and keep the schema.");
         }
     }
 }

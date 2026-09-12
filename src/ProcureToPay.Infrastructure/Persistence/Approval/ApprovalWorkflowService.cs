@@ -82,7 +82,9 @@ public sealed record ApprovalWorkloadOutcome(
 
 /// <summary>
 /// Workload-driven transitions: prerequisite signals and owner cancellation (REQ-03, REQ-07).
-/// Every transition writes audit and one outbox event per target in the same transaction.
+/// A signal requires the exact persisted owner identity <c>issuer + client_id</c>; every
+/// transition writes its root audit, the SYSTEM effects it caused and one outbox event per target
+/// of the entity that really transitioned, all in the same transaction (REQ-08).
 /// </summary>
 public sealed class ApprovalWorkflowService(
     ProcureToPayDbContext dbContext,
@@ -99,6 +101,7 @@ public sealed class ApprovalWorkflowService(
         ArgumentNullException.ThrowIfNull(command);
         allowlist.EnsureAllowed(command.Workload);
         var signalKey = ApprovalLimits.RequireKey(command.SignalKey, "signal_key");
+        var correlationReference = ApprovalLimits.RequireCorrelation(command.CorrelationReference);
         var evidenceDigest = command.EvidenceDigest is null
             ? null
             : ApprovalLimits.RequireSha256(command.EvidenceDigest, "signal evidence digest");
@@ -120,46 +123,47 @@ public sealed class ApprovalWorkflowService(
             .ToArrayAsync(cancellationToken);
         var prerequisiteRecord = prerequisiteRecords.SingleOrDefault(record => record.Id == prerequisiteId)
             ?? throw new DomainNotFoundException("The external prerequisite is not visible.");
-        EnsureOwner(command.Workload, prerequisiteRecord.OwnerAdapterId);
+        var ownerWorkload = new ApprovalWorkloadIdentity(
+            prerequisiteRecord.OwnerWorkloadIssuer, prerequisiteRecord.OwnerWorkloadClientId);
+        // Exact issuer + client_id match: sharing only one of them or the adapter id is not enough
+        // and returns 403 (REQ-03, DEC-11).
+        EnsureOwner(command.Workload, ownerWorkload);
 
-        var exitingSignal = await dbContext.ApprovalPrerequisiteSignals
+        var existingSignal = await dbContext.ApprovalPrerequisiteSignals
             .SingleOrDefaultAsync(
                 record => record.OrganizationId == caseRecord.OrganizationId &&
                           record.PrerequisiteId == prerequisiteId &&
                           record.SignalKey == signalKey,
                 cancellationToken);
 
-        var prerequisiteForFingerprint = ApprovalCaseHydrator.Hydrate(
-                caseRecord,
-                [],
-                prerequisiteRecords,
-                [])
-            .RequirePrerequisite(prerequisiteId);
         // Expected version comes from the command, not from the current row: a replay must
         // recompute the same fingerprint after the prerequisite was already signalled.
         var fingerprint = ApprovalFingerprints.SignalFingerprint(
             prerequisiteId,
             command.ExpectedVersion,
-            command.Workload,
+            ownerWorkload,
             command.Satisfied,
             command.EvidenceReference,
             evidenceDigest,
             signalKey);
 
-        if (exitingSignal is not null)
+        if (existingSignal is not null)
         {
-            if (!string.Equals(exitingSignal.SignalFingerprint, fingerprint, StringComparison.Ordinal))
+            if (!string.Equals(existingSignal.SignalFingerprint, fingerprint, StringComparison.Ordinal))
             {
                 ApprovalTelemetry.RecordConflict("SIGNAL");
                 throw new DomainConflictException("The signal key was already used with different content.");
             }
+
+            var replayedEvents = await OutboxIdsForCommandAsync(
+                caseRecord.OrganizationId, existingSignal.Id, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return new ApprovalWorkloadOutcome(
                 caseRecord.Id,
                 ((ApprovalCaseStatus)caseRecord.Status).ToString().ToUpperInvariant(),
                 caseRecord.Version,
                 Replayed: true,
-                []);
+                replayedEvents);
         }
 
         var requirementRecords = await dbContext.ApprovalRequirements
@@ -172,18 +176,34 @@ public sealed class ApprovalWorkflowService(
             caseRecord, requirementRecords, prerequisiteRecords, taskRecords);
         var prerequisite = approvalCase.RequirePrerequisite(prerequisiteId);
 
-        approvalCase.ApplyPrerequisiteSignal(prerequisite, command.Satisfied, signalKey, fingerprint, utcNow);
+        var rootAudit = ApprovalEvidence.Root(
+            approvalCase,
+            ApprovalAuditActor.Workload(command.Workload),
+            command.Satisfied ? "PREREQUISITE_SATISFIED" : "PREREQUISITE_FAILED",
+            "PREREQUISITE",
+            prerequisiteId,
+            "[]",
+            $"Signal {signalKey}",
+            null,
+            null,
+            utcNow,
+            correlationReference);
+        dbContext.ApprovalAuditEntries.Add(rootAudit);
+
+        approvalCase.ApplyPrerequisiteSignal(
+            prerequisite, command.Satisfied, signalKey, fingerprint, utcNow);
 
         // A satisfied prerequisite activates its dependents; they are routed in the same
         // transaction so no requirement is left unrouted after the signal (REQ-04).
         await assignmentEngine.AssignUnassignedAsync(
-            approvalCase, utcNow, command.CorrelationReference, cancellationToken);
+            approvalCase, utcNow, correlationReference, rootAudit.Id, cancellationToken);
 
         ApprovalStateSync.Apply(approvalCase, caseRecord, requirementRecords, taskRecords, prerequisiteRecords);
 
+        var signalRecordId = Guid.NewGuid();
         dbContext.ApprovalPrerequisiteSignals.Add(new ApprovalPrerequisiteSignalRecord
         {
-            Id = Guid.NewGuid(),
+            Id = signalRecordId,
             OrganizationId = caseRecord.OrganizationId,
             CaseId = caseId,
             PrerequisiteId = prerequisiteId,
@@ -195,38 +215,26 @@ public sealed class ApprovalWorkflowService(
             ActorId = Guid.Empty,
             EvidenceReference = command.EvidenceReference,
             EvidenceDigest = evidenceDigest,
-            CorrelationReference = command.CorrelationReference
+            CorrelationReference = correlationReference
         });
 
+        var resultSource = approvalCase.SourceOf(prerequisite);
         var outboxIds = new List<Guid>();
         foreach (var target in prerequisite.Targets)
         {
             var outbox = ApprovalEvidence.Outbox(
                 approvalCase,
-                null,
+                resultSource,
                 target,
                 command.Satisfied ? "SATISFIED" : "FAILED",
                 null,
                 null,
+                signalRecordId,
                 utcNow,
-                command.CorrelationReference);
+                correlationReference);
             dbContext.ApprovalOutboxEvents.Add(outbox);
             outboxIds.Add(outbox.Id);
         }
-
-        dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.Audit(
-            approvalCase,
-            "WORKLOAD",
-            Guid.Empty,
-            command.Satisfied ? "PREREQUISITE_SATISFIED" : "PREREQUISITE_FAILED",
-            nameof(ExternalPrerequisite),
-            prerequisiteId,
-            "[]",
-            $"Signal {signalKey}",
-            null,
-            null,
-            utcNow,
-            command.CorrelationReference));
 
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -256,6 +264,7 @@ public sealed class ApprovalWorkflowService(
     {
         allowlist.EnsureAllowed(workload);
         var cancellationReason = ApprovalLimits.RequireReason(reason);
+        var correlation = ApprovalLimits.RequireCorrelation(correlationReference);
         var utcNow = occurredAt.ToUniversalTime();
 
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
@@ -287,32 +296,9 @@ public sealed class ApprovalWorkflowService(
         var approvalCase = ApprovalCaseHydrator.Hydrate(
             caseRecord, requirementRecords, prerequisiteRecords, taskRecords);
 
-        approvalCase.Cancel(cancellationReason, utcNow);
-        ApprovalStateSync.Apply(approvalCase, caseRecord, requirementRecords, taskRecords, prerequisiteRecords);
-
-        var outboxIds = new List<Guid>();
-        foreach (var requirement in approvalCase.Requirements)
-        {
-            foreach (var target in requirement.Targets)
-            {
-                var outbox = ApprovalEvidence.Outbox(
-                    approvalCase,
-                    requirement,
-                    target,
-                    "CANCELLED",
-                    null,
-                    null,
-                    utcNow,
-                    correlationReference);
-                dbContext.ApprovalOutboxEvents.Add(outbox);
-                outboxIds.Add(outbox.Id);
-            }
-        }
-
-        dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.Audit(
+        var rootAudit = ApprovalEvidence.Root(
             approvalCase,
-            "WORKLOAD",
-            Guid.Empty,
+            ApprovalAuditActor.Workload(workload),
             "CASE_CANCELLED",
             nameof(ApprovalCase),
             caseId,
@@ -321,7 +307,31 @@ public sealed class ApprovalWorkflowService(
             null,
             null,
             utcNow,
-            correlationReference));
+            correlation);
+        dbContext.ApprovalAuditEntries.Add(rootAudit);
+
+        approvalCase.Cancel(cancellationReason, utcNow);
+        ApprovalStateSync.Apply(approvalCase, caseRecord, requirementRecords, taskRecords, prerequisiteRecords);
+
+        // Only entities that really transitioned publish CANCELLED; terminal entities stay intact
+        // and prerequisites are cancelled only while WAITING (REQ-07, REQ-08, DEC-07).
+        var outboxIds = new List<Guid>();
+        foreach (var effect in approvalCase.DrainAutomaticEffects())
+        {
+            var (scopeJson, requirementId) = EffectScope(approvalCase, effect);
+            dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.Effect(
+                approvalCase, rootAudit.Id, effect, scopeJson, utcNow, correlation, requirementId));
+            if (effect.Action == "REQUIREMENT_CANCELLED")
+            {
+                var requirement = approvalCase.RequireRequirement(effect.TargetId);
+                AddCancellationEvents(approvalCase, approvalCase.SourceOf(requirement), requirement.Targets, utcNow, correlation, outboxIds);
+            }
+            else if (effect.Action == "PREREQUISITE_CANCELLED")
+            {
+                var prerequisite = approvalCase.RequirePrerequisite(effect.TargetId);
+                AddCancellationEvents(approvalCase, approvalCase.SourceOf(prerequisite), prerequisite.Targets, utcNow, correlation, outboxIds);
+            }
+        }
 
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -336,9 +346,55 @@ public sealed class ApprovalWorkflowService(
             outboxIds);
     }
 
-    private static void EnsureOwner(ApprovalWorkloadIdentity workload, string ownerAdapterId)
+    private void AddCancellationEvents(
+        ApprovalCase approvalCase,
+        ApprovalEntitySource source,
+        IEnumerable<ApprovalTarget> targets,
+        DateTimeOffset occurredAt,
+        string correlationReference,
+        List<Guid> outboxIds)
     {
-        if (!string.Equals(workload.ClientId, ownerAdapterId, StringComparison.Ordinal))
+        foreach (var target in targets)
+        {
+            var outbox = ApprovalEvidence.Outbox(
+                approvalCase,
+                source,
+                target,
+                "CANCELLED",
+                null,
+                null,
+                sourceCommandId: null,
+                occurredAt,
+                correlationReference);
+            dbContext.ApprovalOutboxEvents.Add(outbox);
+            outboxIds.Add(outbox.Id);
+        }
+    }
+
+    private static (string ScopeJson, Guid? RequirementId) EffectScope(
+        ApprovalCase approvalCase,
+        ApprovalAutomaticEffect effect) =>
+        effect.Source.Type == ApprovalEntitySourceType.ApprovalRequirement
+            ? (approvalCase.RequireRequirement(effect.Source.Id).DecisionScopeJson, effect.Source.Id)
+            : ("[]", null);
+
+    private async Task<IReadOnlyList<Guid>> OutboxIdsForCommandAsync(
+        Guid organizationId,
+        Guid sourceCommandId,
+        CancellationToken cancellationToken) =>
+        await dbContext.ApprovalOutboxEvents
+            .AsNoTracking()
+            .Where(record => record.OrganizationId == organizationId &&
+                             record.SourceCommandId == sourceCommandId)
+            .OrderBy(record => record.CreatedAt)
+            .ThenBy(record => record.Id)
+            .Select(record => record.Id)
+            .ToArrayAsync(cancellationToken);
+
+    private static void EnsureOwner(ApprovalWorkloadIdentity workload, ApprovalWorkloadIdentity owner)
+    {
+        if (!string.Equals(workload.Issuer, owner.Issuer, StringComparison.Ordinal) ||
+            !string.Equals(workload.ClientId, owner.ClientId, StringComparison.Ordinal))
         {
             throw new DomainForbiddenException(
                 "Only the workload that owns the prerequisite can signal it.");

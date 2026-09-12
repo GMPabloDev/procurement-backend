@@ -92,8 +92,10 @@ public sealed class ApprovalOperationsE2ETests
             Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
         }
 
-        using (var forbidden = await nonAdmin.PostAsync(
-            "/api/v1/approval/operations/reconciliation", null, cancellationToken))
+        using (var forbidden = await nonAdmin.PostAsJsonAsync(
+            "/api/v1/approval/operations/reconciliation",
+            new { reconciliationKey = "reconcile-forbidden" },
+            cancellationToken))
         {
             Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
         }
@@ -109,8 +111,10 @@ public sealed class ApprovalOperationsE2ETests
             Assert.Equal(LineId, requirement.GetProperty("targets")[0].GetProperty("id").GetGuid());
         }
 
-        using (var reconciled = await admin.PostAsync(
-            "/api/v1/approval/operations/reconciliation", null, cancellationToken))
+        using (var reconciled = await admin.PostAsJsonAsync(
+            "/api/v1/approval/operations/reconciliation",
+            new { reconciliationKey = "reconcile-unassigned-1" },
+            cancellationToken))
         {
             Assert.Equal(HttpStatusCode.OK, reconciled.StatusCode);
             var outcome = await reconciled.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
@@ -182,8 +186,10 @@ public sealed class ApprovalOperationsE2ETests
             await revoking.SaveChangesAsync(cancellationToken);
         }
 
-        using (var reconciled = await admin.PostAsync(
-            "/api/v1/approval/operations/reconciliation", null, cancellationToken))
+        using (var reconciled = await admin.PostAsJsonAsync(
+            "/api/v1/approval/operations/reconciliation",
+            new { reconciliationKey = "reconcile-sod-1" },
+            cancellationToken))
         {
             Assert.Equal(HttpStatusCode.OK, reconciled.StatusCode);
             var outcome = await reconciled.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
@@ -428,6 +434,9 @@ public sealed class ApprovalOperationsE2ETests
         using var outsider = factory.CreateClient();
         outsider.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer", ApprovalApiFactory.CreateUserToken("outsider-1"));
+        using var admin = factory.CreateClient();
+        admin.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", ApprovalApiFactory.CreateUserToken("admin-1"));
 
         Guid caseId;
         using (var submitted = await workload.PostAsJsonAsync(
@@ -560,6 +569,33 @@ public sealed class ApprovalOperationsE2ETests
             Assert.Equal("APPROVE", entry.GetProperty("action").GetString());
             Assert.Equal(approverId, entry.GetProperty("actorUserId").GetGuid());
             Assert.Equal(1, entry.GetProperty("targetCount").GetInt32());
+        }
+
+        // AUDITOR reads the audit trail: the closed actor union and the causal chain of effects.
+        using (var audit = await auditor.GetAsync(
+            $"/api/v1/approval/cases/{caseId}/audit", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.OK, audit.StatusCode);
+            var entries = (await audit.Content.ReadFromJsonAsync<JsonElement>(cancellationToken))
+                .EnumerateArray().ToArray();
+            var root = Assert.Single(entries, entry => entry.GetProperty("action").GetString() == "CASE_SUBMITTED");
+            Assert.Equal("WORKLOAD", root.GetProperty("actorType").GetString());
+            Assert.False(string.IsNullOrEmpty(root.GetProperty("actorWorkloadIssuer").GetString()));
+            Assert.False(string.IsNullOrEmpty(root.GetProperty("actorWorkloadClientId").GetString()));
+            Assert.Equal(JsonValueKind.Null, root.GetProperty("causedByAuditId").ValueKind);
+            var effect = Assert.Single(entries, entry => entry.GetProperty("action").GetString() == "TASK_ASSIGNED");
+            Assert.Equal("SYSTEM", effect.GetProperty("actorType").GetString());
+            Assert.Equal("APPROVAL_WORKFLOW", effect.GetProperty("actorSystemId").GetString());
+            Assert.Equal("APPROVAL", effect.GetProperty("causedByAuditStream").GetString());
+            Assert.Equal(root.GetProperty("auditId").GetGuid(), effect.GetProperty("causedByAuditId").GetGuid());
+            Assert.False(string.IsNullOrEmpty(effect.GetProperty("automaticEffectKey").GetString()));
+        }
+
+        // ADMIN without AUDITOR restores operation but receives no organizational evidence reads.
+        using (var forbidden = await admin.GetAsync(
+            $"/api/v1/approval/cases/{caseId}/decisions", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
         }
     }
 
@@ -778,14 +814,16 @@ public sealed class ApprovalOperationsE2ETests
                 Id = eventId,
                 CaseId = Guid.NewGuid(),
                 OrganizationId = OrganizationId,
-                RequirementId = null,
+                ResultSourceType = "APPROVAL_REQUIREMENT",
+                ResultSourceId = Guid.NewGuid(),
+                ResultSourceKey = "WR-00000000000000000000000000000000",
                 TargetType = "LINE",
                 TargetId = LineId,
                 TargetVersion = 1,
                 MaterialSnapshotDigest = new string('c', 64),
                 Result = "APPROVED",
                 ContractVersion = ApprovalOutboxPolicy.ContractVersion,
-                PayloadJson = "{\"contract_version\":\"approval-result/v1\",\"event_id\":\"" + eventId + "\"}",
+                PayloadJson = "{\"contract_version\":\"approval-result/v2\",\"event_id\":\"" + eventId + "\"}",
                 State = (int)ApprovalOutboxState.DeadLetter,
                 Attempts = ApprovalOutboxPolicy.MaxAttempts,
                 NextAttemptAt = AssignedAt,

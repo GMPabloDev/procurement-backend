@@ -23,13 +23,17 @@ public sealed record ApprovalSubmissionCommand(
 public sealed record ApprovalSubmissionOutcome(Guid CaseId, string Status, int Version, bool Replayed);
 
 /// <summary>
-/// Idempotent, fail-closed submission ingestion (REQ-01): exactly-one adapter, allowlisted
-/// workload, canonical fingerprint, reservation unique per workload scope and case creation
-/// with its activation graph in one transaction.
+/// Idempotent, fail-closed submission ingestion (REQ-01, REQ-03): exactly-one adapter, allowlisted
+/// workload, exact-one owner workload for every prerequisite resolved before any write, canonical
+/// fingerprint, reservation unique per workload scope and one transaction that serializes
+/// selection, load reservation and assignment (REQ-04) while the submission root audit and the
+/// automatic activation/assignment effects commit with the case graph (REQ-08).
 /// </summary>
 public sealed class ApprovalSubmissionService(
     ProcureToPayDbContext dbContext,
     IApprovalSubmissionAdapterRegistry adapters,
+    // pi-lens-ignore: lsp:CS0246
+    IApprovalOwnerWorkloadRegistry ownerWorkloads,
     ApprovalWorkloadAllowlist allowlist,
     ApprovalAssignmentEngine assignmentEngine,
     ILogger<ApprovalSubmissionService> logger)
@@ -42,6 +46,8 @@ public sealed class ApprovalSubmissionService(
         ArgumentNullException.ThrowIfNull(command);
         allowlist.EnsureAllowed(command.Workload);
         _ = ApprovalLimits.RequireKey(command.SubmissionKey, "submission_key");
+        // pi-lens-ignore: lsp:CS0117
+        var correlationReference = ApprovalLimits.RequireCorrelation(command.CorrelationReference);
         if (command.OrganizationId == Guid.Empty)
         {
             throw new DomainValidationException("A submission requires an organization.");
@@ -60,7 +66,7 @@ public sealed class ApprovalSubmissionService(
                 command.SubmissionKey,
                 command.RequesterId,
                 command.OriginatorId,
-                command.CorrelationReference),
+                correlationReference),
             cancellationToken);
         ApprovalSubmissionRules.Validate(submission, descriptor, command.Workload);
         if (!string.Equals(submission.SubmissionKey, command.SubmissionKey, StringComparison.Ordinal))
@@ -71,10 +77,28 @@ public sealed class ApprovalSubmissionService(
         var fingerprint = ApprovalSubmissionRules.SubmissionFingerprint(submission, descriptor, command.Workload);
         var utcNow = occurredAt.ToUniversalTime();
 
+        // Owner adapter/version resolves exact-one to an allowlisted workload identity before the
+        // case exists; absence, ambiguity or a non-allowlisted match fails closed (REQ-03, DEC-11).
+        var prerequisiteOwners = new Dictionary<string, ApprovalWorkloadIdentity>(StringComparer.Ordinal);
+        foreach (var prerequisite in submission.Prerequisites)
+        {
+            prerequisiteOwners[prerequisite.Key] = ownerWorkloads.ResolveExactlyOne(
+                prerequisite.OwnerAdapterId, prerequisite.OwnerAdapterVersion);
+        }
+
         var reservation = await FindReservationAsync(command, cancellationToken);
         if (reservation is not null)
         {
             return await ReplayAsync(reservation, fingerprint, cancellationToken);
+        }
+
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.ReadCommitted, cancellationToken);
+        var concurrent = await FindReservationAsync(command, cancellationToken);
+        if (concurrent is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return await ReplayAsync(concurrent, fingerprint, cancellationToken);
         }
 
         var approvalCase = ApprovalCase.Create(
@@ -82,31 +106,49 @@ public sealed class ApprovalSubmissionService(
             submission,
             descriptor,
             command.Workload,
+            prerequisiteOwners,
             fingerprint,
             utcNow,
-            command.CorrelationReference);
+            correlationReference);
 
-        // Requirements activated by the graph are routed in the same transaction (REQ-04).
-        await assignmentEngine.AssignUnassignedAsync(
-            approvalCase, utcNow, command.CorrelationReference, cancellationToken);
+        // The root audit of the command exists before its automatic effects reference it (REQ-08).
+        var rootAudit = ApprovalEvidence.Root(
+            approvalCase,
+            // pi-lens-ignore: lsp:CS0103
+            ApprovalAuditActor.Workload(command.Workload),
+            "CASE_SUBMITTED",
+            nameof(ApprovalCase),
+            approvalCase.Id,
+            "[]",
+            $"Submission {submission.Operation} for {submission.SubjectType}",
+            null,
+            null,
+            utcNow,
+            correlationReference);
+        dbContext.ApprovalAuditEntries.Add(rootAudit);
 
-        PersistNewCase(approvalCase, submission, command, fingerprint, utcNow);
         try
         {
-            // The unique reservation index serializes concurrent identical submissions without a
-            // long serializable transaction (REQ-10). SaveChanges is atomic on its own.
+            // Requirements activated by the graph are routed before the rows are materialized, so the
+            // persisted task snapshot already carries the chosen assignee and load (REQ-04) and the
+            // automatic effects commit with the case graph and the root audit (REQ-08).
+            await assignmentEngine.AssignUnassignedAsync(
+                approvalCase, utcNow, correlationReference, rootAudit.Id, cancellationToken);
+            PersistNewCase(approvalCase, submission, command, fingerprint, utcNow);
             await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
         catch (DbUpdateException)
         {
+            await transaction.RollbackAsync(cancellationToken);
             dbContext.ChangeTracker.Clear();
-            var concurrent = await FindReservationAsync(command, cancellationToken);
-            if (concurrent is null)
+            var winner = await FindReservationAsync(command, cancellationToken);
+            if (winner is null)
             {
                 throw;
             }
 
-            return await ReplayAsync(concurrent, fingerprint, cancellationToken);
+            return await ReplayAsync(winner, fingerprint, cancellationToken);
         }
 
         logger.LogInformation(
@@ -220,6 +262,10 @@ public sealed class ApprovalSubmissionService(
                 Key = prerequisite.Key,
                 OwnerAdapterId = prerequisite.OwnerAdapterId,
                 OwnerAdapterVersion = prerequisite.OwnerAdapterVersion,
+                // pi-lens-ignore: lsp:CS1061
+                OwnerWorkloadIssuer = prerequisite.OwnerWorkloadIssuer,
+                // pi-lens-ignore: lsp:CS1061
+                OwnerWorkloadClientId = prerequisite.OwnerWorkloadClientId,
                 SourceControlType = prerequisite.SourceControlType,
                 SourceControlDigest = prerequisite.SourceControlDigest,
                 ParametersJson = prerequisite.ParametersJson,
@@ -256,19 +302,5 @@ public sealed class ApprovalSubmissionService(
             CaseId = approvalCase.Id,
             CreatedAt = occurredAt
         });
-
-        dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.Audit(
-            approvalCase,
-            "WORKLOAD",
-            Guid.Empty,
-            "CASE_SUBMITTED",
-            nameof(ApprovalCase),
-            approvalCase.Id,
-            "[]",
-            $"Submission {submission.Operation} for {submission.SubjectType}",
-            null,
-            null,
-            occurredAt,
-            command.CorrelationReference));
     }
 }

@@ -3,7 +3,7 @@ using ProcureToPay.Domain.SharedKernel;
 
 namespace ProcureToPay.Domain.Modules.Approval;
 
-public static class ApprovalFingerprints
+public static partial class ApprovalFingerprints
 {
     public static string DecisionFingerprint(
         Guid caseId,
@@ -328,7 +328,8 @@ public sealed class ApprovalDecision
 
 public static class ApprovalOutboxPolicy
 {
-    public const string ContractVersion = "approval-result/v1";
+    /// <summary>Only <c>approval-result/v2</c> is publishable by this revision (REQ-08).</summary>
+    public const string ContractVersion = "approval-result/v2";
     public const int MaxAttempts = 10;
 
     public static TimeSpan DelayForAttempt(int attempt) => attempt switch
@@ -347,6 +348,28 @@ public static class ApprovalOutboxPolicy
             throw new DomainValidationException("The outbox result code is invalid.");
         }
     }
+
+    /// <summary>
+    /// <c>result_source.type</c> and <c>result</c> must form a valid combination (REQ-08):
+    /// requirements admit APPROVED/REJECTED/CHANGES_REQUESTED/CANCELLED and prerequisites admit
+    /// SATISFIED/FAILED/CANCELLED.
+    /// </summary>
+    public static void ValidateResultCombination(ApprovalEntitySourceType type, string result)
+    {
+        ValidateResultCode(result);
+        var valid = type switch
+        {
+            ApprovalEntitySourceType.ApprovalRequirement =>
+                result is "APPROVED" or "REJECTED" or "CHANGES_REQUESTED" or "CANCELLED",
+            ApprovalEntitySourceType.ExternalPrerequisite => result is "SATISFIED" or "FAILED" or "CANCELLED",
+            _ => false
+        };
+        if (!valid)
+        {
+            throw new DomainValidationException(
+                "The result source type and result code are not a valid combination.");
+        }
+    }
 }
 
 public sealed class ApprovalOutboxEvent
@@ -355,22 +378,24 @@ public sealed class ApprovalOutboxEvent
         Guid id,
         Guid caseId,
         Guid organizationId,
-        Guid? requirementId,
+        ApprovalEntitySource resultSource,
         ApprovalTarget target,
         string result,
         string payloadJson,
         DateTimeOffset createdAt,
-        string correlationReference)
+        string correlationReference,
+        Guid? sourceCommandId)
     {
         Id = id;
         CaseId = caseId;
         OrganizationId = organizationId;
-        RequirementId = requirementId;
+        ResultSource = resultSource;
         Target = target;
         Result = result;
         PayloadJson = payloadJson;
         CreatedAt = createdAt.ToUniversalTime();
         CorrelationReference = correlationReference;
+        SourceCommandId = sourceCommandId;
         State = ApprovalOutboxState.Pending;
         ContractVersion = ApprovalOutboxPolicy.ContractVersion;
     }
@@ -378,13 +403,15 @@ public sealed class ApprovalOutboxEvent
     public Guid Id { get; }
     public Guid CaseId { get; }
     public Guid OrganizationId { get; }
-    public Guid? RequirementId { get; }
+    public ApprovalEntitySource ResultSource { get; }
     public ApprovalTarget Target { get; }
     public string Result { get; }
     public string ContractVersion { get; }
     public string PayloadJson { get; }
     public DateTimeOffset CreatedAt { get; }
     public string CorrelationReference { get; }
+    /// <summary>Internal link to the decision or signal that produced the event, for replay evidence.</summary>
+    public Guid? SourceCommandId { get; }
     public ApprovalOutboxState State { get; private set; }
     public int Attempts { get; private set; }
     public DateTimeOffset? NextAttemptAt { get; private set; }
@@ -396,15 +423,17 @@ public sealed class ApprovalOutboxEvent
         Guid id,
         Guid caseId,
         Guid organizationId,
-        Guid? requirementId,
+        ApprovalEntitySource resultSource,
         ApprovalTarget target,
         string result,
         string payloadJson,
         DateTimeOffset createdAt,
-        string correlationReference)
+        string correlationReference,
+        Guid? sourceCommandId = null)
     {
         ArgumentNullException.ThrowIfNull(target);
-        ApprovalOutboxPolicy.ValidateResultCode(result);
+        ArgumentNullException.ThrowIfNull(resultSource);
+        ApprovalOutboxPolicy.ValidateResultCombination(resultSource.Type, result);
         if (id == Guid.Empty || caseId == Guid.Empty || organizationId == Guid.Empty)
         {
             throw new DomainValidationException("An outbox event requires complete identities.");
@@ -416,19 +445,21 @@ public sealed class ApprovalOutboxEvent
         }
 
         return new ApprovalOutboxEvent(
-            id, caseId, organizationId, requirementId, target, result, payloadJson, createdAt, correlationReference);
+            id, caseId, organizationId, resultSource, target, result, payloadJson, createdAt,
+            correlationReference, sourceCommandId);
     }
 
     public static ApprovalOutboxEvent Restore(
         Guid id,
         Guid caseId,
         Guid organizationId,
-        Guid? requirementId,
+        ApprovalEntitySource resultSource,
         ApprovalTarget target,
         string result,
         string payloadJson,
         DateTimeOffset createdAt,
         string correlationReference,
+        Guid? sourceCommandId,
         ApprovalOutboxState state,
         int attempts,
         DateTimeOffset? nextAttemptAt,
@@ -437,7 +468,8 @@ public sealed class ApprovalOutboxEvent
         int version)
     {
         var outboxEvent = Create(
-            id, caseId, organizationId, requirementId, target, result, payloadJson, createdAt, correlationReference);
+            id, caseId, organizationId, resultSource, target, result, payloadJson, createdAt,
+            correlationReference, sourceCommandId);
         outboxEvent.State = state;
         outboxEvent.Attempts = attempts;
         outboxEvent.NextAttemptAt = nextAttemptAt;
@@ -492,18 +524,43 @@ public sealed class ApprovalOutboxEvent
         Version++;
     }
 
-    /// <summary>Payload that a consumer deduplicates by <c>event_id + contract_version</c>.</summary>
+    /// <summary>
+    /// Payload of <c>approval-result/v2</c> with exactly its declared properties (REQ-08); a
+    /// consumer deduplicates by <c>event_id + contract_version</c>. <c>decision_digest</c> is the
+    /// workflow decision digest when the result comes from a decision and null otherwise.
+    /// </summary>
     public static string BuildPayload(
         Guid eventId,
         string contractVersion,
         ApprovalCase approvalCase,
-        ApprovalRequirement? requirement,
+        ApprovalEntitySource resultSource,
         ApprovalTarget target,
         string result,
         Guid? decisionId,
         string? decisionDigest,
-        DateTimeOffset occurredAt) =>
-        ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+        DateTimeOffset occurredAt)
+    {
+        ArgumentNullException.ThrowIfNull(approvalCase);
+        ArgumentNullException.ThrowIfNull(resultSource);
+        ApprovalOutboxPolicy.ValidateResultCombination(resultSource.Type, result);
+        var decisionResult = result is "APPROVED" or "REJECTED" or "CHANGES_REQUESTED";
+        if (decisionResult)
+        {
+            if (decisionId is null || decisionId == Guid.Empty || decisionDigest is null)
+            {
+                throw new DomainValidationException(
+                    "A decision result requires its decision id and workflow decision digest.");
+            }
+
+            _ = ApprovalLimits.RequireSha256(decisionDigest, "decision digest");
+        }
+        else if (decisionId is not null || decisionDigest is not null)
+        {
+            throw new DomainValidationException(
+                "A non-decision result must publish a null decision id and digest.");
+        }
+
+        return ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
             ("case_id", ApprovalCanonicalJson.String(approvalCase.Id)),
             ("contract_version", ApprovalCanonicalJson.String(contractVersion)),
             ("decision_digest", decisionDigest is null ? ApprovalCanonicalJson.Null() : ApprovalCanonicalJson.String(decisionDigest)),
@@ -511,16 +568,19 @@ public sealed class ApprovalOutboxEvent
             ("event_id", ApprovalCanonicalJson.String(eventId)),
             ("occurred_at", ApprovalCanonicalJson.String(occurredAt)),
             ("organization_id", ApprovalCanonicalJson.String(approvalCase.OrganizationId)),
-            ("requirement_key", requirement is null
-                ? ApprovalCanonicalJson.Null()
-                : ApprovalCanonicalJson.String(requirement.WorkflowRequirementKey)),
             ("result", ApprovalCanonicalJson.String(result)),
+            ("result_source", resultSource.ToCanonicalValue()),
             ("subject_id", ApprovalCanonicalJson.String(approvalCase.SubjectId)),
             ("subject_type", ApprovalCanonicalJson.String(approvalCase.SubjectType)),
             ("subject_version", ApprovalCanonicalJson.Number(approvalCase.SubjectVersion)),
             ("target", ApprovalRequirementDefinition.TargetValue(target))));
+    }
 }
 
+/// <summary>
+/// Domain view of an append-only audit record (REQ-08): closed actor union, optional immutable
+/// causal link to a root audit and the automatic effect key of a workflow-executed change.
+/// </summary>
 public sealed class ApprovalAuditRecord
 {
     public ApprovalAuditRecord(
@@ -528,8 +588,9 @@ public sealed class ApprovalAuditRecord
         Guid organizationId,
         Guid? caseId,
         Guid? requirementId,
-        string actorType,
-        Guid actorId,
+        ApprovalAuditActor actor,
+        ApprovalCausalLink? causedBy,
+        string? automaticEffectKey,
         DateTimeOffset occurredAt,
         string action,
         string targetType,
@@ -540,12 +601,30 @@ public sealed class ApprovalAuditRecord
         string? afterJson,
         string correlationReference)
     {
+        ArgumentNullException.ThrowIfNull(actor);
         Id = id;
         OrganizationId = organizationId;
         CaseId = caseId;
         RequirementId = requirementId;
-        ActorType = actorType;
-        ActorId = actorId;
+        Actor = actor;
+        CausedBy = causedBy;
+        AutomaticEffectKey = automaticEffectKey is null
+            ? null
+            : ApprovalLimits.RequireSha256(automaticEffectKey, "automatic_effect_key");
+        if (actor.Type == ApprovalAuditActorType.System)
+        {
+            if (causedBy is null || this.AutomaticEffectKey is null)
+            {
+                throw new DomainValidationException(
+                    "A system effect requires a causal link and its automatic effect key.");
+            }
+        }
+        else if (causedBy is not null || this.AutomaticEffectKey is not null)
+        {
+            throw new DomainValidationException(
+                "A root audit keeps a null cause and a null automatic effect key.");
+        }
+
         OccurredAt = occurredAt.ToUniversalTime();
         Action = action;
         TargetType = targetType;
@@ -561,8 +640,9 @@ public sealed class ApprovalAuditRecord
     public Guid OrganizationId { get; }
     public Guid? CaseId { get; }
     public Guid? RequirementId { get; }
-    public string ActorType { get; }
-    public Guid ActorId { get; }
+    public ApprovalAuditActor Actor { get; }
+    public ApprovalCausalLink? CausedBy { get; }
+    public string? AutomaticEffectKey { get; }
     public DateTimeOffset OccurredAt { get; }
     public string Action { get; }
     public string TargetType { get; }
