@@ -129,6 +129,89 @@ public sealed class ApprovalDecisionIntegrationTests
     }
 
     [Fact]
+    public async Task Reserved_role_holders_are_never_candidates_even_with_the_business_role()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await SqlEnvironment.StartAsync(cancellationToken);
+        await environment.SeedAsync(FirstApprover, cancellationToken);
+        // The only approver also holds an active ADMIN assignment in the organization (DEC-08).
+        await using (var granting = environment.CreateContext())
+        {
+            granting.RoleAssignments.Add(ReservedRole(FirstApprover));
+            await granting.SaveChangesAsync(cancellationToken);
+        }
+
+        var submission = await environment.CreateServices().Submission.SubmitAsync(
+            Command("submission-reserved-candidate"), DateTimeOffset.UtcNow, cancellationToken);
+
+        // No candidate remains: the reserved role excludes the user from candidacy and assignment.
+        Assert.Equal("BLOCKED", submission.Status);
+        await using var verification = environment.CreateContext();
+        var task = await verification.ApprovalTasks.SingleAsync(cancellationToken);
+        Assert.Equal((int)ApprovalTaskStatus.Unassigned, task.Status);
+        Assert.Null(task.CurrentAssigneeUserId);
+        Assert.Empty(await verification.ApprovalAssignments.ToArrayAsync(cancellationToken));
+    }
+
+    [Fact]
+    public async Task A_reserved_role_granted_after_assignment_blocks_the_decision_and_reconciles()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await SqlEnvironment.StartAsync(cancellationToken);
+        await environment.SeedAsync(FirstApprover, cancellationToken);
+        var services = environment.CreateServices();
+        var submission = await services.Submission.SubmitAsync(
+            Command("submission-reserved-grant"), DateTimeOffset.UtcNow, cancellationToken);
+        var (taskId, taskVersion) = await environment.TaskAsync(submission.CaseId, cancellationToken);
+
+        // The assignee acquires an active ADMIN assignment after being assigned.
+        await using (var granting = environment.CreateContext())
+        {
+            granting.RoleAssignments.Add(ReservedRole(FirstApprover));
+            await granting.SaveChangesAsync(cancellationToken);
+        }
+
+        // A new decision is forbidden: the assignee stopped being eligible (REQ-05, REQ-06).
+        await Assert.ThrowsAsync<DomainForbiddenException>(() => services.Decision.DecideAsync(
+            // pi-lens-ignore: lsp:CS0246
+            new ApprovalDecisionCommand(
+                taskId, ApprovalDecisionAction.Approve, "Aprobado por negocio", "decision-reserved",
+                taskVersion, FirstApprover, "correlation-reserved"),
+            DateTimeOffset.UtcNow,
+            cancellationToken));
+
+        // Reconciliation releases the task because no candidate remains (NFR-03, CA-05).
+        var reconciled = await services.Reconciliation.ReconcileAsync(
+            OrganizationId, AdminId, "reconcile-reserved-1", "integration-test", "correlation-reserved",
+            DateTimeOffset.UtcNow, cancellationToken);
+        Assert.Equal(1, reconciled.Scanned);
+        Assert.Equal(1, reconciled.Unassigned);
+
+        await using var verification = environment.CreateContext();
+        var task = await verification.ApprovalTasks.SingleAsync(
+            record => record.Id == taskId, cancellationToken);
+        Assert.Equal((int)ApprovalTaskStatus.Unassigned, task.Status);
+        Assert.Null(task.CurrentAssigneeUserId);
+        // The forbidden attempt created no decision and no successful audit.
+        Assert.Empty(await verification.ApprovalDecisions.ToArrayAsync(cancellationToken));
+        Assert.DoesNotContain(
+            await verification.ApprovalAuditEntries.ToArrayAsync(cancellationToken),
+            entry => entry.Action == "DECISION_APPROVED");
+    }
+
+    private static RoleAssignmentRecord ReservedRole(Guid userId) => new()
+    {
+        Id = Guid.NewGuid(),
+        UserProfileId = userId,
+        Role = (int)SystemRole.Admin,
+        ScopeJson = "[{\"dimension\":\"ORGANIZATION\",\"reference\":null}]",
+        Status = (int)AssignmentStatus.Active,
+        AssignedAt = AssignedAt,
+        AssignedBy = AdminId,
+        Version = 1
+    };
+
+    [Fact]
     public async Task Only_the_current_assignee_decides_and_losing_eligibility_blocks_the_decision()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -209,9 +292,9 @@ public sealed class ApprovalDecisionIntegrationTests
                         cancellationToken);
                     return outcome.DecisionId;
                 }
-                catch (Exception)
+                catch (DomainConflictException)
                 {
-                    // The loser fails closed: uniqueness is enforced by the schema, not by luck.
+                    // The loser fails with the contractual 409; any other exception fails the test.
                     return Guid.Empty;
                 }
             }));

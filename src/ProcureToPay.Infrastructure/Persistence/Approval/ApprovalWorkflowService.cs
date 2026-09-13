@@ -107,8 +107,17 @@ public sealed class ApprovalWorkflowService(
             : ApprovalLimits.RequireSha256(command.EvidenceDigest, "signal evidence digest");
         var utcNow = occurredAt.ToUniversalTime();
 
+        // The organization lock is acquired before any row read so signals share one order with
+        // decisions and submissions (lock, then rows) and never deadlock against them (REQ-04).
+        var organizationId = await dbContext.ApprovalPrerequisites
+            .AsNoTracking()
+            .Where(record => record.Id == prerequisiteId)
+            .Select(record => (Guid?)record.OrganizationId)
+            .SingleOrDefaultAsync(cancellationToken)
+            ?? throw new DomainNotFoundException("The external prerequisite is not visible.");
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken);
+        await ApprovalAssignmentLock.AcquireAsync(dbContext, organizationId, cancellationToken);
 
         var prerequisiteAnywhere = await dbContext.ApprovalPrerequisites
             .AsNoTracking()

@@ -281,6 +281,8 @@ public sealed class ApprovalReconciliationService(
             dbContext.ChangeTracker.Clear();
             await using var transaction = await dbContext.Database.BeginTransactionAsync(
                 IsolationLevel.Serializable, cancellationToken);
+            await ApprovalAssignmentLock.AcquireAsync(
+                dbContext, runRecord.OrganizationId, cancellationToken);
             var holder = await dbContext.ApprovalReconciliationRuns
                 .AsNoTracking()
                 .Where(record => record.Id == runId)

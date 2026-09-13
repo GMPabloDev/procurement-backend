@@ -57,8 +57,17 @@ public sealed class ApprovalDecisionService(
         var decisionKey = ApprovalLimits.RequireKey(command.DecisionKey, "decision_key");
         var correlation = ApprovalLimits.RequireCorrelation(command.CorrelationReference);
 
+        // The organization lock is acquired before any row read so every command shares one order
+        // (lock, then rows); a race then resolves as the contractual 409 instead of a deadlock.
+        var organizationId = await dbContext.ApprovalTasks
+            .AsNoTracking()
+            .Where(record => record.Id == command.TaskId)
+            .Select(record => (Guid?)record.OrganizationId)
+            .SingleOrDefaultAsync(cancellationToken)
+            ?? throw new DomainNotFoundException("The approval task is not visible.");
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken);
+        await ApprovalAssignmentLock.AcquireAsync(dbContext, organizationId, cancellationToken);
 
         var taskRecord = await dbContext.ApprovalTasks
             .SingleOrDefaultAsync(record => record.Id == command.TaskId, cancellationToken)
