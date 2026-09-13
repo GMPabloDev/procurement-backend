@@ -21,13 +21,30 @@ public sealed class PolicyApprovalAdapterTests
     private static readonly Guid LineTwo = Guid.Parse("66666666-6666-6666-6666-666666666666");
     private static readonly Guid OriginatorId = Guid.Parse("88888888-8888-8888-8888-888888888888");
     private static readonly Guid RequesterId = Guid.Parse("77777777-7777-7777-7777-777777777777");
+    private static readonly Guid CostCenterId = Guid.Parse("aaaaaaaa-0000-0000-0000-000000000001");
+
+    /// <summary>Confirmed request snapshot with the versioned references the controls need.</summary>
+    private const string RequestSnapshot =
+        "{\"base_currency\":\"PEN\",\"facts\":{},\"legal_entity_id\":\"aaaaaaaa-0000-0000-0000-000000000000\"," +
+        "\"lines\":[{\"facts\":{\"COST_CENTER\":{\"entity_id\":\"aaaaaaaa-0000-0000-0000-000000000001\"," +
+        "\"kind\":\"VERSIONED_ENTITY_REF\",\"reference_type\":\"COST_CENTER\",\"version\":3}," +
+        "\"GROSS_AMOUNT_BASE\":{\"currency\":\"PEN\",\"kind\":\"MONEY\",\"value\":\"500\"}," +
+        "\"SUPPLIER\":{\"entity_id\":\"aaaaaaaa-0000-0000-0000-000000000009\",\"kind\":\"VERSIONED_ENTITY_REF\"," +
+        "\"reference_type\":\"SUPPLIER\",\"version\":4}},\"subject\":{\"id\":\"55555555-5555-5555-5555-555555555555\",\"version\":7}}]," +
+        "\"organization_id\":\"11111111-1111-1111-1111-111111111111\"," +
+        "\"subject\":{\"id\":\"22222222-2222-2222-2222-222222222222\",\"version\":3}}";
 
     [Fact]
     public void Mapping_table_projects_every_effect_or_fails_closed()
     {
         var submission = Map(
             Control("APPROVE", PolicyEffectType.RequireApproval, "DEPARTMENT", approval: ApprovalDescriptor()),
-            Control("BUDGET", PolicyEffectType.RequireBudgetCheck, "PRE_PROCUREMENT"),
+            Control("BUDGET", PolicyEffectType.RequireBudgetCheck, "PRE_PROCUREMENT") with
+            {
+                AmountBase = 500,
+                BaseCurrency = "PEN",
+                CostCenterIds = ImmutableHashSet.Create(CostCenterId)
+            },
             Control("DOCS", PolicyEffectType.RequireSupportingDocument, "PRE_PROCUREMENT"),
             Control("SUPPLIER", PolicyEffectType.RequireActiveSupplier, "PRE_PROCUREMENT"),
             Control("QUOTES", PolicyEffectType.RequireQuotations, "PRE_PROCUREMENT"),
@@ -70,9 +87,7 @@ public sealed class PolicyApprovalAdapterTests
     }
 
     [Theory]
-    [InlineData(PolicyEffectType.RequireBudgetCheck)]
     [InlineData(PolicyEffectType.RequireSupportingDocument)]
-    [InlineData(PolicyEffectType.RequireActiveSupplier)]
     [InlineData(PolicyEffectType.RequireQuotations)]
     [InlineData(PolicyEffectType.RequireProcurement)]
     public void Automatic_controls_never_become_human_tasks(PolicyEffectType type)
@@ -156,7 +171,7 @@ public sealed class PolicyApprovalAdapterTests
         {
             AmountBase = 500,
             BaseCurrency = "PEN",
-            CostCenterIds = ImmutableHashSet.Create(Guid.Parse("aaaaaaaa-0000-0000-0000-000000000001"))
+            CostCenterIds = ImmutableHashSet.Create(CostCenterId)
         };
         var quotations = Control("QUOTES", PolicyEffectType.RequireQuotations, "PRE_PROCUREMENT") with
         {
@@ -167,17 +182,50 @@ public sealed class PolicyApprovalAdapterTests
         {
             SupportingDocumentTypes = ImmutableHashSet.Create("QUOTE", "CONTRACT")
         };
+        var supplier = Control("SUPPLIER", PolicyEffectType.RequireActiveSupplier, "PRE_PROCUREMENT");
 
-        var submission = Map(budget, quotations, documents);
+        var submission = Map(budget, quotations, documents, supplier);
         var parameters = submission.Prerequisites.ToDictionary(
             prerequisite => prerequisite.Key, prerequisite => prerequisite.ParametersJson, StringComparer.Ordinal);
 
         Assert.Contains("\"amount_base\":\"500\"", parameters["BUDGET"], StringComparison.Ordinal);
         Assert.Contains("\"base_currency\":\"PEN\"", parameters["BUDGET"], StringComparison.Ordinal);
+        Assert.Contains("\"version\":3", parameters["BUDGET"], StringComparison.Ordinal);
+        Assert.Contains("\"supplier_ref\"", parameters["SUPPLIER"], StringComparison.Ordinal);
+        Assert.Contains("\"version\":4", parameters["SUPPLIER"], StringComparison.Ordinal);
         Assert.Contains("\"minimum_allowed_quotations\":1", parameters["QUOTES"], StringComparison.Ordinal);
         Assert.Contains("\"minimum_quotations\":3", parameters["QUOTES"], StringComparison.Ordinal);
         Assert.Contains("\"minimum_count\":1", parameters["DOCS"], StringComparison.Ordinal);
         Assert.Contains("CONTRACT", parameters["DOCS"], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Incomplete_automatic_controls_fail_closed()
+    {
+        // A budget control without confirmed cost centers, amount or currency cannot be persisted
+        // as a partial prerequisite (SPEC 05 REQ-03, CA-02).
+        Assert.Throws<ApprovalDependencyUnavailableException>(() =>
+            Map(Control("BUDGET", PolicyEffectType.RequireBudgetCheck, "PRE_PROCUREMENT")));
+        Assert.Throws<ApprovalDependencyUnavailableException>(() =>
+            Map(Control("BUDGET", PolicyEffectType.RequireBudgetCheck, "PRE_PROCUREMENT") with
+            {
+                AmountBase = 500,
+                BaseCurrency = "PEN"
+            }));
+
+        // A supplier control without a unique versioned supplier reference in the confirmed
+        // snapshot fails closed too.
+        Assert.Throws<ApprovalDependencyUnavailableException>(() => PolicyApprovalAdapter.Map(
+            Bundle([Control("SUPPLIER", PolicyEffectType.RequireActiveSupplier, "PRE_PROCUREMENT")]) with
+            {
+                RequestSnapshotJson = "{\"base_currency\":\"PEN\",\"facts\":{},\"legal_entity_id\":\"aaaaaaaa-0000-0000-0000-000000000000\"," +
+                    "\"lines\":[{\"facts\":{},\"subject\":{\"id\":\"55555555-5555-5555-5555-555555555555\",\"version\":7}}]," +
+                    "\"organization_id\":\"11111111-1111-1111-1111-111111111111\"," +
+                    "\"subject\":{\"id\":\"22222222-2222-2222-2222-222222222222\",\"version\":3}}"
+            },
+            Material(LineOne),
+            Record(),
+            Request()));
     }
 
     private static ApprovalSubmission Map(params PolicyGeneratedControl[] controls) =>
@@ -208,6 +256,7 @@ public sealed class PolicyApprovalAdapterTests
     {
         Operation = "PURCHASE_REQUEST",
         ManifestDigest = new string('9', 64),
+        RequestSnapshotJson = RequestSnapshot,
         MaterialProjection = new PolicyMaterialProjection(
             PolicyApprovalTargets.ContractVersion,
             new Dictionary<string, string>(StringComparer.Ordinal),

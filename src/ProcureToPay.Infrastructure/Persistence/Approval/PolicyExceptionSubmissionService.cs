@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Organization;
+using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.SharedKernel;
 
 namespace ProcureToPay.Infrastructure.Persistence.Approval;
@@ -73,6 +74,61 @@ public sealed class PolicyExceptionSubmissionService(
         {
             throw new DomainConflictException(
                 "The policy exception bindings do not match the referenced evaluation.");
+        }
+
+        // The exception must reduce exactly the quotation control of the referenced evaluation
+        // and cover exactly its material targets; nothing is taken from the caller on faith
+        // (SPEC 05 REQ-05, CA-05).
+        PolicyEvaluationBundle bundle;
+        try
+        {
+            bundle = PolicyEvaluationBundleRehydrator.FromJson(record.BundleJson);
+        }
+        catch (Exception exception) when (exception is System.Text.Json.JsonException or KeyNotFoundException or
+                                             InvalidOperationException or FormatException)
+        {
+            throw new ApprovalDependencyUnavailableException("The persisted policy evaluation is corrupted.");
+        }
+
+        var control = bundle.Controls.SingleOrDefault(candidate =>
+            candidate.Type == PolicyEffectType.RequireQuotations &&
+            string.Equals(candidate.RequirementKey, command.TargetRequirementKey, StringComparison.Ordinal));
+        if (control is null || control.MinimumAllowedQuotations is null)
+        {
+            throw new DomainConflictException(
+                "The target quotation requirement is not exceptionable in the referenced evaluation.");
+        }
+
+        if (command.From != control.MinimumQuotations ||
+            command.To < control.MinimumAllowedQuotations.Value ||
+            command.Floor < control.MinimumAllowedQuotations.Value)
+        {
+            throw new DomainConflictException(
+                "The requested reduction does not match the published quotation allowance.");
+        }
+
+        if (bundle.MaterialProjection is null)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                "The evaluation has no material target projection; it must be reevaluated.");
+        }
+
+        var expectedTargets = control.SubjectIds
+            .Select(subjectId => bundle.MaterialProjection.Targets.SingleOrDefault(
+                target => target.Id == subjectId))
+            .ToArray();
+        if (expectedTargets.Any(target => target is null) ||
+            expectedTargets.Length != command.CoveredLines.Length ||
+            !expectedTargets.Select(target =>
+                    $"{PolicyApprovalTargets.TargetType}:{target!.Id:D}:{target.Version}:{target.MaterialSnapshotDigest}")
+                .OrderBy(identity => identity, StringComparer.Ordinal)
+                .SequenceEqual(
+                    command.CoveredLines.Select(target => target.CanonicalIdentity)
+                        .OrderBy(identity => identity, StringComparer.Ordinal),
+                    StringComparer.Ordinal))
+        {
+            throw new DomainConflictException(
+                "The covered lines do not match the material targets of the referenced evaluation.");
         }
 
         var targets = command.CoveredLines

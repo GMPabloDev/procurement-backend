@@ -13,7 +13,7 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-13 09:06 -0500
-> **Actualizado:** 2026-09-13 16:05 -0500
+> **Actualizado:** 2026-09-13 16:45 -0500
 > **HEAD verificado:** Pendiente
 > **Commit de integración:** Pendiente
 
@@ -69,9 +69,35 @@
 
 ## Verificación independiente
 
-> **Resultado:** Pendiente
-> **Rondas:** 0/2
-> **Triaje:** Pendiente
-> **Modelo efectivo:** Pendiente
-> **Método:** Pendiente
-> **Fecha:** Pendiente
+> **Resultado:** Pendiente (ronda 1 BLOCK corregida; pendiente ronda diferencial)
+> **Rondas:** 1/2
+> **Triaje:** R7–R13 aceptados como bugs reales y corregidos con regresiones; R1–R6 permanecen resueltos.
+> **Modelo efectivo:** sdd-implementation-reviewer · openai-codex/gpt-5.6-sol · effort high
+> **Método:** revisión de implementación sobre el commit candidato `d15ecdd` (base `18977ee`), árbol limpio; suites reutilizadas del mismo árbol.
+> **Fecha:** 2026-09-13
+
+### Ronda 1 — BLOCK (commit d15ecdd)
+
+- **R7 [blocker]:** la submission de excepción aceptaba `target_requirement_key` y cobertura sin cotejarlos. Corregido:
+  `PolicyExceptionSubmissionService` rehidrata el bundle y exige el control `RequireQuotations` exacto, la reducción
+  dentro del allowance publicado y cobertura idéntica a la proyección material; `PolicyEvaluationService` compara
+  además por identidad/version/digest y no solo por id. Regresión: caso adulterado en
+  `PolicyApprovalWorkflowContractE2ETests` (`409`).
+- **R8 [blocker]:** prerequisites incompletos. Corregido: budget exige Cost Centers, importe y moneda y proyecta
+  `cost_center_refs` versionados desde el snapshot; supplier exige exactamente una referencia `SUPPLIER` versionada y
+  proyecta `supplier_ref`; sin datos, falla cerrado. Regresión: `Incomplete_automatic_controls_fail_closed`.
+- **R9 [blocker]:** todas las aprobaciones humanas eran `DEPARTMENT`. Corregido: la fase se deriva del rol
+  (Department → `DEPARTMENT`; Finance/IT/Legal → `PRE_PROCUREMENT`; Procurement → `PROCUREMENT`) manteniendo el DAG por
+  targets. Regresión: `Approval_phase_follows_the_role_and_procurement_waits_for_earlier_stages`.
+- **R10 [blocker]:** el wire no era estricto. Corregido: `PolicyExceptionTarget` declara `type`, `id`, `version` y
+  `material_snapshot_digest` y oculta `canonicalIdentity`; el verifier exige `correlation_reference` opaca.
+  Regresión ampliada en `HttpQuotationWaiverVerifierTests.Request_payload_is_the_exact_wire_contract`.
+- **R11 [blocker]:** `TokenResponse` no mapeaba `access_token`/`expires_in`. Corregido con `JsonPropertyName`; el
+  E2E conserva la sustitución de credencial como configuración de entorno, no como contrato.
+- **R12 [blocker]:** faltaba FK al requirement y el `Down` era destructivo. Corregido: FK
+  `PolicyExceptionRequests.RequirementId → ApprovalRequirements.Id` (migración
+  `Spec05PolicyExceptionRequirementFk`) y `Down` lanza `NotSupportedException` en ambas migraciones de SPEC 05.
+- **R13 [blocker]:** el nonce se publicaba en trazas y la respuesta no verificada se logueaba con payload. Corregido:
+  la actividad usa la correlation real y el verifier registra solo el resultado.
+
+Árbol corregido probado: build 0 errores, Unit **142/142**, Integración **50/50**, E2E **17/17**.

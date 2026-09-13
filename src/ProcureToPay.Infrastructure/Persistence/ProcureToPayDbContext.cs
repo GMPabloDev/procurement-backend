@@ -606,6 +606,10 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
             .WithMany()
             .HasForeignKey(record => record.CaseId)
             .OnDelete(DeleteBehavior.Restrict);
+        request.HasOne<ApprovalRequirementRecord>()
+            .WithMany()
+            .HasForeignKey(record => record.RequirementId)
+            .OnDelete(DeleteBehavior.Restrict);
         request.HasIndex(record => new
         {
             record.OrganizationId,

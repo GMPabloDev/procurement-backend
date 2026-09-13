@@ -247,6 +247,45 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
             Assert.Equal(HttpStatusCode.Forbidden, userAttempt.StatusCode);
         }
 
+        // Fabricated coverage is rejected before any row exists (REQ-05, CA-05).
+        using (var tampered = await policyEngine.PostAsJsonAsync(
+            "/api/v1/approval/policy-exceptions",
+            new
+            {
+                organizationId = sqlServer.OrganizationId,
+                subjectType = "PURCHASE_REQUEST",
+                subjectId = SubjectId,
+                subjectVersion = 1,
+                baseBundleId = evaluationId,
+                baseResultDigest = persisted.ResultDigest,
+                policyVersionId = persisted.PolicySetVersionId,
+                policyContentDigest = persisted.PolicyContentDigest,
+                manifestDigest = persisted.ManifestDigest,
+                targetRequirementKey = "RFQ",
+                coveredLines = coveredLines.Select(target => new
+                {
+                    type = target.Type,
+                    id = target.Id,
+                    version = target.Version,
+                    materialSnapshotDigest = new string('f', 64)
+                }).ToArray(),
+                from = 3,
+                to = 2,
+                floor = 1,
+                referenceId = Guid.NewGuid(),
+                requesterId = (Guid?)null,
+                originatorId = OriginatorId,
+                workloadSubjectId = WorkloadSubjectId,
+                requestedAt,
+                requestedValidTo,
+                nonce = "contract-waiver-nonce-tampered",
+                submissionKey = "contract-exception-tampered"
+            },
+            cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.Conflict, tampered.StatusCode);
+        }
+
         Guid exceptionRequestId;
         string exceptionBinding;
         using (var exception = await policyEngine.PostAsJsonAsync(

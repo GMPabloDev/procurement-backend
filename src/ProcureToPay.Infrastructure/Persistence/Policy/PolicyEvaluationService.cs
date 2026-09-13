@@ -244,7 +244,7 @@ public sealed class PolicyEvaluationService(
         var waiverStartedAt = Stopwatch.GetTimestamp();
         activity?.SetTag("policy.evaluation_id", bundle.Id.ToString("D"));
         activity?.SetTag("policy.target_requirement_key", request.TargetRequirementKey);
-        activity?.SetTag("policy.correlation_reference", request.Nonce);
+        activity?.SetTag("policy.correlation_reference", request.CorrelationReference);
         var verifier = exceptionVerifierRegistry.Resolve();
         activity?.SetTag("policy.verifier_id", verifier.VerifierId);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -264,7 +264,13 @@ public sealed class PolicyEvaluationService(
 
         var persistedTargets = targetControl.SelectMany(control => control.SubjectIds).ToHashSet();
         if (request.Binding.CoveredLines.Length != persistedTargets.Count ||
-            request.Binding.CoveredLines.Any(target => !persistedTargets.Contains(target.Id)))
+            request.Binding.CoveredLines.Any(target => !persistedTargets.Contains(target.Id)) ||
+            persistedBundle.MaterialProjection is null ||
+            request.Binding.CoveredLines.Any(target =>
+                persistedBundle.MaterialProjection.Targets.All(material =>
+                    material.Id != target.Id || material.Version != target.Version ||
+                    !string.Equals(material.MaterialSnapshotDigest, target.MaterialSnapshotDigest,
+                        StringComparison.OrdinalIgnoreCase))))
         {
             throw new DomainConflictException(
                 "The quotation waiver covered lines do not match the persisted evaluation.");

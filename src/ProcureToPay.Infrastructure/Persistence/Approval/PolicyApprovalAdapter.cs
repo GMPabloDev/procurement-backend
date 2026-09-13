@@ -122,7 +122,7 @@ public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IAp
                     nodes.Add(RequirementNode(control, material, request));
                     break;
                 default:
-                    nodes.Add(PrerequisiteNode(control, material, request));
+                    nodes.Add(PrerequisiteNode(control, material, request, bundle.RequestSnapshotJson!));
                     break;
             }
         }
@@ -299,7 +299,8 @@ public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IAp
     private static Node PrerequisiteNode(
         PolicyGeneratedControl control,
         IReadOnlyDictionary<Guid, ApprovalTarget> material,
-        ApprovalSubmissionRequest request)
+        ApprovalSubmissionRequest request,
+        string requestSnapshotJson)
     {
         if (!OwnerAdapters.TryGetValue(control.Type, out var ownerAdapter))
         {
@@ -314,7 +315,7 @@ public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IAp
                 $"The control '{control.RequirementKey}' has no confirmed target.");
         }
 
-        var parameters = Parameters(control);
+        var parameters = Parameters(control, requestSnapshotJson, targets);
         var prerequisite = new ExternalPrerequisiteDefinition(
             control.RequirementKey,
             ownerAdapter,
@@ -379,19 +380,16 @@ public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IAp
             : throw new ApprovalDependencyUnavailableException(
                 $"The control '{control.RequirementKey}' declares an unknown stage '{control.Phase}'.");
 
-    private static string Parameters(PolicyGeneratedControl control) => control.Type switch
+    private static string Parameters(
+        PolicyGeneratedControl control,
+        string requestSnapshotJson,
+        ImmutableArray<ApprovalTarget> targets) => control.Type switch
     {
-        PolicyEffectType.RequireBudgetCheck => ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
-            ("amount_base", control.AmountBase is null
-                ? ApprovalCanonicalJson.Null()
-                : ApprovalCanonicalJson.String(ApprovalCanonicalJson.FormatDecimal(control.AmountBase.Value))),
-            ("base_currency", ApprovalCanonicalJson.StringOrNull(control.BaseCurrency)),
-            ("cost_center_ids", ApprovalCanonicalJson.Set(
-                control.CostCenterIds.OrderBy(id => id).Select(ApprovalCanonicalJson.String))))),
+        PolicyEffectType.RequireBudgetCheck => BudgetParameters(control, requestSnapshotJson, targets),
         PolicyEffectType.RequireSupportingDocument => ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
             ("document_types", ApprovalCanonicalJson.Set(control.SupportingDocumentTypes)),
             ("minimum_count", ApprovalCanonicalJson.Number(1)))),
-        PolicyEffectType.RequireActiveSupplier => "{}",
+        PolicyEffectType.RequireActiveSupplier => SupplierParameters(control, requestSnapshotJson, targets),
         PolicyEffectType.RequireQuotations => ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
             ("minimum_allowed_quotations", ApprovalCanonicalJson.NumberOrNull(control.MinimumAllowedQuotations)),
             ("minimum_quotations", ApprovalCanonicalJson.NumberOrNull(control.MinimumQuotations)))),
@@ -400,6 +398,130 @@ public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IAp
         _ => throw new ApprovalDependencyUnavailableException(
             $"The control '{control.RequirementKey}' of type '{control.Type}' has no defined parameters.")
     };
+
+    /// <summary>
+    /// Budget parameters require the frozen Cost Center references and the confirmed amount; a
+    /// control without them fails closed instead of persisting an incomplete prerequisite
+    /// (SPEC 05 REQ-03, CA-02).
+    /// </summary>
+    private static string BudgetParameters(
+        PolicyGeneratedControl control,
+        string requestSnapshotJson,
+        ImmutableArray<ApprovalTarget> targets)
+    {
+        if (control.CostCenterIds.IsEmpty || control.AmountBase is null ||
+            string.IsNullOrWhiteSpace(control.BaseCurrency))
+        {
+            throw new ApprovalDependencyUnavailableException(
+                $"The budget control '{control.RequirementKey}' lacks confirmed cost centers, amount or currency.");
+        }
+
+        var references = VersionedEntityReferences(requestSnapshotJson, targets, "COST_CENTER")
+            .Where(reference => control.CostCenterIds.Contains(reference.Id))
+            .OrderBy(reference => reference.Id)
+            .ToArray();
+        if (references.Length != control.CostCenterIds.Count)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                $"The budget control '{control.RequirementKey}' cannot resolve every cost center version.");
+        }
+
+        return ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+            ("amount_base", ApprovalCanonicalJson.String(
+                ApprovalCanonicalJson.FormatDecimal(control.AmountBase.Value))),
+            ("base_currency", ApprovalCanonicalJson.String(control.BaseCurrency)),
+            ("cost_center_refs", ApprovalCanonicalJson.Set(references.Select(reference =>
+                ApprovalCanonicalJson.Object(
+                    ("id", ApprovalCanonicalJson.String(reference.Id)),
+                    ("version", ApprovalCanonicalJson.Number(reference.Version))))))));
+    }
+
+    /// <summary>
+    /// The active-supplier prerequisite must carry the versioned supplier reference attested by
+    /// the confirmed snapshot; without exactly one it fails closed (SPEC 05 REQ-03, CA-02).
+    /// </summary>
+    private static string SupplierParameters(
+        PolicyGeneratedControl control,
+        string requestSnapshotJson,
+        ImmutableArray<ApprovalTarget> targets)
+    {
+        var references = VersionedEntityReferences(requestSnapshotJson, targets, "SUPPLIER");
+        if (references.Count != 1)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                $"The supplier control '{control.RequirementKey}' has no unique confirmed supplier reference.");
+        }
+
+        var supplier = references[0];
+        return ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+            ("supplier_ref", ApprovalCanonicalJson.Object(
+                ("id", ApprovalCanonicalJson.String(supplier.Id)),
+                ("version", ApprovalCanonicalJson.Number(supplier.Version))))));
+    }
+
+    /// <summary>Versioned entity references of one reference type across the confirmed targets.</summary>
+    private static IReadOnlyList<(Guid Id, int Version)> VersionedEntityReferences(
+        string requestSnapshotJson,
+        ImmutableArray<ApprovalTarget> targets,
+        string referenceType)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(requestSnapshotJson);
+        var references = new Dictionary<Guid, int>();
+        foreach (var target in targets)
+        {
+            var line = document.RootElement.GetProperty("lines").EnumerateArray()
+                .FirstOrDefault(candidate =>
+                    candidate.GetProperty("subject").GetProperty("id").GetGuid() == target.Id &&
+                    candidate.GetProperty("subject").GetProperty("version").GetInt32() == target.Version);
+            if (line.ValueKind != System.Text.Json.JsonValueKind.Object)
+            {
+                throw new ApprovalDependencyUnavailableException(
+                    "The persisted policy snapshot does not contain a confirmed covered line.");
+            }
+
+            CollectReferences(line.GetProperty("facts"), referenceType, references);
+        }
+
+        return references.Select(entry => (entry.Key, entry.Value)).ToArray();
+    }
+
+    private static void CollectReferences(
+        System.Text.Json.JsonElement facts,
+        string referenceType,
+        Dictionary<Guid, int> references)
+    {
+        foreach (var fact in facts.EnumerateObject())
+        {
+            CollectReferenceValue(fact.Value, referenceType, references);
+        }
+    }
+
+    private static void CollectReferenceValue(
+        System.Text.Json.JsonElement value,
+        string referenceType,
+        Dictionary<Guid, int> references)
+    {
+        if (value.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var member in value.EnumerateArray())
+            {
+                CollectReferenceValue(member, referenceType, references);
+            }
+
+            return;
+        }
+
+        if (value.ValueKind != System.Text.Json.JsonValueKind.Object ||
+            !value.TryGetProperty("kind", out var kind) || kind.GetString() != "VERSIONED_ENTITY_REF" ||
+            !value.TryGetProperty("reference_type", out var type) || type.GetString() != referenceType ||
+            !value.TryGetProperty("entity_id", out var entityId) || entityId.ValueKind != System.Text.Json.JsonValueKind.String ||
+            !value.TryGetProperty("version", out var version) || version.ValueKind != System.Text.Json.JsonValueKind.Number)
+        {
+            return;
+        }
+
+        references[entityId.GetGuid()] = version.GetInt32();
+    }
 
     private static string SourceControlDigest(
         PolicyGeneratedControl control,

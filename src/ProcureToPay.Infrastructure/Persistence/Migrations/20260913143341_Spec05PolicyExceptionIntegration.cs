@@ -139,13 +139,10 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "PolicyExceptionVerifications",
-                schema: "Approval");
-
-            migrationBuilder.DropTable(
-                name: "PolicyExceptionRequests",
-                schema: "Approval");
+            // SPEC 05 forbids destructive down migrations: reverting the application keeps the
+            // Approval schema and its policy exception history.
+            throw new NotSupportedException(
+                "The Approval schema has no destructive downgrade; revert the application and keep the schema.");
         }
     }
 }

@@ -81,6 +81,11 @@ public sealed class HttpQuotationWaiverVerifierTests
                 "workflow_decision_version", "workload_subject_id"
             },
             properties);
+        var coveredLine = document.RootElement.GetProperty("covered_lines")[0];
+        Assert.Equal(
+            new[] { "id", "material_snapshot_digest", "type", "version" },
+            coveredLine.EnumerateObject().Select(property => property.Name)
+                .OrderBy(name => name, StringComparer.Ordinal).ToArray());
         Assert.Equal(
             PolicyExceptionContract.VerificationRequestVersion,
             document.RootElement.GetProperty("contract_version").GetString());

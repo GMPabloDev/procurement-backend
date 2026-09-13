@@ -41,11 +41,19 @@ public sealed record PolicyExceptionTarget
             materialSnapshotDigest, "exception target material digest");
     }
 
+    [JsonPropertyName("type")]
     public string Type { get; }
+
+    [JsonPropertyName("id")]
     public Guid Id { get; }
+
+    [JsonPropertyName("version")]
     public int Version { get; }
+
+    [JsonPropertyName("material_snapshot_digest")]
     public string MaterialSnapshotDigest { get; }
 
+    [JsonIgnore]
     public string CanonicalIdentity => $"{Type}:{Id:D}:{Version}:{MaterialSnapshotDigest}";
 
     public static CanonicalValue Canonicalize(PolicyExceptionTarget target) => ApprovalCanonicalJson.Object(

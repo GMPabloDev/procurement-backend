@@ -3,6 +3,8 @@
 using System.Collections.Immutable;
 using System.Text.Json;
 using ProcureToPay.Domain.Modules.Organization;
+using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.SharedKernel;
 
@@ -257,6 +259,59 @@ public sealed class PolicyEvaluatorTests
                 notExceptionable, notExceptionableRequest, notExceptionableEvidence));
         Assert.Contains("NOT_EXCEPTIONABLE", exception.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Approval_phase_follows_the_role_and_procurement_waits_for_earlier_stages()
+    {
+        var organizationId = Guid.NewGuid();
+        var policy = new PolicySetVersion(Guid.NewGuid(), organizationId, 1, [PolicyScope.Line]);
+        policy.AddRule(new PolicyRule("DEPT", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.RequireApproval, "DEPT",
+                approval: WaiverApproval(SystemRole.DepartmentApprover, ApprovalAuthorityType.BusinessNeed))]));
+        policy.AddRule(new PolicyRule("FINANCE", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.RequireApproval, "FINANCE",
+                approval: WaiverApproval(SystemRole.FinanceApprover, ApprovalAuthorityType.Financial))]));
+        policy.AddRule(new PolicyRule("LEGAL", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.RequireApproval, "LEGAL",
+                approval: WaiverApproval(SystemRole.LegalReviewer, null))]));
+        policy.AddRule(new PolicyRule("PROC_APPROVAL", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.RequireApproval, "PROC_APPROVAL",
+                approval: WaiverApproval(SystemRole.ProcurementApprover, ApprovalAuthorityType.Procurement))]));
+        policy.AddRule(new PolicyRule("LINE_DEFAULT", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.Allow, "LINE_DEFAULT")], isFallback: true));
+        policy.Publish(PolicyCanonicalizer.ComputePolicyDigest(policy));
+
+        var line = new PolicyLineInput(
+            new PolicySubjectReference(Guid.NewGuid(), 1),
+            new Dictionary<string, PolicyValue>(StringComparer.Ordinal)
+            {
+                ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(600, "PEN")
+            });
+        var request = new PolicyRequestInput(
+            new PolicySubjectReference(Guid.NewGuid(), 1), organizationId, Guid.NewGuid(), "PEN", [line]);
+        var result = PolicyEvaluator.EvaluateRequest(policy, request, "phases", DateTimeOffset.UtcNow);
+
+        Assert.Equal("DEPARTMENT", Phase("DEPT"));
+        Assert.Equal("PRE_PROCUREMENT", Phase("FINANCE"));
+        Assert.Equal("PRE_PROCUREMENT", Phase("LEGAL"));
+        Assert.Equal("PROCUREMENT", Phase("PROC_APPROVAL"));
+
+        string Phase(string key) => result.Controls
+            .Single(control => control.RequirementKey == key).Phase;
+    }
+
+    private static PolicyApprovalDescriptor WaiverApproval(SystemRole role, ApprovalAuthorityType? authorityType) =>
+        new(
+            role,
+            authorityType,
+            authorityType is null
+                ? null
+                : new PolicyAuthorityLevelSnapshot(Guid.NewGuid(), 1, "LEVEL", 1),
+            authorityType is null ? null : 500m,
+            authorityType is null ? null : "PEN",
+            DecisionScopeDescriptor.Create(
+                PolicyScopeFixtures.OrganizationId,
+                [new DecisionScopeEntry(ScopeDimension.Organization, null, null)]).ToCanonicalJson());
 
     [Fact]
     public void Block_control_wins_over_allow_and_policy_must_be_published()

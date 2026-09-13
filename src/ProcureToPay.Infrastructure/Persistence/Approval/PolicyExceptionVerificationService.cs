@@ -33,6 +33,9 @@ public sealed class PolicyExceptionVerificationService(
         }
 
         var binding = Request(request);
+        // The correlation reference is a required opaque server-visible value (SPEC 03 REQ-09);
+        // a missing or malformed one is a malformed verification request (SPEC 05 REQ-06).
+        _ = ApprovalLimits.RequireCorrelation(request.CorrelationReference);
         var bindingDigest = binding.ComputeBinding();
         if (string.IsNullOrWhiteSpace(request.Binding) ||
             !string.Equals(bindingDigest, request.Binding, StringComparison.OrdinalIgnoreCase))

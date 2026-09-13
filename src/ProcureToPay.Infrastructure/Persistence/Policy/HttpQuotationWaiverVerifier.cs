@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using ProcureToPay.Domain.Modules.Approval;
@@ -93,11 +94,9 @@ public sealed class ClientCredentialsPolicyExceptionTokenProvider(
         }
     }
 
-    private sealed record TokenResponse(string? AccessToken, int ExpiresIn)
-    {
-        public string? AccessToken { get; init; } = AccessToken;
-        public int ExpiresIn { get; init; } = ExpiresIn;
-    }
+    private sealed record TokenResponse(
+        [property: JsonPropertyName("access_token")] string? AccessToken,
+        [property: JsonPropertyName("expires_in")] int ExpiresIn);
 }
 
 /// <summary>
@@ -133,8 +132,6 @@ public sealed class HttpQuotationWaiverVerifier(
         if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Conflict or
             HttpStatusCode.UnprocessableEntity)
         {
-            // The control is preserved without a dependency outage: the evidence is not
-            // verifiable (missing, conflicting or not current), never an authority reduction.
             logger.LogWarning(
                 "Quotation waiver workflow rejected the verification with HTTP {StatusCode}.",
                 response.StatusCode);
@@ -173,9 +170,8 @@ public sealed class HttpQuotationWaiverVerifier(
 
         if (result is null || !result.Verified)
         {
-            logger.LogWarning(
-                "Quotation waiver workflow did not verify the exception: {Payload}",
-                payload.Length > 300 ? payload[..300] : payload);
+            // No payload, nonce or binding is logged: only the outcome (SPEC 05 NFR-04).
+            logger.LogWarning("Quotation waiver workflow did not verify the policy exception.");
             return null;
         }
 
