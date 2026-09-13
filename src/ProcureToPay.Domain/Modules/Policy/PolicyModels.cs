@@ -489,14 +489,18 @@ public sealed record PolicyApprovalDescriptor
         string? baseCurrency,
         string decisionScope,
         bool exceptionable = false,
-        decimal? minimumExceptionAmount = null)
+        decimal? minimumExceptionAmount = null,
+        Guid? organizationId = null)
     {
         Role = role;
         AuthorityType = authorityType;
         AuthorityLevel = authorityLevel;
         AmountBase = amountBase;
         BaseCurrency = NormalizeCurrency(baseCurrency, amountBase);
-        DecisionScope = NormalizeScope(decisionScope);
+        // SPEC 05 REQ-02: the decision scope is exactly the canonical `decision-scope/v1`
+        // descriptor of SPEC 03. Tokens such as ORGANIZATION/COST_CENTER, non-canonical JSON,
+        // extra fields and inactive references are rejected; the value is stored canonical.
+        DecisionScope = Approval.DecisionScopeDescriptor.Parse(decisionScope, organizationId).ToCanonicalJson();
         Exceptionable = exceptionable;
         MinimumExceptionAmount = minimumExceptionAmount;
 
@@ -549,15 +553,6 @@ public sealed record PolicyApprovalDescriptor
         return currency.Trim().ToUpperInvariant();
     }
 
-    private static string NormalizeScope(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value) || value.Trim().Length > 256)
-        {
-            throw new DomainValidationException("Approval decision scope is required.");
-        }
-
-        return value.Trim();
-    }
 }
 
 public sealed record PolicyEffect

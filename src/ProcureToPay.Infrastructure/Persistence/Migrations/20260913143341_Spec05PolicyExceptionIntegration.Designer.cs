@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using ProcureToPay.Infrastructure.Persistence;
 
@@ -11,9 +12,11 @@ using ProcureToPay.Infrastructure.Persistence;
 namespace ProcureToPay.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ProcureToPayDbContext))]
-    partial class ProcureToPayDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260913143341_Spec05PolicyExceptionIntegration")]
+    partial class Spec05PolicyExceptionIntegration
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2486,12 +2489,6 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.HasOne("ProcureToPay.Infrastructure.Persistence.Approval.ApprovalCaseRecord", null)
                         .WithMany()
                         .HasForeignKey("CaseId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Approval.ApprovalRequirementRecord", null)
-                        .WithMany()
-                        .HasForeignKey("RequirementId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

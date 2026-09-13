@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Collections.Immutable;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.SharedKernel;
@@ -80,11 +81,48 @@ public sealed record ApprovalWorkloadResponse(
     bool Replayed,
     IReadOnlyList<Guid> OutboxEventIds);
 
+public sealed record PolicyExceptionTargetBody(string Type, Guid Id, int Version, string MaterialSnapshotDigest);
+
+public sealed record PolicyExceptionSubmissionBody(
+    Guid OrganizationId,
+    string SubjectType,
+    Guid SubjectId,
+    int SubjectVersion,
+    Guid BaseBundleId,
+    string BaseResultDigest,
+    Guid PolicyVersionId,
+    string PolicyContentDigest,
+    string ManifestDigest,
+    string TargetRequirementKey,
+    IReadOnlyList<PolicyExceptionTargetBody> CoveredLines,
+    int From,
+    int To,
+    int Floor,
+    Guid ReferenceId,
+    Guid? RequesterId,
+    Guid OriginatorId,
+    Guid WorkloadSubjectId,
+    DateTimeOffset RequestedAt,
+    DateTimeOffset RequestedValidTo,
+    string Nonce,
+    string SubmissionKey);
+
+public sealed record PolicyExceptionSubmissionResponse(
+    Guid CaseId,
+    Guid RequestId,
+    Guid RequirementId,
+    string RequirementKey,
+    string Binding,
+    string Status,
+    int Version,
+    bool Replayed);
+
 [ApiController]
 [Authorize]
 [Route("api/v1/approval")]
 public sealed class ApprovalController(
     ApprovalSubmissionService submissionService,
+    PolicyExceptionSubmissionService policyExceptionSubmissionService,
     ApprovalWorkflowService workflowService,
     // pi-lens-ignore: lsp:CS0246
     ApprovalDecisionService decisionService,
@@ -100,6 +138,7 @@ public sealed class ApprovalController(
     ApprovalDelegationService delegationService,
     ApprovalSupersessionService supersessionService,
     ApprovalEvidenceRevocationService evidenceRevocationService,
+    PolicyExceptionVerificationService policyExceptionVerificationService,
     ApprovalHistoryQueryService historyQueryService,
     ApprovalInstanceIdentity instanceIdentity,
     ProcureToPayDbContext dbContext,
@@ -129,6 +168,55 @@ public sealed class ApprovalController(
             DateTimeOffset.UtcNow,
             cancellationToken);
         return Ok(new ApprovalSubmissionResponse(outcome.CaseId, outcome.Status, outcome.Version, outcome.Replayed));
+    }
+
+    /// <summary>Workload-only policy exception submission (SPEC 05 REQ-05).</summary>
+    [HttpPost("policy-exceptions")]
+    public async Task<ActionResult<PolicyExceptionSubmissionResponse>> SubmitPolicyException(
+        PolicyExceptionSubmissionBody request,
+        CancellationToken cancellationToken)
+    {
+        var workload = ResolveWorkload();
+        var outcome = await policyExceptionSubmissionService.SubmitAsync(
+            new PolicyExceptionSubmission(
+                workload,
+                request.SubmissionKey,
+                request.OrganizationId,
+                request.SubjectType,
+                request.SubjectId,
+                request.SubjectVersion,
+                request.TargetRequirementKey,
+                request.CoveredLines
+                    .Select(line => new PolicyExceptionTarget(
+                        line.Type, line.Id, line.Version, line.MaterialSnapshotDigest))
+                    .ToImmutableArray(),
+                request.From,
+                request.To,
+                request.Floor,
+                request.ReferenceId,
+                request.RequesterId,
+                request.OriginatorId,
+                request.WorkloadSubjectId,
+                request.RequestedAt,
+                request.RequestedValidTo,
+                request.Nonce,
+                Correlation(),
+                request.BaseBundleId,
+                request.BaseResultDigest,
+                request.PolicyVersionId,
+                request.PolicyContentDigest,
+                request.ManifestDigest),
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        return Ok(new PolicyExceptionSubmissionResponse(
+            outcome.CaseId,
+            outcome.RequestId,
+            outcome.RequirementId,
+            outcome.RequirementKey,
+            outcome.Binding,
+            outcome.Status,
+            outcome.Version,
+            outcome.Replayed));
     }
 
     /// <summary>Owner workload signals a prerequisite (REQ-03).</summary>
@@ -228,7 +316,7 @@ public sealed class ApprovalController(
             throw new DomainValidationException("The approval action is invalid.");
         }
 
-        return Ok(await decisionService.DecideAsync(
+        var outcome = await decisionService.DecideAsync(
             // pi-lens-ignore: lsp:CS0246
             new ApprovalDecisionCommand(
                 taskId,
@@ -239,7 +327,11 @@ public sealed class ApprovalController(
                 profile.Id,
                 Correlation()),
             DateTimeOffset.UtcNow,
-            cancellationToken));
+            cancellationToken);
+        var policyExceptionEvidenceDigest = await policyExceptionVerificationService
+            .EvidenceDigestForRequirementAsync(
+                profile.OrganizationId, outcome.CaseId, outcome.RequirementId, cancellationToken);
+        return Ok(outcome with { PolicyExceptionEvidenceDigest = policyExceptionEvidenceDigest });
     }
 
     /// <summary>

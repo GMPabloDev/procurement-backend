@@ -131,7 +131,7 @@ public sealed class PolicyEvaluationDiffTests
             new PolicyAuthorityLevelSnapshot(Guid.NewGuid(), 1, "LEVEL", rank),
             amount,
             "PEN",
-            "ORGANIZATION");
+            PolicyScopeFixtures.Organization());
 
     private static PolicyGeneratedControl Control(
         string key,

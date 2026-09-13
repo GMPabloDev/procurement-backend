@@ -81,99 +81,51 @@ public sealed class PolicyWorkflowE2ETests
         }
 
         Guid organizationId;
-        Guid policyVersionId;
-        Guid subjectId;
-        Guid originatorId;
-        PolicyEvaluationBundle bundle;
-        var nonce = "e2e-waiver-nonce";
-        var evidenceDigest = new string('c', 64);
         await using (var context = new ProcureToPayDbContext(
             new DbContextOptionsBuilder<ProcureToPayDbContext>().UseSqlServer(connectionString).Options))
         {
-            var organization = await context.Organizations.SingleAsync(cancellationToken);
-            organizationId = organization.Id;
-            originatorId = (await context.UserProfiles.SingleAsync(
-                item => item.Subject == "admin-1", cancellationToken)).Id;
+            organizationId = (await context.Organizations.SingleAsync(cancellationToken)).Id;
+            Assert.NotEqual(Guid.Empty, organizationId);
+        }
 
-            var policy = new PolicySetVersion(Guid.NewGuid(), organizationId, 1, [PolicyScope.Line]);
-            policy.AddRule(new PolicyRule("QUOTATIONS", PolicyScope.Line, [],
-                [new PolicyEffect(PolicyEffectType.RequireQuotations, "RFQ",
-                    minimumQuotations: 3, minimumExceptionQuotations: 1)]));
-            policy.AddRule(new PolicyRule("LINE_DEFAULT", PolicyScope.Line, [],
-                [new PolicyEffect(PolicyEffectType.Allow, "LINE_DEFAULT")], isFallback: true));
-            policy.Publish(PolicyCanonicalizer.ComputePolicyDigest(policy));
-            policyVersionId = policy.Id;
-            context.PolicySetVersions.Add(new PolicySetVersionRecord
+        // SPEC 05 REQ-05/REQ-07: the legacy user-initiated waiver route is gone. Even ADMIN is
+        // rejected before any evaluation or verifier is consulted, and the policy engine cannot
+        // be called without the service workload identity.
+        using (var legacy = await admin.PostAsJsonAsync(
+            $"/api/v1/policies/evaluations/{Guid.NewGuid()}/quotation-waiver",
+            new
             {
-                Id = policy.Id, OrganizationId = organizationId, Sequence = 1,
-                Status = (int)PolicySetStatus.Published, ScopesJson = "[\"LINE\"]",
-                ContentJson = PolicyCanonicalizer.CanonicalizePolicy(policy),
-                ContentDigest = policy.ContentDigest!, CreatedAt = DateTimeOffset.UtcNow
-            });
-            await context.SaveChangesAsync(cancellationToken);
-
-            subjectId = Guid.NewGuid();
-            var request = new PolicyRequestInput(
-                new PolicySubjectReference(subjectId, 1), organizationId, Guid.NewGuid(), "PEN",
-                [new PolicyLineInput(
-                    new PolicySubjectReference(Guid.NewGuid(), 1),
-                    new Dictionary<string, PolicyValue>(StringComparer.Ordinal)
-                    {
-                        ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(10, "PEN")
-                    })]);
-            using var scope = factory.Services.CreateScope();
-            bundle = await scope.ServiceProvider.GetRequiredService<PolicyEvaluationService>()
-                .EvaluatePurchaseRequestAsync(
-                    policy, request,
-                    new PolicyWorkloadIdentity("https://keycloak.test/realms/procure-to-pay", "procurement-api"),
-                    "e2e-waiver-base", DateTimeOffset.UtcNow, "corr-e2e-waiver", cancellationToken);
+                type = "REDUCE_MIN_VALID_QUOTATIONS",
+                referenceId = Guid.NewGuid(),
+                requestedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+                requestedValidTo = DateTimeOffset.UtcNow.AddDays(1),
+                workflowDecisionId = Guid.NewGuid(),
+                workflowDecisionVersion = 1,
+                evidenceDigest = new string('c', 64),
+                targetRequirementKey = "RFQ",
+                from = 3,
+                to = 2,
+                floor = 1,
+                coveredLines = Array.Empty<object>(),
+                requesterId = (Guid?)null,
+                originatorId = Guid.NewGuid(),
+                workloadSubjectId = Guid.NewGuid(),
+                nonce = "user-waiver-nonce"
+            },
+            cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, legacy.StatusCode);
+            Assert.Contains("/problems/forbidden",
+                await legacy.Content.ReadAsStringAsync(cancellationToken), StringComparison.Ordinal);
         }
 
-        var binding = QuotationWaiverEvaluator.ComputeBinding(
-            organizationId, policyVersionId, subjectId, bundle.PolicyContentDigest, bundle.ResultDigest, nonce);
-        var waiver = new
+        // The verifier service endpoint is not reachable with an interactive user token either.
+        using (var forbidden = await admin.PostAsJsonAsync(
+            "/v1/policy-exceptions/verify",
+            new { contract_version = "workflow-verification-request/v1" },
+            cancellationToken))
         {
-            type = "REDUCE_MIN_VALID_QUOTATIONS",
-            from = 3,
-            to = 2,
-            floor = 1,
-            policyDigest = bundle.PolicyContentDigest,
-            evaluationDigest = bundle.ResultDigest,
-            binding,
-            nonce,
-            evidenceDigest,
-            approverRole = "PROCUREMENT_APPROVER",
-            authorityType = "PROCUREMENT",
-            approverId = Guid.NewGuid(),
-            workloadSubjectId = Guid.NewGuid(),
-            originatorId,
-            targetRequirementKey = "RFQ"
-        };
-
-        Guid reevaluationId;
-        using (var first = await admin.PostAsJsonAsync(
-            $"/api/v1/policies/evaluations/{bundle.Id}/quotation-waiver", waiver, cancellationToken))
-        {
-            Assert.Equal(HttpStatusCode.OK, first.StatusCode);
-            var body = await first.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
-            reevaluationId = body.GetProperty("id").GetGuid();
-            Assert.Equal(2, body.GetProperty("controls")[0].GetProperty("minimumQuotations").GetInt32());
-            Assert.Equal("REMOVED", body.GetProperty("diff")[0].GetProperty("change").GetString());
-        }
-
-        using (var replay = await admin.PostAsJsonAsync(
-            $"/api/v1/policies/evaluations/{bundle.Id}/quotation-waiver", waiver, cancellationToken))
-        {
-            Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
-            var body = await replay.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
-            Assert.Equal(reevaluationId, body.GetProperty("id").GetGuid());
-        }
-
-        await using (var context = new ProcureToPayDbContext(
-            new DbContextOptionsBuilder<ProcureToPayDbContext>().UseSqlServer(connectionString).Options))
-        {
-            Assert.Equal(1, await context.Set<PolicyExceptionVerificationRecord>().CountAsync(cancellationToken));
-            Assert.Equal(2, await context.PolicyEvaluationBundles.CountAsync(cancellationToken));
+            Assert.Equal(HttpStatusCode.Unauthorized, forbidden.StatusCode);
         }
     }
 
@@ -216,8 +168,6 @@ public sealed class PolicyWorkflowE2ETests
                 }));
             builder.ConfigureTestServices(services =>
             {
-                services.RemoveAll<IQuotationWaiverVerifier>();
-                services.AddScoped<IQuotationWaiverVerifier, ControlledWaiverVerifier>();
                 services.AddAuthentication(options =>
                 {
                     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -238,31 +188,4 @@ public sealed class PolicyWorkflowE2ETests
         }
     }
 
-    private sealed class ControlledWaiverVerifier : IQuotationWaiverVerifier
-    {
-        public string VerifierId => "APPROVAL_WORKFLOW";
-        public string ContractVersion => "policy-exception-verifier/v1";
-
-        public Task<QuotationWaiverEvidence?> VerifyAsync(
-            QuotationWaiverRequest request,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<QuotationWaiverEvidence?>(new QuotationWaiverEvidence(
-                request.EvidenceDigest, request.Binding, request.Nonce,
-                DateTimeOffset.UtcNow.AddMinutes(10), "workflow-decision-e2e")
-            {
-                WorkflowDecisionVersion = 1,
-                WorkflowDecisionDigest = new string('d', 64),
-                AuthorityEvidenceDigest = new string('e', 64),
-                EligibilityEvidenceDigest = new string('f', 64),
-                CoveredLineIds = request.TargetLineIds,
-                SegregationSatisfied = true,
-                ApproverId = request.ApproverId,
-                ApproverRole = "PROCUREMENT_APPROVER",
-                AuthorityType = "PROCUREMENT",
-                Scope = "LINE",
-                ValidFrom = DateTimeOffset.UtcNow.AddMinutes(-1),
-                VerifierId = "APPROVAL_WORKFLOW",
-                VerifierContractVersion = "policy-exception-verifier/v1"
-            });
-    }
 }

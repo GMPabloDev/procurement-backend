@@ -32,10 +32,12 @@ public sealed class PolicyAdapterContractTests
     {
         var defaultDeny = new PolicyExceptionVerifierRegistry([]);
         var verifier = defaultDeny.Resolve();
-        var evidence = await verifier.VerifyAsync(new QuotationWaiverRequest(
-            PolicyExceptionType.ReduceMinValidQuotations, 3, 2, 1,
-            new string('a', 64), new string('b', 64), "binding", "nonce", new string('c', 64),
-            "PROCUREMENT_APPROVER", "PROCUREMENT", Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()),
+        var binding = WaiverFixtures.Binding(
+            WaiverFixtures.OrganizationId, "PURCHASE_REQUEST", Guid.NewGuid(), 1,
+            new string('b', 64), new string('a', 64), "RFQ",
+            [WaiverFixtures.Target(Guid.NewGuid(), 1, new string('d', 64))]);
+        var evidence = await verifier.VerifyAsync(
+            WaiverFixtures.Request(binding, new string('c', 64)),
             TestContext.Current.CancellationToken);
         Assert.Null(evidence);
 

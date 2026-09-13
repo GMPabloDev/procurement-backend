@@ -3,6 +3,8 @@
 using System.Collections.Immutable;
 using System.Text.Json;
 using ProcureToPay.Domain.Modules.Organization;
+using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.SharedKernel;
 
@@ -190,13 +192,29 @@ public sealed class PolicyEvaluatorTests
             Guid.NewGuid(), "waiver-001", subject, DateTimeOffset.UtcNow, "a".PadLeft(64, 'a'),
             "b".PadLeft(64, 'b'), [scope, secondScope], [combinedControl], PolicyResult.RequirementsGenerated,
             "c".PadLeft(64, 'c'));
-        var request = new QuotationWaiverRequest(
-            PolicyExceptionType.ReduceMinValidQuotations, 3, 2, 1,
-            bundle.PolicyContentDigest, bundle.ResultDigest, "binding", "nonce", "evidence",
-            "PROCUREMENT_APPROVER", "PROCUREMENT", Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid())
-        { TargetRequirementKey = "QUOTATIONS" };
+        var covered = new[]
+        {
+            WaiverFixtures.Target(subject.Id, subject.Version, new string('d', 64)),
+            WaiverFixtures.Target(secondSubject.Id, secondSubject.Version, new string('e', 64))
+        };
+        var binding = WaiverFixtures.Binding(
+            WaiverFixtures.OrganizationId, "PURCHASE_REQUEST", subject.Id, subject.Version,
+            bundle.ResultDigest, bundle.PolicyContentDigest, "QUOTATIONS", covered);
+        var request = WaiverFixtures.Request(binding, new string('f', 64));
         var evidence = new QuotationWaiverEvidence(
-            "evidence", "binding", "nonce", DateTimeOffset.UtcNow.AddMinutes(5), "decision-1");
+            new string('f', 64), binding.ComputeBinding(), binding.Nonce,
+            DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(5), "decision-1")
+        {
+            WorkflowDecisionVersion = 1,
+            WorkflowDecisionDigest = new string('d', 64),
+            AuthorityEvidenceDigest = new string('e', 64),
+            EligibilityEvidenceDigest = new string('f', 64),
+            CoveredLines = binding.CoveredLines,
+            SegregationSatisfied = true,
+            ApproverId = Guid.NewGuid(),
+            ApproverRole = "PROCUREMENT_APPROVER",
+            AuthorityType = "PROCUREMENT"
+        };
 
         var reduced = QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(bundle, request, evidence);
 
@@ -216,20 +234,84 @@ public sealed class PolicyEvaluatorTests
         Assert.Equal("REMOVED", replay.Diff[0].Change);
         Assert.Throws<DomainConflictException>(() =>
             QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(
-                bundle, request with { From = 4 }, evidence));
+                bundle,
+                WaiverFixtures.Request(
+                    WaiverFixtures.Binding(
+                        WaiverFixtures.OrganizationId, "PURCHASE_REQUEST", subject.Id, subject.Version,
+                        bundle.ResultDigest, bundle.PolicyContentDigest, "QUOTATIONS", covered, from: 4),
+                    new string('f', 64)),
+                evidence));
         var notExceptionable = bundle with
         {
             Controls = [combinedControl with { MinimumAllowedQuotations = null }]
         };
-        var notExceptionableRequest = request with
+        var notExceptionableRequest = WaiverFixtures.Request(
+            WaiverFixtures.Binding(
+                WaiverFixtures.OrganizationId, "PURCHASE_REQUEST", subject.Id, subject.Version,
+                notExceptionable.ResultDigest, notExceptionable.PolicyContentDigest, "QUOTATIONS", covered),
+            new string('f', 64));
+        var notExceptionableEvidence = evidence with
         {
-            EvaluationDigest = notExceptionable.ResultDigest
+            Binding = notExceptionableRequest.BindingDigest
         };
         var exception = Assert.Throws<DomainConflictException>(() =>
             QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(
-                notExceptionable, notExceptionableRequest, evidence));
+                notExceptionable, notExceptionableRequest, notExceptionableEvidence));
         Assert.Contains("NOT_EXCEPTIONABLE", exception.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Approval_phase_follows_the_role_and_procurement_waits_for_earlier_stages()
+    {
+        var organizationId = Guid.NewGuid();
+        var policy = new PolicySetVersion(Guid.NewGuid(), organizationId, 1, [PolicyScope.Line]);
+        policy.AddRule(new PolicyRule("DEPT", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.RequireApproval, "DEPT",
+                approval: WaiverApproval(SystemRole.DepartmentApprover, ApprovalAuthorityType.BusinessNeed))]));
+        policy.AddRule(new PolicyRule("FINANCE", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.RequireApproval, "FINANCE",
+                approval: WaiverApproval(SystemRole.FinanceApprover, ApprovalAuthorityType.Financial))]));
+        policy.AddRule(new PolicyRule("LEGAL", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.RequireApproval, "LEGAL",
+                approval: WaiverApproval(SystemRole.LegalReviewer, null))]));
+        policy.AddRule(new PolicyRule("PROC_APPROVAL", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.RequireApproval, "PROC_APPROVAL",
+                approval: WaiverApproval(SystemRole.ProcurementApprover, ApprovalAuthorityType.Procurement))]));
+        policy.AddRule(new PolicyRule("LINE_DEFAULT", PolicyScope.Line, [],
+            [new PolicyEffect(PolicyEffectType.Allow, "LINE_DEFAULT")], isFallback: true));
+        policy.Publish(PolicyCanonicalizer.ComputePolicyDigest(policy));
+
+        var line = new PolicyLineInput(
+            new PolicySubjectReference(Guid.NewGuid(), 1),
+            new Dictionary<string, PolicyValue>(StringComparer.Ordinal)
+            {
+                ["GROSS_AMOUNT_BASE"] = PolicyValue.Money(600, "PEN")
+            });
+        var request = new PolicyRequestInput(
+            new PolicySubjectReference(Guid.NewGuid(), 1), organizationId, Guid.NewGuid(), "PEN", [line]);
+        var result = PolicyEvaluator.EvaluateRequest(policy, request, "phases", DateTimeOffset.UtcNow);
+
+        Assert.Equal("DEPARTMENT", Phase("DEPT"));
+        Assert.Equal("PRE_PROCUREMENT", Phase("FINANCE"));
+        Assert.Equal("PRE_PROCUREMENT", Phase("LEGAL"));
+        Assert.Equal("PROCUREMENT", Phase("PROC_APPROVAL"));
+
+        string Phase(string key) => result.Controls
+            .Single(control => control.RequirementKey == key).Phase;
+    }
+
+    private static PolicyApprovalDescriptor WaiverApproval(SystemRole role, ApprovalAuthorityType? authorityType) =>
+        new(
+            role,
+            authorityType,
+            authorityType is null
+                ? null
+                : new PolicyAuthorityLevelSnapshot(Guid.NewGuid(), 1, "LEVEL", 1),
+            authorityType is null ? null : 500m,
+            authorityType is null ? null : "PEN",
+            DecisionScopeDescriptor.Create(
+                PolicyScopeFixtures.OrganizationId,
+                [new DecisionScopeEntry(ScopeDimension.Organization, null, null)]).ToCanonicalJson());
 
     [Fact]
     public void Block_control_wins_over_allow_and_policy_must_be_published()
@@ -320,7 +402,7 @@ public sealed class PolicyEvaluatorTests
                         null,
                         null,
                         null,
-                        "ORGANIZATION") )]),
+                        PolicyScopeFixtures.Organization()) )]),
             new(
                 "REQUEST_THRESHOLD",
                 PolicyScope.Request,

@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.SharedKernel;
 
 namespace ProcureToPay.Domain.Modules.Policy;
@@ -146,6 +147,9 @@ public sealed record PolicyEvaluationBundle(
     public string? ManifestCanonicalJson { get; init; }
     public string? InputCanonicalJson { get; init; }
     public string? RequestSnapshotJson { get; init; }
+
+    /// <summary>Material projection of every covered line for the approval adapter (SPEC 05 REQ-01).</summary>
+    public PolicyMaterialProjection? MaterialProjection { get; init; }
     public Guid? ActivationId { get; init; }
     public Guid? PreviousBundleId { get; init; }
 
@@ -931,11 +935,25 @@ public static class PolicyEvaluator
         };
     }
 
+    /// <summary>
+    /// Functional phase of a control (SPEC 02 phase contract, SPEC 05 REQ-04): Department runs
+    /// first, Finance/IT/Legal stay parallel in PRE_PROCUREMENT, Procurement runs after the
+    /// previous controls and PRE_PO precedes the PO-enabling result. `stage_code` only labels the
+    /// DAG; it never replaces it.
+    /// </summary>
     private static string PhaseFor(PolicyEffect effect) => effect.Type switch
     {
-        PolicyEffectType.RequireApproval => "DEPARTMENT",
+        PolicyEffectType.RequireApproval => PhaseForApprovalRole(effect.Approval!.Role),
         PolicyEffectType.RequireProcurement => "PROCUREMENT",
         PolicyEffectType.RequirePo => "PRE_PO",
+        _ => "PRE_PROCUREMENT"
+    };
+
+    private static string PhaseForApprovalRole(SystemRole role) => role switch
+    {
+        SystemRole.DepartmentApprover => "DEPARTMENT",
+        SystemRole.ProcurementApprover or SystemRole.ProcurementBuyer => "PROCUREMENT",
+        SystemRole.FinanceApprover or SystemRole.ItReviewer or SystemRole.LegalReviewer => "PRE_PROCUREMENT",
         _ => "PRE_PROCUREMENT"
     };
 

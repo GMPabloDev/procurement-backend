@@ -689,7 +689,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             cancellationToken);
         if (existing is not null)
         {
-            if (existing.Binding == request.Binding && existing.EvidenceDigest == evidence.EvidenceDigest &&
+            if (existing.Binding == request.BindingDigest && existing.EvidenceDigest == evidence.EvidenceDigest &&
                 existing.Nonce == request.Nonce)
             {
                 return existing;
@@ -704,7 +704,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             BaseBundleId = evaluationBundleId,
             WorkflowDecisionId = workflowDecisionId,
             TargetRequirementKey = request.TargetRequirementKey,
-            Binding = request.Binding,
+            Binding = request.BindingDigest,
             Nonce = request.Nonce,
             EvidenceDigest = evidence.EvidenceDigest,
             ApproverId = evidence.ApproverId,
@@ -726,7 +726,7 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
                 item.BaseBundleId == evaluationBundleId &&
                 item.TargetRequirementKey == request.TargetRequirementKey,
                 cancellationToken);
-            if (concurrent is not null && concurrent.Binding == request.Binding &&
+            if (concurrent is not null && concurrent.Binding == request.BindingDigest &&
                 concurrent.EvidenceDigest == evidence.EvidenceDigest)
             {
                 return concurrent;
@@ -776,10 +776,10 @@ public sealed class PolicyPersistenceService(ProcureToPayDbContext dbContext)
             evidence.ApproverId,
             evidence.EligibilityEvidenceDigest,
             evidence.SegregationSatisfied,
-            evidence.Scope,
+            evidence.DecisionScope?.ToCanonicalJson() ?? string.Empty,
             evidence.ValidFrom,
             evidence.ExpiresAt,
-            request.Binding);
+            request.BindingDigest);
         var exceptionVerificationDigest = PolicyCanonicalizer.ComputeExceptionVerificationDigest(exceptionVerification);
         var inputCanonical = PolicyCanonicalizer.CanonicalizeEvaluationInput(
             verifiedAt,

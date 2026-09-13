@@ -121,7 +121,7 @@ public sealed class PolicyModelTests
             null,
             null,
             null,
-            "ORGANIZATION");
+            PolicyScopeFixtures.Organization());
         Assert.Null(none.AuthorityLevel);
 
         Assert.Throws<DomainValidationException>(() => new PolicyApprovalDescriptor(
@@ -130,7 +130,35 @@ public sealed class PolicyModelTests
             null,
             null,
             null,
-            "ORGANIZATION"));
+            PolicyScopeFixtures.Organization()));
+    }
+
+    [Fact]
+    public void Approval_decision_scope_must_be_canonical_decision_scope_v1()
+    {
+        var descriptor = new PolicyApprovalDescriptor(
+            SystemRole.ItReviewer, null, null, null, null, PolicyScopeFixtures.Organization());
+        Assert.Equal(
+            "{\"organization_id\":\"11111111-1111-1111-1111-111111111111\",\"schema_version\":\"decision-scope/v1\",\"scopes\":[{\"dimension\":\"ORGANIZATION\",\"reference_id\":null,\"reference_version\":null}]}",
+            descriptor.DecisionScope);
+
+        // Legacy tokens, extra fields, non-canonical JSON and COST_CENTER are rejected.
+        foreach (var legacy in new[]
+        {
+            "ORGANIZATION",
+            "COST_CENTER",
+            "{\"organization_id\":\"11111111-1111-1111-1111-111111111111\",\"schema_version\":\"decision-scope/v1\",\"scopes\":[{\"dimension\":\"ORGANIZATION\",\"reference_id\":null,\"reference_version\":null}],\"extra\":true}",
+            "{ \"organization_id\":\"11111111-1111-1111-1111-111111111111\",\"schema_version\":\"decision-scope/v1\",\"scopes\":[{\"dimension\":\"ORGANIZATION\",\"reference_id\":null,\"reference_version\":null}]}"
+        })
+        {
+            Assert.Throws<DomainValidationException>(() => new PolicyApprovalDescriptor(
+                SystemRole.ItReviewer, null, null, null, null, legacy));
+        }
+
+        // The organization of the descriptor must match the policy organization when provided.
+        Assert.Throws<DomainValidationException>(() => new PolicyApprovalDescriptor(
+            SystemRole.ItReviewer, null, null, null, null, PolicyScopeFixtures.Organization(),
+            organizationId: Guid.Parse("22222222-2222-2222-2222-222222222222")));
     }
 
     [Fact]

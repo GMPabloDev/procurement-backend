@@ -47,7 +47,7 @@ public static class PolicyDocumentParser
                     predicate.GetProperty("fact_key").GetString()!,
                     ParseOperator(predicate.GetProperty("operator").GetString()!),
                     ParseValue(predicate.GetProperty("value"))));
-            var effects = rule.GetProperty("effects").EnumerateArray().Select(ParseEffect);
+            var effects = rule.GetProperty("effects").EnumerateArray().Select(effect => ParseEffect(effect, organizationId));
             policy.AddRule(new PolicyRule(
                 rule.GetProperty("code").GetString()!,
                 ParseScope(rule.GetProperty("scope").GetString()),
@@ -69,13 +69,13 @@ public static class PolicyDocumentParser
         return policy;
     }
 
-    private static PolicyEffect ParseEffect(JsonElement effect)
+    private static PolicyEffect ParseEffect(JsonElement effect, Guid organizationId)
     {
         PolicyApprovalDescriptor? approval = null;
         if (effect.TryGetProperty("approval", out var approvalElement) &&
             approvalElement.ValueKind != JsonValueKind.Null)
         {
-            approval = ParseApproval(approvalElement);
+            approval = ParseApproval(approvalElement, organizationId);
         }
         var documents = effect.TryGetProperty("documents", out var documentsElement) &&
                         documentsElement.ValueKind == JsonValueKind.Array
@@ -93,7 +93,7 @@ public static class PolicyDocumentParser
             documents);
     }
 
-    private static PolicyApprovalDescriptor ParseApproval(JsonElement approval)
+    private static PolicyApprovalDescriptor ParseApproval(JsonElement approval, Guid organizationId)
     {
         PolicyAuthorityLevelSnapshot? level = null;
         if (approval.TryGetProperty("authority_level", out var levelElement) &&
@@ -118,7 +118,8 @@ public static class PolicyDocumentParser
             currency,
             approval.GetProperty("decision_scope").GetString()!,
             exceptionable,
-            null);
+            null,
+            organizationId);
     }
 
     private static PolicySubjectReference ParseSubject(JsonElement value) =>

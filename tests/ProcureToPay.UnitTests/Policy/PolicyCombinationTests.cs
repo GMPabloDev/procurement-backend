@@ -99,11 +99,11 @@ public sealed class PolicyCombinationTests
             new PolicyRule("FINANCE_LOW", PolicyScope.Line, [],
                 [new PolicyEffect(PolicyEffectType.RequireApproval, "FINANCE",
                     approval: new PolicyApprovalDescriptor(
-                        SystemRole.FinanceApprover, ApprovalAuthorityType.Financial, levelTwo, 500, "PEN", "ORGANIZATION"))]),
+                        SystemRole.FinanceApprover, ApprovalAuthorityType.Financial, levelTwo, 500, "PEN", PolicyScopeFixtures.Organization()))]),
             new PolicyRule("FINANCE_HIGH", PolicyScope.Line, [],
                 [new PolicyEffect(PolicyEffectType.RequireApproval, "FINANCE",
                     approval: new PolicyApprovalDescriptor(
-                        SystemRole.FinanceApprover, ApprovalAuthorityType.Financial, levelFour, 900, "PEN", "ORGANIZATION"))]),
+                        SystemRole.FinanceApprover, ApprovalAuthorityType.Financial, levelFour, 900, "PEN", PolicyScopeFixtures.Organization()))]),
             new PolicyRule("PROCUREMENT", PolicyScope.Line, [],
                 [new PolicyEffect(PolicyEffectType.RequireProcurement, "PROCUREMENT")]),
             new PolicyRule("LINE_DEFAULT", PolicyScope.Line, [],
@@ -123,10 +123,10 @@ public sealed class PolicyCombinationTests
         var incompatible = new PolicySetVersion(Guid.NewGuid(), organizationId, 2, [PolicyScope.Line]);
         incompatible.AddRule(new PolicyRule("IT_REVIEW", PolicyScope.Line, [],
             [new PolicyEffect(PolicyEffectType.RequireApproval, "REVIEW",
-                approval: new PolicyApprovalDescriptor(SystemRole.ItReviewer, null, null, null, null, "ORGANIZATION"))]));
+                approval: new PolicyApprovalDescriptor(SystemRole.ItReviewer, null, null, null, null, PolicyScopeFixtures.Organization()))]));
         incompatible.AddRule(new PolicyRule("LEGAL_REVIEW", PolicyScope.Line, [],
             [new PolicyEffect(PolicyEffectType.RequireApproval, "REVIEW",
-                approval: new PolicyApprovalDescriptor(SystemRole.LegalReviewer, null, null, null, null, "ORGANIZATION"))]));
+                approval: new PolicyApprovalDescriptor(SystemRole.LegalReviewer, null, null, null, null, PolicyScopeFixtures.Organization()))]));
         incompatible.AddRule(new PolicyRule("LINE_DEFAULT", PolicyScope.Line, [],
             [new PolicyEffect(PolicyEffectType.Allow, "LINE_DEFAULT")], isFallback: true));
 
@@ -141,6 +141,7 @@ public sealed class PolicyCombinationTests
         var costCenterDepartment = new PolicyValueReference(Guid.NewGuid(), 1);
         var beneficiaryDepartment = new PolicyValueReference(Guid.NewGuid(), 1);
         var authority = new PolicyAuthorityLevelSnapshot(Guid.NewGuid(), 1, "DEPT_L1", 1);
+        var departmentScope = PolicyScopeFixtures.Department(Guid.NewGuid(), 1);
         var policy = PublishedPolicy(organizationId, [PolicyScope.Line],
             new PolicyRule("DEPARTMENT_APPROVAL", PolicyScope.Line,
                 [new PolicyPredicate("COST_CENTER_DEPARTMENT", PolicyOperator.Equal,
@@ -148,17 +149,17 @@ public sealed class PolicyCombinationTests
                 [new PolicyEffect(PolicyEffectType.RequireApproval, "DEPT_APPROVAL",
                     approval: new PolicyApprovalDescriptor(
                         SystemRole.DepartmentApprover, ApprovalAuthorityType.BusinessNeed,
-                        authority, 500, "PEN", "COST_CENTER"))]),
+                        authority, 500, "PEN", departmentScope))]),
             new PolicyRule("RISK_IT_REVIEW", PolicyScope.Line,
                 [new PolicyPredicate("DATA_RISK", PolicyOperator.Equal, PolicyValue.VersionedCode("DATA_RISK", "HIGH", 1, new string('a', 64)))],
                 [new PolicyEffect(PolicyEffectType.RequireApproval, "IT_REVIEW",
                     approval: new PolicyApprovalDescriptor(
-                        SystemRole.ItReviewer, null, null, null, null, "ORGANIZATION"))]),
+                        SystemRole.ItReviewer, null, null, null, null, PolicyScopeFixtures.Organization()))]),
             new PolicyRule("CONTRACT_LEGAL_REVIEW", PolicyScope.Line,
                 [new PolicyPredicate("CONTRACT_REQUIRED", PolicyOperator.IsTrue, PolicyValue.Boolean(true))],
                 [new PolicyEffect(PolicyEffectType.RequireApproval, "LEGAL_REVIEW",
                     approval: new PolicyApprovalDescriptor(
-                        SystemRole.LegalReviewer, null, null, null, null, "ORGANIZATION"))]),
+                        SystemRole.LegalReviewer, null, null, null, null, PolicyScopeFixtures.Organization()))]),
             new PolicyRule("LINE_DEFAULT", PolicyScope.Line, [],
                 [new PolicyEffect(PolicyEffectType.Allow, "LINE_DEFAULT")], isFallback: true));
         // Cheap line: risk and contract demand reviews even though the amount is low.
@@ -180,7 +181,7 @@ public sealed class PolicyCombinationTests
         var department = Assert.Single(result.Controls, control => control.RequirementKey == "DEPT_APPROVAL");
         Assert.Equal(SystemRole.DepartmentApprover, department.Approval!.Role);
         Assert.Equal(ApprovalAuthorityType.BusinessNeed, department.Approval.AuthorityType);
-        Assert.Equal("COST_CENTER", department.Approval.DecisionScope);
+        Assert.Equal(departmentScope, department.Approval.DecisionScope);
         Assert.True(department.SubjectIds.SetEquals([covered.Subject.Id]));
 
         var itReview = Assert.Single(result.Controls, control => control.RequirementKey == "IT_REVIEW");

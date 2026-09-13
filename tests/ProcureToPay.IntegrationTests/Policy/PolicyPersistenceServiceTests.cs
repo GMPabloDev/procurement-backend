@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.SharedKernel;
@@ -214,27 +215,69 @@ public sealed class PolicyPersistenceServiceTests
             "Create quotation policy for waiver test",
             "corr-waiver-policy",
             cancellationToken);
-        var quotationBundle = PolicyEvaluator.EvaluateRequest(
-            quotationPolicy, request, "quotation-waiver-evaluation", DateTimeOffset.UtcNow);
-        await service.AppendEvaluationAsync(quotationBundle, caller with
-        {
-            PolicySetVersionId = quotationVersion.Id,
-            EvaluationKey = quotationBundle.EvaluationKey,
-            CorrelationReference = "corr-waiver-evaluation"
-        }, cancellationToken);
+        var quotationBundle = await evaluationService.EvaluatePurchaseRequestAsync(
+            quotationPolicy,
+            request,
+            new PolicyWorkloadIdentity("https://issuer.test", "procurement-api"),
+            "quotation-waiver-evaluation",
+            DateTimeOffset.UtcNow,
+            "corr-waiver-evaluation",
+            cancellationToken,
+            new PolicyEvaluationMetadata(
+                "PURCHASE_REQUEST",
+                "PURCHASE_REQUEST",
+                new string('f', 64),
+                PolicyEvaluationService.ComputeManifestDigest(new PolicyCompletenessManifest(
+                    request.Subject.Id,
+                    request.Subject.Version,
+                    request.Lines.Select(line => line.Subject).ToArray(),
+                    string.Empty)),
+                PolicyCanonicalizer.CanonicalizeRequest(request, DateTimeOffset.UtcNow),
+                Provenance: new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["GROSS_AMOUNT_BASE"] = "provider://amount"
+                },
+                ManifestCanonicalJson: PolicyEvaluationService.CanonicalizeManifest(new PolicyCompletenessManifest(
+                    request.Subject.Id,
+                    request.Subject.Version,
+                    request.Lines.Select(line => line.Subject).ToArray(),
+                    string.Empty))));
+        Assert.NotNull(quotationBundle.MaterialProjection);
+        var covered = quotationBundle.MaterialProjection!.Targets
+            .Select(target => new PolicyExceptionTarget(
+                "PURCHASE_REQUEST_LINE", target.Id, target.Version, target.MaterialSnapshotDigest))
+            .ToArray();
         var nonce = "waiver-nonce-1";
         var evidenceDigest = new string('c', 64);
-        var binding = QuotationWaiverEvaluator.ComputeBinding(
-            organizationId, quotationVersion.Id, quotationBundle.Subject.Id,
-            quotationVersion.ContentDigest, quotationBundle.ResultDigest, nonce);
+        var waiverBinding = new PolicyExceptionBindingRequest(
+            organizationId,
+            "PURCHASE_REQUEST",
+            quotationBundle.Subject.Id,
+            quotationBundle.Subject.Version,
+            quotationBundle.Id,
+            quotationBundle.ResultDigest,
+            quotationVersion.Id,
+            quotationVersion.ContentDigest,
+            quotationBundle.ManifestDigest!,
+            "RFQ",
+            covered,
+            3,
+            2,
+            1,
+            Guid.Parse("eeeeeeee-1111-1111-1111-111111111111"),
+            Guid.Parse("77777777-7777-7777-7777-777777777777"),
+            Guid.Parse("88888888-8888-8888-8888-888888888888"),
+            Guid.Parse("99999999-9999-9999-9999-999999999999"),
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            DateTimeOffset.UtcNow.AddDays(1),
+            nonce);
         var waiver = new QuotationWaiverRequest(
-            PolicyExceptionType.ReduceMinValidQuotations, 3, 2, 1,
-            quotationVersion.ContentDigest, quotationBundle.ResultDigest, binding, nonce,
-            evidenceDigest, "PROCUREMENT_APPROVER", "PROCUREMENT",
-            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid())
-        {
-            TargetRequirementKey = "RFQ"
-        };
+            PolicyExceptionType.ReduceMinValidQuotations,
+            waiverBinding,
+            Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            1,
+            evidenceDigest,
+            "corr-waiver");
         var waiverService = new PolicyEvaluationService(
             service,
             new PolicyWorkloadAllowlist(configuration),
@@ -298,16 +341,17 @@ public sealed class PolicyPersistenceServiceTests
 
     private sealed class AcceptedWaiverVerifier(string evidenceDigest) : IQuotationWaiverVerifier
     {
-        public string VerifierId => "APPROVAL_WORKFLOW";
-        public string ContractVersion => "policy-exception-verifier/v1";
+        public string VerifierId => "approval-workflow";
+        public string ContractVersion => PolicyExceptionContract.VerificationResponseVersion;
 
         public Task<QuotationWaiverEvidence?> VerifyAsync(
             QuotationWaiverRequest request,
             CancellationToken cancellationToken = default) =>
             Task.FromResult<QuotationWaiverEvidence?>(new QuotationWaiverEvidence(
                 evidenceDigest,
-                request.Binding,
+                request.BindingDigest,
                 request.Nonce,
+                DateTimeOffset.UtcNow.AddMinutes(-1),
                 DateTimeOffset.UtcNow.AddMinutes(5),
                 "workflow-decision-1")
             {
@@ -315,15 +359,17 @@ public sealed class PolicyPersistenceServiceTests
                 WorkflowDecisionDigest = new string('d', 64),
                 AuthorityEvidenceDigest = new string('e', 64),
                 EligibilityEvidenceDigest = new string('f', 64),
-                CoveredLineIds = request.TargetLineIds,
+                CoveredLines = request.Binding.CoveredLines,
+                DecisionScope = DecisionScopeDescriptor.Create(
+                    request.Binding.OrganizationId,
+                    [new DecisionScopeEntry(ScopeDimension.Organization, null, null)]),
                 SegregationSatisfied = true,
-                ApproverId = request.ApproverId,
+                ApproverId = Guid.NewGuid(),
                 ApproverRole = "PROCUREMENT_APPROVER",
                 AuthorityType = "PROCUREMENT",
-                Scope = "LINE",
                 ValidFrom = DateTimeOffset.UtcNow.AddMinutes(-1),
-                VerifierId = "APPROVAL_WORKFLOW",
-                VerifierContractVersion = "policy-exception-verifier/v1"
+                VerifierId = "approval-workflow",
+                VerifierContractVersion = PolicyExceptionContract.VerificationResponseVersion
             });
     }
 

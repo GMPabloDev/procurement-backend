@@ -148,3 +148,65 @@ Las etiquetas son `APPROVAL_DEAD_LETTER`, `APPROVAL_BACKLOG_OVERDUE`,
   conservando el esquema vacío. Después de persistir un resultado de SPEC 03/04 se deshabilitan
   submissions y transiciones, se mantienen los dispatcher/consumers de los contratos ya emitidos y
   se corrige hacia adelante; nunca se vuelve a una versión incapaz de consumir esos eventos.
+
+## Integración de Policy (SPEC 05)
+
+### Orden de despliegue fail-closed
+
+1. **Policy primero, con verifier default-deny.** Publicar `decision-scope/v1`, la proyección
+   material `policy-approval-target/v1` y el wire `workflow-verification-request/v1`/`response/v1`
+   manteniendo el verifier default-deny y la ruta legacy de usuario cerrada (`403`). Las políticas
+   publicadas con tokens de scope (`ORGANIZATION`/`COST_CENTER`) o los bundles sin proyección
+   material no se someten al workflow: se reevalúan con una `evaluation_key` nueva. No existe
+   migración inferida de esas políticas ni de esos bundles.
+2. Aplicar la migración `Spec05PolicyExceptionIntegration` (tablas
+   `Approval.PolicyExceptionRequests` y `Approval.PolicyExceptionVerifications`). Es aditiva y su
+   `Down` lanza `NotSupportedException`.
+3. **Workflow después.** Desplegar el endpoint `POST /v1/policy-exceptions/verify`, el esquema
+   service JWT con audience `approval-workflow`, el comando workload-only
+   `POST /api/v1/approval/policy-exceptions` y el digest de evidencia en la respuesta de decisión.
+4. **Habilitar el adapter y los owners al final.** Registrar `policy-approval-adapter` y los cinco
+   owners (`budget-check-owner`, `supporting-document-owner`, `active-supplier-owner`,
+   `quotation-status-owner`, `procurement-stage-owner`, todos `v1`) en
+   `Approval:OwnerWorkloads`. Mientras falte un owner, una submission que lo necesite responde
+   `503` **sin crear caso**; `WAITING` solo empieza después de resolver la identidad exacta.
+
+### Identidades y contratos
+
+- Adapter de submissions: `policy-approval-adapter` con `subject_type=PURCHASE_REQUEST` y
+  `operation=SUBMIT_PURCHASE_REQUEST` (`contract_version=v1`). Exactamente uno.
+- Adapter de excepción: `policy-exception-adapter` con `operation=POLICY_EXCEPTION`
+  (`contract_version=v1`).
+- Preimages propias: `binding` y `evidence_digest` bajo `approval-canonical-json/v2`; la
+  proyección material usa `policy-approval-target/v1` sobre `policy-canonical-json/v1`. Los
+  vectores dorados están en `tests/ProcureToPay.UnitTests/Approval/PolicyExceptionGoldenTests.cs`.
+- `correlation_reference` es solo trazabilidad: no participa en `binding`, `evidence_digest` ni
+  idempotencia.
+- El requisito de una excepción nunca participa en carry-forward: una supersesión lo reproyecta
+  como requisito nuevo que exige decisión nueva.
+
+### Superficies operativas
+
+- `POST /api/v1/approval/policy-exceptions` (workload allowlisted): abre caso, requisito y
+  extensión en una sola transacción. Un usuario o `ADMIN` recibe `403`.
+- `POST /v1/policy-exceptions/verify` (service JWT con audience `approval-workflow` e
+  `issuer + client_id` allowlisted): verifica contra la decisión persistida. `400` malformado,
+  `401`/`403` identidad, `404` evidencia no visible, `409` replay conflictivo, `422` vigencia o
+  revocación, `503` dependencia técnica.
+- La respuesta de decisión de un requisito con extensión incluye `policyExceptionEvidenceDigest`:
+  es el valor que Policy devuelve al verifier.
+- Health: `/health` incluye el check `policy-exception`, que degrada con
+  `POLICY_EXCEPTION_ADAPTER_UNAVAILABLE`, `POLICY_EXCEPTION_OWNER_UNAVAILABLE`,
+  `POLICY_EXCEPTION_VERIFIER_DEFAULT_DENY` o `POLICY_EXCEPTION_CREDENTIAL_MISSING`.
+
+### Recuperación
+
+- **Adapter u owner ausente/ambiguo:** la submission falla `503` sin caso; no se convierte en
+  aprobación manual ni se omite el control.
+- **Credencial de servicio ausente o inválida:** el verifier no llama al workflow y Policy conserva
+  el control (`503`); nunca se degrada a `ALLOW`.
+- **Rollback:** deshabilitar adapter y verifier real restaura default-deny conservando casos,
+  extensiones, verificaciones, decisiones, revocaciones y evaluaciones. Tras persistir una
+  extensión no se vuelve a una versión incapaz de leerla.
+- **Verificación revocada o expirada:** una verificación futura falla (`422` → el control no se
+  reduce) y el histórico permanece inmutable.
