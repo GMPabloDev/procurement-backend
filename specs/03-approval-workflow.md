@@ -3,11 +3,11 @@
 > **Formato:** sdd/v3
 > **Estado:** Implementada
 > **Ejecución:** Integrada
-> **Vigencia:** Sustituida parcialmente por SPEC 04
+> **Vigencia:** Sustituida parcialmente por SPEC 04, SPEC 05
 > **Revisión:** 3
 > **Digest contractual:** f0b61a917c4c4b4adcaee598c75352ef93d03c3bf25b76d15f80177ba3446234
 > **Fecha:** 2026-09-10
-> **Actualizada:** 2026-09-12
+> **Actualizada:** 2026-09-13
 > **Aprobada el:** 2026-09-12
 > **Aprobada por:** osiosad mediante specctl approve
 > **Objetivo:** Convertir requisitos tipados de dominios confiables en casos y tareas de aprobación asignados de forma determinista, con decisiones autorizadas, auditables y entregadas mediante eventos durables.

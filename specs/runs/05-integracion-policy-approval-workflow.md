@@ -1,7 +1,7 @@
 # RUN SPEC 05 — Integración de Policy con Approval Workflow
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** Lista para integrar
+> **Estado del run:** Integrado
 > **Spec:** specs/05-integracion-policy-approval-workflow.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 18977eecbb26e0a650306c317ac1943e9834349a
@@ -13,9 +13,9 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-13 09:06 -0500
-> **Actualizado:** 2026-09-13 16:55 -0500
+> **Actualizado:** 2026-09-13 17:05 -0500
 > **HEAD verificado:** 4694ffa2cd8f35b87419006637e4d60c46df83ae
-> **Commit de integración:** Pendiente
+> **Commit de integración:** 6adadbb1421230775868325f261f853a3455d973
 
 ## Línea base
 
@@ -79,6 +79,19 @@
 | CA-06 | Cumplido | `HttpQuotationWaiverVerifierTests` (payload exacto, service JWT, incompleto/malformado/5xx fail-closed, `404/409/422` sin autoridad) y `PolicyApprovalWorkflowContractE2ETests` que atraviesa evaluación→caso→decisión→endpoint real→reevaluación sin verifier controlado. | Revisor independiente |
 | CA-07 | Cumplido | `PolicyExceptionGoldenTests` reproduce byte a byte los tres vectores propios (target/binding/evidence); el E2E verifica replay idéntico (una sola verificación y una sola reevaluación) y conflicto al reutilizar nonce/decisión tras revocación. | Revisor independiente |
 | CA-08 | Cumplido | `ApprovalSupersessionService` excluye requisitos con extensión del carry-forward; el E2E revoca la evidencia y comprueba que la verificación futura falla sin reducir el control ni reescribir historia; `PolicyExceptionHealthCheck` distingue default-deny, owner y credencial ausentes; el E2E del caso previo cubre la ruta legacy `403`. | Revisor independiente |
+
+## Cierre
+
+- **Integración:** merge `--no-ff` de `spec-05-integracion-policy-approval-workflow` en `main`
+  (`6adadbb1421230775868325f261f853a3455d973`, 2026-09-13). El commit verificado
+  `4694ffa2cd8f35b87419006637e4d60c46df83ae` es ancestro directo de la base, de modo que Git demuestra
+  que el árbol integrado es el árbol revisado; no hubo squash ni rebase.
+- **Metadatos finales:** `08168fd` (spec y run marcados listos) es el único commit posterior al
+  verificado y solo toca la metadata administrativa; no hay cambios de código posteriores sin verificar.
+- **Specs modificadas:** SPEC 02, SPEC 03 y SPEC 04 quedan `Sustituida parcialmente por SPEC 05` sin
+  alterar su comportamiento ni su historia.
+- **Validación de cierre:** `specctl doctor` y `specctl git-check 05` sin errores; `git status --short`
+  solo con los metadatos de cierre esperados.
 
 ## Desviaciones y bloqueos
 

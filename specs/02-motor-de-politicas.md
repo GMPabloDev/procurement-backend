@@ -3,11 +3,11 @@
 > **Formato:** sdd/v3
 > **Estado:** Implementada
 > **Ejecución:** Integrada
-> **Vigencia:** Vigente
+> **Vigencia:** Sustituida parcialmente por SPEC 05
 > **Revisión:** 1
 > **Digest contractual:** 63fec425400bc197524e23cb3a130ab2d7d64f6eba823944b3ebee8923e6d688
 > **Fecha:** 2026-09-08
-> **Actualizada:** 2026-09-09
+> **Actualizada:** 2026-09-13
 > **Aprobada el:** 2026-09-09
 > **Aprobada por:** osiosad mediante specctl approve
 > **Objetivo:** Proveer un Motor de políticas configurable, versionado y determinista que evalúe snapshots de una compra y produzca controles reproducibles sin crear ni decidir tareas de aprobación.
