@@ -202,21 +202,28 @@ public sealed record ApprovalDependencyRef
             throw new DomainValidationException("Only ALL dependency mode is supported.");
         }
 
-        var materialized = (targets ?? throw new DomainValidationException("Dependency targets are required."))
-            .ToImmutableHashSet();
-        if (materialized.Count == 0)
+        var sequence = (targets ?? throw new DomainValidationException("Dependency targets are required."))
+            .ToArray();
+        if (sequence.Length == 0)
         {
             throw new DomainValidationException("A dependency edge requires at least one target.");
         }
 
-        if (materialized.Any(target => target is null))
+        if (sequence.Any(target => target is null))
         {
             throw new DomainValidationException("Dependency targets cannot be null.");
         }
 
+        // Dependencies are canonical sets too (REQ-08): duplicates are rejected on the original
+        // sequence instead of being collapsed by the hash set.
+        if (sequence.Length != sequence.Select(target => target.CanonicalIdentity).Distinct(StringComparer.Ordinal).Count())
+        {
+            throw new DomainConflictException("A dependency edge cannot repeat targets.");
+        }
+
         PredecessorKind = predecessorKind;
         PredecessorKey = ApprovalLimits.RequireKey(predecessorKey, "Dependency predecessor key");
-        Targets = materialized;
+        Targets = sequence.ToImmutableHashSet();
         Mode = mode;
     }
 

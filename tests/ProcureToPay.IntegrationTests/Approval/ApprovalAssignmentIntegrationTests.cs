@@ -425,6 +425,56 @@ public sealed class ApprovalAssignmentIntegrationTests
     private const int LeaseSeconds = 30;
 
     [Fact]
+    public async Task Reconciliation_rolls_back_the_case_when_the_lease_expires_while_processing()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await SqlEnvironment.StartAsync(cancellationToken);
+        await environment.SeedOrganizationAsync(cancellationToken);
+        await environment.SeedApproverAsync(FirstApprover, "approver-a", cancellationToken);
+        var claimedAt = DateTimeOffset.UtcNow;
+        // Claim, remaining check and holder check see a live lease; the fenced check immediately
+        // before persisting the case sees it already expired.
+        var clock = new ScriptedTimeProvider(
+            [claimedAt, claimedAt, claimedAt], claimedAt.AddSeconds(LeaseSeconds + 1));
+        var services = environment.CreateServices(new DepartmentAdapter(DepartmentId, 1), clock);
+        var submission = await services.Submission.SubmitAsync(
+            Command("submission-lease-midcase"), claimedAt, cancellationToken);
+
+        await using (var revoking = environment.CreateContext())
+        {
+            var assignment = await revoking.RoleAssignments.SingleAsync(cancellationToken);
+            assignment.Status = (int)AssignmentStatus.Revoked;
+            assignment.RevokedAt = AssignedAt;
+            assignment.RevokedBy = AdminId;
+            await revoking.SaveChangesAsync(cancellationToken);
+        }
+
+        var runId = await services.Reconciliation.RequestAdminAsync(
+            OrganizationId, AdminId, "reconcile-lease-midcase", "correlation-lease-midcase", claimedAt, cancellationToken);
+
+        var outcome = await services.Reconciliation.ProcessAsync(
+            runId, "this-instance", "correlation-lease-midcase", cancellationToken);
+
+        Assert.False(outcome.Completed);
+        await using (var verification = environment.CreateContext())
+        {
+            var run = await verification.ApprovalReconciliationRuns
+                .AsNoTracking()
+                .SingleAsync(record => record.Id == runId, cancellationToken);
+            Assert.Equal(ApprovalReconciliationCodes.StatusRunning, run.Status);
+            Assert.Null(run.CompletedAt);
+            // Effects and the cursor were discarded: the task keeps its now-invalid assignee and
+            // a reclaimer processes the case again from the previous cursor (REQ-10).
+            Assert.Null(run.CursorCaseId);
+            var task = await verification.ApprovalTasks.SingleAsync(cancellationToken);
+            Assert.Equal(FirstApprover, task.CurrentAssigneeUserId);
+            Assert.DoesNotContain(
+                await verification.ApprovalAuditEntries.ToArrayAsync(cancellationToken),
+                entry => entry.Action == "TASK_RELEASED");
+        }
+    }
+
+    [Fact]
     public async Task Organization_change_run_keeps_the_triggering_audit_utc_as_requested_at()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

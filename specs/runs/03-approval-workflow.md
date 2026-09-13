@@ -184,6 +184,18 @@
 - HEAD: working-tree sobre `spec-03-approval-workflow` (contenido base `5513497…` + correcciones sin commitear).
 - Próximo paso: commit del usuario con este árbol exacto y ronda 3 autorizada de `sdd-implementation-reviewer` (delta sobre el commit).
 
+### CP-08 — 2026-09-13 — Ronda 3 delta y cierre de sus dos residuos (Bloques 1–4)
+
+- Tareas: T-01–T-06 (`Verificada`).
+- **Ronda 3 (delta, autorizada por el usuario)** sobre `41d47f8e3297…` (delta desde `5513497fad…`): veredicto BLOCK con R8, R13, R14, R15, R17, R18 y R19 `resolved`, y dos residuos abiertos del mismo hallazgo: **R2** (el lease se comprobaba al entrar al caso, no antes de persistir) y **R16** (los targets de un edge `ApprovalDependencyRef` aún colapsaban duplicados en el hash set); R12 dependiente. Detalle en la sección Verificación independiente.
+- Correcciones de los residuos (sin cambio de contrato):
+  - **R2** — `ProcessAsync` revalida el lease con el reloj actual (owner, token, estado y `LockedUntil > now`) inmediatamente antes de `SaveChanges`/commit; si expiró, hace rollback con `ChangeTracker.Clear()` y la corrida queda para un reclaimer desde el cursor anterior.
+  - **R16** — `ApprovalDependencyRef` materializa la secuencia y rechaza targets duplicados por identidad canónica antes del set, alineado con requirements, prerequisites, acciones y exclusiones.
+- Tests añadidos: `Reconciliation_rolls_back_the_case_when_the_lease_expires_while_processing` (integración: lease vivo al entrar, expirado al persistir → sin efectos, sin cursor, tarea con su assignee previo) y el negativo de targets duplicados en un edge en `ApprovalContractTests`.
+- Tests y checks sobre este árbol: build `--no-restore` **0 errores**; UnitTests **101/101**; IntegrationTests **44/44**; ApiE2ETests **12/12**; `specctl run-lint 03` ✅; `git diff --check` limpio.
+- HEAD: working-tree sobre `spec-03-approval-workflow` (commit `41d47f8…` + residuos sin commitear).
+- Próximo paso: commit del usuario con este árbol exacto y ronda delta de cierre (autorización solicitada).
+
 ## Evidencia de aceptación
 
 | Criterio | Estado | Evidencia | Verificador |
@@ -252,12 +264,12 @@
 
 ## Verificación independiente
 
-> **Resultado:** Con bloqueos (ronda 2/2 = BLOCK) — el run no queda listo para integrar
-> **Rondas:** 2/2 (presupuesto de revisión del run consumido)
+> **Resultado:** Con bloqueos (ronda 3 delta = BLOCK con 2 residuos ya corregidos) — el run no queda listo para integrar todavía
+> **Rondas:** 3 (presupuesto automático 2/2 consumido + ronda 3 delta autorizada por el usuario)
 > **Triaje (ronda 2):** 8 detalle-contrato / 1 prueba-faltante / 1 error-del-revisor descartado / 1 hueco de proceso resuelto
 > **Modelo efectivo:** `openai-codex/gpt-5.6-sol` (effort high) — coincide con el configurado en `subagents.json` y es distinto del orquestador (`deepseek-v4-pro`); sin degradación
-> **Método:** Subagente `sdd-implementation-reviewer`; ronda 1 sobre `0e25ab77…fd80f4f` (histórica, abajo) y ronda 2 sobre `5513497fad…` (árbol limpio)
-> **Fecha:** ronda 1: 2026-09-11 13:30 UTC · ronda 2: 2026-09-13 06:21 UTC
+> **Método:** Subagente `sdd-implementation-reviewer`; ronda 1 sobre `0e25ab77…fd80f4f` (histórica, abajo), ronda 2 sobre `5513497fad…` y ronda 3 (delta) sobre `41d47f8e3297…`
+> **Fecha:** ronda 1: 2026-09-11 13:30 UTC · ronda 2: 2026-09-13 06:21 UTC · ronda 3: 2026-09-13 07:45 UTC
 
 El revisor leyó archivos y ejecutó comprobaciones propias (build, `specctl`, `git`, `hashlib` sobre el vector de submission — coincidió en `de1d2652…`). Veredicto: **BLOCK**, con 12 hallazgos bloqueantes. Triaje verificado contra el contrato por el orquestador:
 
@@ -325,7 +337,16 @@ Hallazgos abiertos (bloqueantes):
 
 Descartados: **ERR-1** (identificar al actor en audit es evidencia contractual, no fuga de telemetría) y **PROC-1** quedó resuelto (candidato commiteado, árbol limpio).
 
-**Consecuencia:** el run no alcanza «Lista para integrar» (revisión con bloqueos). El presupuesto de dos rondas automáticas por run está consumido: corregir R2/R8/R13–R19 exige tests y commit real, y delegar otra ronda de `sdd-implementation-reviewer` exige autorización expresa del usuario con causa acotada. Las suites verdes de este árbol no se repiten.
+**Consecuencia de la ronda 2:** el run no alcanzó «Lista para integrar»; el presupuesto de dos rondas automáticas quedó consumido y corregir R2/R8/R13–R19 exigió tests, commit real y autorización expresa del usuario para una ronda adicional.
+
+#### Ronda 3 (delta, autorizada) — 2026-09-13 07:45 UTC (BLOCK con 2 residuos)
+
+Revisión delta sobre `41d47f8e3297…` (delta desde `5513497fad…`), autorizada expresamente por el usuario tras consumir el presupuesto 2/2. El revisor confirmó identidad del árbol, digest contractual y ausencia de cambios de spec; no repitió suites ni usó LSP.
+
+- `resolved`: **R8** (cuatro preimages literales + SHA-256 independiente), **R13** (acciones persistidas y validadas antes de mutar), **R14** (exclusión por requirement), **R15** (versión esperada en señal), **R17** (keys únicas), **R18** (`requested_at` = UTC del audit), **R19** (`ADMIN` en las cuatro lecturas operativas).
+- **R2 (residuo)**: el lease se comprobaba al entrar al caso, pero los efectos y el cursor se persistían tras `ReconcilePendingAsync` sin revalidar vigencia; un caso más largo que el lease podía confirmar tras expirar. Corregido con revalidación fenced inmediata antes de `SaveChanges`/commit y rollback con limpieza del change tracker.
+- **R16 (residuo)**: `ApprovalDependencyRef` aún colapsaba targets duplicados en `ImmutableHashSet`; corregido rechazando duplicados sobre la secuencia original.
+- **R12**: dependiente de R2/R16; se cierra con ellos. El seguimiento de cierre es la ronda delta final (autorización solicitada).
 
 ## Resumen de cambios
 

@@ -344,6 +344,26 @@ public sealed class ApprovalReconciliationService(
                 .SingleAsync(record => record.Id == runId, cancellationToken);
             runRow.CursorCaseId = caseId;
             runRow.Version++;
+            // The lease is re-validated with the current clock immediately before persisting the
+            // case effects: a holder whose lease expired while processing must not confirm the
+            // cursor or the effects (REQ-10). The rollback discards them and a reclaimer
+            // continues from the last committed cursor.
+            var stillLeaseHolder = await dbContext.ApprovalReconciliationRuns
+                .AnyAsync(
+                    record => record.Id == runId &&
+                              record.LeaseOwner == owner &&
+                              record.FencingToken == fencingToken &&
+                              record.Status != ApprovalReconciliationCodes.StatusCompleted &&
+                              record.LockedUntil != null &&
+                              record.LockedUntil > timeProvider.GetUtcNow(),
+                    cancellationToken);
+            if (!stillLeaseHolder)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                dbContext.ChangeTracker.Clear();
+                return Outcome(runRecord, scanned, reassigned, unassigned, unchanged, completed: false, utcNow);
+            }
+
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             cursor = caseId;

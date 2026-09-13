@@ -222,6 +222,10 @@ public sealed class ApprovalContractTests
             ]);
         Assert.Throws<DomainConflictException>(() =>
             ApprovalSubmissionRules.Validate(duplicatedPrerequisite, adapter, workload));
+
+        // A dependency edge cannot repeat targets either: its set is canonical (REQ-08).
+        Assert.Throws<DomainConflictException>(() => new ApprovalDependencyRef(
+            DependencyPredecessorKind.Approval, "REQ-A", [target, target]));
     }
 
     [Fact]
