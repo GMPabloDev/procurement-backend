@@ -38,6 +38,7 @@ public static class PolicyEvaluationBundleRehydrator
             ManifestCanonicalJson = NullableString(root, "manifestCanonicalJson"),
             InputCanonicalJson = NullableString(root, "inputCanonicalJson"),
             RequestSnapshotJson = NullableString(root, "requestSnapshotJson"),
+            MaterialProjection = ParseMaterialProjection(root),
             ActivationId = NullableGuid(root, "activationId"),
             PreviousBundleId = NullableGuid(root, "previousBundleId"),
             Cause = NullableString(root, "cause"),
@@ -144,6 +145,34 @@ public static class PolicyEvaluationBundleRehydrator
 
     private static PolicySubjectReference ParseSubject(JsonElement value) =>
         new(value.GetProperty("id").GetGuid(), value.GetProperty("version").GetInt32());
+
+    private static PolicyMaterialProjection? ParseMaterialProjection(JsonElement root)
+    {
+        if (!root.TryGetProperty("materialProjection", out var projection) ||
+            projection.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var provenance = projection.TryGetProperty("provenance", out var provenanceElement) &&
+                         provenanceElement.ValueKind == JsonValueKind.Object
+            ? provenanceElement.EnumerateObject().ToDictionary(
+                property => property.Name, property => property.Value.GetString()!, StringComparer.Ordinal)
+            : new Dictionary<string, string>(StringComparer.Ordinal);
+        var targets = projection.TryGetProperty("targets", out var targetElements) &&
+                      targetElements.ValueKind == JsonValueKind.Array
+            ? targetElements.EnumerateArray().Select(target => new PolicyMaterialTarget(
+                target.GetProperty("id").GetGuid(),
+                target.GetProperty("version").GetInt32(),
+                target.GetProperty("materialSnapshotDigest").GetString()!)).ToArray()
+            : [];
+        return new PolicyMaterialProjection(
+            projection.TryGetProperty("contractVersion", out var version)
+                ? version.GetString() ?? PolicyApprovalTargets.ContractVersion
+                : PolicyApprovalTargets.ContractVersion,
+            provenance,
+            targets);
+    }
 
     private static TEnum ParseEnum<TEnum>(JsonElement value) where TEnum : struct, Enum =>
         value.ValueKind == JsonValueKind.Number

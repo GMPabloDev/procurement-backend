@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.SharedKernel;
@@ -17,6 +18,7 @@ namespace ProcureToPay.Api.Controllers;
 public sealed class PolicyController(
     PolicyPersistenceService policyService,
     PolicyEvaluationService policyEvaluationService,
+    IPolicyWorkloadAllowlist workloadAllowlist,
     ProcureToPayDbContext dbContext,
     CurrentUserProvisioningService provisioningService) : ControllerBase
 {
@@ -162,41 +164,67 @@ public sealed class PolicyController(
         PolicyQuotationWaiverRequest request,
         CancellationToken cancellationToken)
     {
-        var actor = await provisioningService.EnsureProfileAsync(User, cancellationToken);
-        if (actor.Status != (int)UserProfileStatus.Active)
+        // SPEC 05 REQ-05/REQ-07: only an allowlisted service workload may apply a verified
+        // waiver. The user profile and every approver/authority/evidence hint are gone: the
+        // workflow response is the only source of authority.
+        var issuer = User.FindFirst("iss")?.Value ?? "internal://procure-to-pay";
+        var clientId = User.FindFirst("client_id")?.Value ?? User.FindFirst("azp")?.Value;
+        if (string.IsNullOrWhiteSpace(clientId) ||
+            !workloadAllowlist.IsAllowed(new PolicyWorkloadIdentity(issuer, clientId)))
         {
-            throw new DomainForbiddenException("The local user profile is not active.");
+            throw new DomainForbiddenException(
+                "Applying a quotation waiver requires an allowlisted service workload.");
         }
-        if (request.OriginatorId != actor.Id)
-        {
-            throw new DomainForbiddenException("The waiver originator must be the authenticated user.");
-        }
+
         if (!TryParseExceptionType(request.Type, out var type))
         {
             throw new DomainValidationException("The quotation waiver type is invalid.");
         }
-        var waiver = new QuotationWaiverRequest(
-            type,
+
+        var bundle = await LoadEvaluationBundleAnyOrganizationAsync(evaluationId, cancellationToken);
+        var record = await dbContext.PolicyEvaluationBundles
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == evaluationId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(bundle.ManifestDigest) || bundle.MaterialProjection is null)
+        {
+            throw new DomainConflictException(
+                "The evaluation has no material projection; it must be reevaluated before a waiver.");
+        }
+
+        var covered = request.CoveredLines
+            .Select(line => new PolicyExceptionTarget(
+                line.Type, line.Id, line.Version, line.MaterialSnapshotDigest))
+            .ToArray();
+        var binding = new PolicyExceptionBindingRequest(
+            record.OrganizationId,
+            bundle.Operation,
+            bundle.Subject.Id,
+            bundle.Subject.Version,
+            record.Id,
+            bundle.ResultDigest,
+            record.PolicySetVersionId,
+            bundle.PolicyContentDigest,
+            bundle.ManifestDigest,
+            request.TargetRequirementKey,
+            covered,
             request.From,
             request.To,
             request.Floor,
-            request.PolicyDigest,
-            request.EvaluationDigest,
-            request.Binding,
-            request.Nonce,
-            request.EvidenceDigest,
-            request.ApproverRole,
-            request.AuthorityType,
-            request.ApproverId,
+            request.ReferenceId,
+            request.RequesterId,
+            request.OriginatorId,
             request.WorkloadSubjectId,
-            request.OriginatorId)
-        {
-            TargetRequirementKey = request.TargetRequirementKey
-        };
-        return Ok(await policyEvaluationService.ApplyQuotationWaiverAsync(
-            await LoadEvaluationBundleAsync(evaluationId, actor.OrganizationId, cancellationToken),
-            waiver,
-            cancellationToken));
+            request.RequestedAt,
+            request.RequestedValidTo,
+            request.Nonce);
+        var waiver = new QuotationWaiverRequest(
+            type,
+            binding,
+            request.WorkflowDecisionId,
+            request.WorkflowDecisionVersion,
+            request.EvidenceDigest,
+            HttpContext.TraceIdentifier);
+        return Ok(await policyEvaluationService.ApplyQuotationWaiverAsync(bundle, waiver, cancellationToken));
     }
 
     [HttpGet("evaluations/{evaluationId:guid}")]
@@ -327,6 +355,17 @@ public sealed class PolicyController(
         return PolicyEvaluationBundleRehydrator.FromJson(evaluation.BundleJson);
     }
 
+    private async Task<PolicyEvaluationBundle> LoadEvaluationBundleAnyOrganizationAsync(
+        Guid evaluationId,
+        CancellationToken cancellationToken)
+    {
+        var evaluation = await dbContext.PolicyEvaluationBundles
+            .AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == evaluationId, cancellationToken)
+            ?? throw new DomainNotFoundException("The policy evaluation is not visible.");
+        return PolicyEvaluationBundleRehydrator.FromJson(evaluation.BundleJson);
+    }
+
     private async Task EnsurePolicyReadAsync(CancellationToken cancellationToken)
     {
         var profile = await provisioningService.EnsureProfileAsync(User, cancellationToken);
@@ -392,22 +431,25 @@ public sealed record PolicyDraftUpdateRequest(
     string ExpectedContentDigest,
     string Reason);
 
+public sealed record PolicyQuotationWaiverLineBody(string Type, Guid Id, int Version, string MaterialSnapshotDigest);
+
 public sealed record PolicyQuotationWaiverRequest(
     string Type,
+    Guid ReferenceId,
+    DateTimeOffset RequestedAt,
+    DateTimeOffset RequestedValidTo,
+    Guid WorkflowDecisionId,
+    int WorkflowDecisionVersion,
+    string EvidenceDigest,
+    string TargetRequirementKey,
     int From,
     int To,
     int Floor,
-    string PolicyDigest,
-    string EvaluationDigest,
-    string Binding,
-    string Nonce,
-    string EvidenceDigest,
-    string ApproverRole,
-    string AuthorityType,
-    Guid ApproverId,
-    Guid WorkloadSubjectId,
+    IReadOnlyList<PolicyQuotationWaiverLineBody> CoveredLines,
+    Guid? RequesterId,
     Guid OriginatorId,
-    string TargetRequirementKey);
+    Guid WorkloadSubjectId,
+    string Nonce);
 
 public sealed record PolicyActionRequest(string Reason, DateTimeOffset EffectiveFrom);
 

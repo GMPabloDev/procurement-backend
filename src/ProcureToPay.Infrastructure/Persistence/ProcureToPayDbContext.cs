@@ -34,6 +34,8 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<ApprovalOutboxEventRecord> ApprovalOutboxEvents => Set<ApprovalOutboxEventRecord>();
     public DbSet<ApprovalAuditEntryRecord> ApprovalAuditEntries => Set<ApprovalAuditEntryRecord>();
     public DbSet<ApprovalSubmissionReservationRecord> ApprovalSubmissionReservations => Set<ApprovalSubmissionReservationRecord>();
+    public DbSet<ApprovalPolicyExceptionRequestRecord> ApprovalPolicyExceptionRequests => Set<ApprovalPolicyExceptionRequestRecord>();
+    public DbSet<ApprovalPolicyExceptionVerificationRecord> ApprovalPolicyExceptionVerifications => Set<ApprovalPolicyExceptionVerificationRecord>();
     public DbSet<ApprovalWorkflowStateRecord> ApprovalWorkflowStates => Set<ApprovalWorkflowStateRecord>();
     public DbSet<ApprovalReconciliationRunRecord> ApprovalReconciliationRuns => Set<ApprovalReconciliationRunRecord>();
     public DbSet<ApprovalDelegationRecord> ApprovalDelegations => Set<ApprovalDelegationRecord>();
@@ -75,6 +77,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigureApprovalOutboxEvent(modelBuilder);
         ConfigureApprovalAudit(modelBuilder);
         ConfigureApprovalSubmissionReservation(modelBuilder);
+        ConfigureApprovalPolicyException(modelBuilder);
         ConfigureApprovalWorkflowState(modelBuilder);
         ConfigureApprovalReconciliationRun(modelBuilder);
         ConfigureApprovalDelegation(modelBuilder);
@@ -582,6 +585,61 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
             record.SubmissionKey
         }).IsUnique();
         entity.HasIndex(record => record.CaseId).IsUnique();
+    }
+
+    private static void ConfigureApprovalPolicyException(ModelBuilder modelBuilder)
+    {
+        var request = modelBuilder.Entity<ApprovalPolicyExceptionRequestRecord>();
+        request.ToTable("PolicyExceptionRequests", "Approval");
+        request.HasKey(record => record.Id);
+        request.Property(record => record.RequirementKey).HasMaxLength(128).IsRequired();
+        request.Property(record => record.SubjectType).HasMaxLength(128).IsRequired();
+        request.Property(record => record.BaseResultDigest).HasMaxLength(64).IsRequired();
+        request.Property(record => record.PolicyContentDigest).HasMaxLength(64).IsRequired();
+        request.Property(record => record.ManifestDigest).HasMaxLength(64).IsRequired();
+        request.Property(record => record.TargetRequirementKey).HasMaxLength(128).IsRequired();
+        request.Property(record => record.CoveredLinesJson).HasColumnType("nvarchar(max)").IsRequired();
+        request.Property(record => record.Nonce).HasMaxLength(128).IsRequired();
+        request.Property(record => record.Binding).HasMaxLength(64).IsRequired();
+        request.Property(record => record.RowVersion).IsRowVersion();
+        request.HasOne<ApprovalCaseRecord>()
+            .WithMany()
+            .HasForeignKey(record => record.CaseId)
+            .OnDelete(DeleteBehavior.Restrict);
+        request.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.BaseBundleId,
+            record.TargetRequirementKey,
+            record.Binding
+        }).IsUnique();
+        request.HasIndex(record => new { record.CaseId, record.RequirementKey }).IsUnique();
+        request.HasIndex(record => record.RequirementId).IsUnique();
+
+        var verification = modelBuilder.Entity<ApprovalPolicyExceptionVerificationRecord>();
+        verification.ToTable("PolicyExceptionVerifications", "Approval");
+        verification.HasKey(record => record.Id);
+        verification.Property(record => record.VerifierType).HasMaxLength(128).IsRequired();
+        verification.Property(record => record.WorkflowDecisionDigest).HasMaxLength(64).IsRequired();
+        verification.Property(record => record.EvidenceDigest).HasMaxLength(64).IsRequired();
+        verification.Property(record => record.Binding).HasMaxLength(64).IsRequired();
+        verification.Property(record => record.Nonce).HasMaxLength(128).IsRequired();
+        verification.Property(record => record.FailureCode).HasMaxLength(64).IsRequired();
+        verification.Property(record => record.RevocationReference).HasMaxLength(256);
+        verification.Property(record => record.RowVersion).IsRowVersion();
+        verification.HasOne<ApprovalPolicyExceptionRequestRecord>()
+            .WithMany()
+            .HasForeignKey(record => record.RequestId)
+            .OnDelete(DeleteBehavior.Restrict);
+        verification.HasIndex(record => new { record.OrganizationId, record.VerifierType, record.Nonce })
+            .IsUnique();
+        verification.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.WorkflowDecisionId,
+            record.WorkflowDecisionVersion
+        }).IsUnique();
+        verification.HasIndex(record => record.RequestId);
     }
 
     private static void ConfigureApprovalWorkflowState(ModelBuilder modelBuilder)

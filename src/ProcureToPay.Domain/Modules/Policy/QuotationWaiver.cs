@@ -1,7 +1,5 @@
+using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.SharedKernel;
-using System.Collections.Immutable;
-using System.Security.Cryptography;
-using System.Text;
 
 namespace ProcureToPay.Domain.Modules.Policy;
 
@@ -10,32 +8,39 @@ public enum PolicyExceptionType
     ReduceMinValidQuotations = 1
 }
 
+/// <summary>
+/// Policy-side request that asks the approval workflow to verify a quotation waiver. The
+/// binding inputs and the workflow decision identity are the only inputs: approver, evidence,
+/// scope, validity and SoD come exclusively from the verified response (SPEC 05 REQ-05/REQ-07).
+/// </summary>
 public sealed record QuotationWaiverRequest(
     PolicyExceptionType Type,
-    int From,
-    int To,
-    int Floor,
-    string PolicyDigest,
-    string EvaluationDigest,
-    string Binding,
-    string Nonce,
+    PolicyExceptionBindingRequest Binding,
+    Guid WorkflowDecisionId,
+    int WorkflowDecisionVersion,
     string EvidenceDigest,
-    string ApproverRole,
-    string AuthorityType,
-    Guid ApproverId,
-    Guid WorkloadSubjectId,
-    Guid OriginatorId)
+    string CorrelationReference)
 {
-    public string? TargetRequirementKey { get; init; }
-
-    /// <summary>Lines the engine is asking the workflow to waive, echoed into the verified coverage (REQ-14).</summary>
-    public ImmutableHashSet<Guid> TargetLineIds { get; init; } = ImmutableHashSet<Guid>.Empty;
+    public int From => Binding.From;
+    public int To => Binding.To;
+    public int Floor => Binding.Floor;
+    public string TargetRequirementKey => Binding.TargetRequirementKey;
+    public string Nonce => Binding.Nonce;
+    public Guid OriginatorId => Binding.OriginatorId;
+    public Guid? RequesterId => Binding.RequesterId;
+    public Guid WorkloadSubjectId => Binding.WorkloadSubjectId;
+    public string BindingDigest => Binding.ComputeBinding();
 }
 
+/// <summary>
+/// Authority evidence delivered by the workflow verifier. Every value is server-side: Policy
+/// only persists and consumes it.
+/// </summary>
 public sealed record QuotationWaiverEvidence(
     string EvidenceDigest,
     string Binding,
     string Nonce,
+    DateTimeOffset ValidFrom,
     DateTimeOffset ExpiresAt,
     string VerifierReference)
 {
@@ -44,18 +49,20 @@ public sealed record QuotationWaiverEvidence(
     public string AuthorityEvidenceDigest { get; init; } = string.Empty;
     public bool SegregationSatisfied { get; init; }
 
-    /// <summary>Approver identity delivered by the verifier, never trusted from the HTTP request (REQ-14).</summary>
+    /// <summary>Approver identity delivered by the verifier, never trusted from the caller (REQ-14).</summary>
     public Guid ApproverId { get; init; }
     public string ApproverRole { get; init; } = string.Empty;
     public string AuthorityType { get; init; } = string.Empty;
-    public string Scope { get; init; } = string.Empty;
 
     /// <summary>SHA-256 of the SPEC 01 EligibilityEvidence delivered by the verifier (REQ-14).</summary>
     public string EligibilityEvidenceDigest { get; init; } = string.Empty;
 
-    /// <summary>Lines covered by the verified exception; must cover the target lines (REQ-14).</summary>
-    public ImmutableHashSet<Guid> CoveredLineIds { get; init; } = ImmutableHashSet<Guid>.Empty;
-    public DateTimeOffset ValidFrom { get; init; }
+    /// <summary>Decision scope descriptor that must cover the union of the waived scopes (REQ-14).</summary>
+    public DecisionScopeDescriptor? DecisionScope { get; init; }
+
+    /// <summary>Versioned lines covered by the verified exception (SPEC 05 REQ-07).</summary>
+    public IReadOnlyList<PolicyExceptionTarget> CoveredLines { get; init; } = [];
+
     public string VerifierId { get; init; } = string.Empty;
     public string VerifierContractVersion { get; init; } = string.Empty;
 }
@@ -102,77 +109,68 @@ public static class QuotationWaiverEvaluator
         QuotationWaiverRequest request,
         IQuotationWaiverVerifier verifier,
         DateTimeOffset now,
-        CancellationToken cancellationToken = default,
-        IReadOnlySet<PolicyScope>? targetScopes = null,
-        IReadOnlySet<Guid>? targetLines = null)
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(verifier);
         if (request.Type != PolicyExceptionType.ReduceMinValidQuotations ||
-            request.From < 1 || request.To < request.Floor || request.To >= request.From ||
-            request.PolicyDigest.Length != 64 || request.EvaluationDigest.Length != 64 ||
-            request.EvidenceDigest.Length != 64 || string.IsNullOrWhiteSpace(request.Binding) ||
-            string.IsNullOrWhiteSpace(request.Nonce) || request.ApproverId == Guid.Empty ||
-            request.WorkloadSubjectId == Guid.Empty || request.OriginatorId == Guid.Empty)
+            request.WorkflowDecisionId == Guid.Empty ||
+            request.WorkflowDecisionVersion < 1 ||
+            !IsSha256(request.EvidenceDigest) ||
+            string.IsNullOrWhiteSpace(request.Binding.Nonce))
         {
             throw new DomainConflictException("The quotation waiver is invalid or not bound to the evaluation.");
         }
 
         var evidence = await verifier.VerifyAsync(request, cancellationToken)
             ?? throw new DomainConflictException("Quotation waiver evidence is unavailable.");
-        if (evidence.ExpiresAt <= now ||
+        if (evidence.ValidFrom > now ||
+            evidence.ExpiresAt <= now ||
+            evidence.ExpiresAt <= evidence.ValidFrom ||
             !string.Equals(evidence.EvidenceDigest, request.EvidenceDigest, StringComparison.Ordinal) ||
-            !string.Equals(evidence.Binding, request.Binding, StringComparison.Ordinal) ||
+            !string.Equals(evidence.Binding, request.BindingDigest, StringComparison.Ordinal) ||
             !string.Equals(evidence.Nonce, request.Nonce, StringComparison.Ordinal) ||
             evidence.WorkflowDecisionVersion < 1 ||
             !IsSha256(evidence.WorkflowDecisionDigest) ||
             !IsSha256(evidence.AuthorityEvidenceDigest) ||
             !IsSha256(evidence.EligibilityEvidenceDigest) ||
-            !evidence.SegregationSatisfied)
+            !evidence.SegregationSatisfied ||
+            evidence.DecisionScope is null)
         {
             throw new DomainConflictException("Quotation waiver evidence does not match its binding.");
         }
 
-        // Authority, approver, scope, validity and verifier identity come from the registered verifier (REQ-14).
+        // Authority, approver, scope and validity come from the registered verifier (REQ-14).
         if (!string.Equals(evidence.ApproverRole, "PROCUREMENT_APPROVER", StringComparison.Ordinal) ||
             !string.Equals(evidence.AuthorityType, "PROCUREMENT", StringComparison.Ordinal) ||
             evidence.ApproverId == Guid.Empty ||
             evidence.ApproverId == request.OriginatorId ||
             evidence.ApproverId == request.WorkloadSubjectId ||
-            string.IsNullOrWhiteSpace(evidence.Scope) ||
+            evidence.ApproverId == request.RequesterId ||
             !string.Equals(evidence.VerifierId, verifier.VerifierId, StringComparison.Ordinal) ||
-            !string.Equals(evidence.VerifierContractVersion, verifier.ContractVersion, StringComparison.Ordinal) ||
-            evidence.ValidFrom > now ||
-            evidence.ExpiresAt <= now ||
-            evidence.ExpiresAt <= evidence.ValidFrom)
+            !string.Equals(evidence.VerifierContractVersion, verifier.ContractVersion, StringComparison.Ordinal))
         {
             throw new DomainConflictException("Quotation waiver evidence does not carry verifiable authority.");
         }
 
-        // One verified evidence must cover the union of scopes and lines it reduces (REQ-14).
-        if (targetScopes is not null && targetScopes.Count > 0)
+        // The verified scope must cover the whole organization of the evaluation: it is the only
+        // scope dimension that covers the union of the waived lines in this release (REQ-14).
+        var scope = evidence.DecisionScope;
+        if (scope.OrganizationId != request.Binding.OrganizationId ||
+            scope.Scopes.Count != 1 ||
+            scope.Scopes[0].Dimension != Modules.Organization.ScopeDimension.Organization)
         {
-            var covered = evidence.Scope.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (targetScopes.Any(scope => !covered.Contains(scope.ToString())))
-            {
-                throw new DomainConflictException("Quotation waiver evidence does not cover the target scopes.");
-            }
+            throw new DomainConflictException("Quotation waiver evidence does not cover the evaluated scopes.");
         }
-        if (targetLines is not null && targetLines.Count > 0 &&
-            !evidence.CoveredLineIds.IsSupersetOf(targetLines))
+
+        // One verified evidence must cover every requested line by full identity (REQ-14).
+        var covered = evidence.CoveredLines
+            .Select(target => target.CanonicalIdentity)
+            .ToHashSet(StringComparer.Ordinal);
+        if (request.Binding.CoveredLines.Any(target => !covered.Contains(target.CanonicalIdentity)))
         {
             throw new DomainConflictException("Quotation waiver evidence does not cover the target lines.");
         }
 
-        // Caller-provided hints, when present, must match the verified evidence.
-        if ((!string.IsNullOrWhiteSpace(request.ApproverRole) &&
-             !string.Equals(request.ApproverRole, evidence.ApproverRole, StringComparison.Ordinal)) ||
-            (!string.IsNullOrWhiteSpace(request.AuthorityType) &&
-             !string.Equals(request.AuthorityType, evidence.AuthorityType, StringComparison.Ordinal)) ||
-            request.ApproverId != evidence.ApproverId)
-        {
-            throw new DomainConflictException("Quotation waiver evidence contradicts the requested authority.");
-        }
         return evidence;
     }
 
@@ -185,9 +183,9 @@ public static class QuotationWaiverEvaluator
         ArgumentNullException.ThrowIfNull(evidence);
         var target = request.TargetRequirementKey;
         if (string.IsNullOrWhiteSpace(target) ||
-            !string.Equals(request.PolicyDigest, bundle.PolicyContentDigest, StringComparison.Ordinal) ||
-            !string.Equals(request.EvaluationDigest, bundle.ResultDigest, StringComparison.Ordinal) ||
-            !string.Equals(evidence.Binding, request.Binding, StringComparison.Ordinal) ||
+            !string.Equals(request.Binding.PolicyContentDigest, bundle.PolicyContentDigest, StringComparison.Ordinal) ||
+            !string.Equals(request.Binding.BaseResultDigest, bundle.ResultDigest, StringComparison.Ordinal) ||
+            !string.Equals(evidence.Binding, request.BindingDigest, StringComparison.Ordinal) ||
             !string.Equals(evidence.EvidenceDigest, request.EvidenceDigest, StringComparison.Ordinal))
         {
             throw new DomainConflictException("Quotation waiver is not bound to this evaluation.");
@@ -243,14 +241,4 @@ public static class QuotationWaiverEvaluator
 
     private static bool IsSha256(string value) =>
         value.Length == 64 && value.All(character => Uri.IsHexDigit(character));
-
-    public static string ComputeBinding(
-        Guid organizationId,
-        Guid policyId,
-        Guid subjectId,
-        string policyDigest,
-        string evaluationDigest,
-        string nonce) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", organizationId,
-            policyId, subjectId, policyDigest, evaluationDigest, nonce)))).ToLowerInvariant();
 }

@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.SharedKernel;
 
@@ -32,7 +33,8 @@ public sealed record PolicyEvaluationMetadata(
     string ManifestDigest,
     string InputCanonicalJson,
     Guid? ActivationId = null,
-    IReadOnlyDictionary<string, string>? Provenance = null);
+    IReadOnlyDictionary<string, string>? Provenance = null,
+    string? ManifestCanonicalJson = null);
 public sealed record PolicyFactRequest(string SubjectType, Guid SubjectId, int SubjectVersion,
     string Operation, DateTimeOffset RequestedAtUtc, PolicyWorkloadPrincipal Workload,
     string CorrelationReference)
@@ -247,31 +249,66 @@ public sealed class PolicyEvaluationService(
         activity?.SetTag("policy.verifier_id", verifier.VerifierId);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        var persistedRecord = await persistenceService.FindEvaluationAsync(bundle.Id, cancellationToken)
+            ?? throw new DomainConflictException("The quotation waiver evaluation is not persisted.");
+        var persistedBundle = ValidatePersistedEvaluation(persistedRecord);
+        // The target lines come from the persisted evaluation, never from the caller (REQ-01).
+        var targetControl = persistedBundle.Controls.Where(control =>
+            control.Type == PolicyEffectType.RequireQuotations &&
+            string.Equals(control.RequirementKey, request.TargetRequirementKey, StringComparison.Ordinal))
+            .ToArray();
+        if (targetControl.Length == 0)
+        {
+            throw new DomainConflictException("The quotation waiver target is not present in the evaluation.");
+        }
+
+        var persistedTargets = targetControl.SelectMany(control => control.SubjectIds).ToHashSet();
+        if (request.Binding.CoveredLines.Length != persistedTargets.Count ||
+            request.Binding.CoveredLines.Any(target => !persistedTargets.Contains(target.Id)))
+        {
+            throw new DomainConflictException(
+                "The quotation waiver covered lines do not match the persisted evaluation.");
+        }
+
+        // The binding is recomputed from the persisted evaluation and must reproduce the request.
+        var expectedBinding = new PolicyExceptionBindingRequest(
+            persistedRecord.OrganizationId,
+            persistedBundle.Operation,
+            persistedBundle.Subject.Id,
+            persistedBundle.Subject.Version,
+            persistedRecord.Id,
+            persistedBundle.ResultDigest,
+            persistedRecord.PolicySetVersionId,
+            persistedBundle.PolicyContentDigest,
+            persistedBundle.ManifestDigest ?? string.Empty,
+            request.Binding.TargetRequirementKey,
+            request.Binding.CoveredLines,
+            request.Binding.From,
+            request.Binding.To,
+            request.Binding.Floor,
+            request.Binding.ReferenceId,
+            request.Binding.RequesterId,
+            request.Binding.OriginatorId,
+            request.Binding.WorkloadSubjectId,
+            request.Binding.RequestedAt,
+            request.Binding.RequestedValidTo,
+            request.Binding.Nonce);
+        if (!string.Equals(expectedBinding.ComputeBinding(), request.BindingDigest, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainConflictException("The quotation waiver binding does not match the persisted evaluation.");
+        }
+
         QuotationWaiverEvidence evidence;
         try
         {
-            var targetScopes = bundle.Controls
-                .Where(control => string.Equals(
-                    control.RequirementKey, request.TargetRequirementKey, StringComparison.Ordinal))
-                .SelectMany(control => control.OriginScopes)
-                .ToImmutableHashSet();
-            var targetLines = bundle.Controls
-                .Where(control => string.Equals(
-                    control.RequirementKey, request.TargetRequirementKey, StringComparison.Ordinal))
-                .SelectMany(control => control.SubjectIds)
-                .ToImmutableHashSet();
-            request = request with { TargetLineIds = targetLines };
             evidence = await QuotationWaiverEvaluator.VerifyAsync(
-                request, verifier, DateTimeOffset.UtcNow, timeout.Token, targetScopes, targetLines);
+                request, verifier, DateTimeOffset.UtcNow, timeout.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             throw new PolicyDependencyUnavailableException("The quotation waiver verifier timed out.");
         }
-        var persistedRecord = await persistenceService.FindEvaluationAsync(bundle.Id, cancellationToken)
-            ?? throw new DomainConflictException("The quotation waiver evaluation is not persisted.");
         activity?.SetTag("policy.version_id", persistedRecord.PolicySetVersionId.ToString("D"));
-        var persistedBundle = ValidatePersistedEvaluation(persistedRecord);
         activity?.SetTag("policy.content_digest", persistedBundle.PolicyContentDigest);
         activity?.SetTag("policy.scopes", string.Join(",", persistedBundle.ScopeEvaluations
             .Select(scope => scope.Scope.ToString().ToUpperInvariant())
@@ -281,17 +318,7 @@ public sealed class PolicyEvaluationService(
         {
             throw new DomainConflictException("The quotation waiver evaluation does not match persisted evidence.");
         }
-        var expectedBinding = QuotationWaiverEvaluator.ComputeBinding(
-            persistedRecord.OrganizationId,
-            persistedRecord.PolicySetVersionId,
-            persistedBundle.Subject.Id,
-            persistedBundle.PolicyContentDigest,
-            persistedBundle.ResultDigest,
-            request.Nonce);
-        if (!string.Equals(expectedBinding, request.Binding, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new DomainConflictException("The quotation waiver binding does not match the persisted evaluation.");
-        }
+
         var reduced = QuotationWaiverEvaluator.ApplyVerifiedQuotationWaiver(persistedBundle, request, evidence);
         var (_, reevaluation) = await persistenceService.AppendVerifiedQuotationWaiverAsync(
             persistedBundle, reduced, request, evidence, cancellationToken);
@@ -592,13 +619,18 @@ public sealed class PolicyEvaluationService(
                 facts.FactsDigest,
                 facts.Manifest.Digest,
                 PolicyCanonicalizer.CanonicalizeRequest(facts.Request, evaluatedAt),
-                Provenance: facts.Provenance),
+                Provenance: facts.Provenance,
+                ManifestCanonicalJson: CanonicalizeManifest(facts.Manifest)),
             previousBundle,
             factRequest.Cause,
             factRequest.PreviousResultDigest);
     }
 
-    public static string ComputeManifestDigest(PolicyCompletenessManifest manifest)
+    public static string ComputeManifestDigest(PolicyCompletenessManifest manifest) =>
+        PolicyCanonicalizer.Hash(CanonicalizeManifest(manifest));
+
+    /// <summary>Canonical JSON of the confirmed completeness manifest (SPEC 05 REQ-01).</summary>
+    public static string CanonicalizeManifest(PolicyCompletenessManifest manifest)
     {
         var preimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -616,7 +648,7 @@ public sealed class PolicyEvaluationService(
             ["request_id"] = manifest.RequestId.ToString("D"),
             ["request_version"] = manifest.RequestVersion
         };
-        return PolicyCanonicalizer.Hash(PolicyCanonicalizer.SerializeCanonical(preimage));
+        return PolicyCanonicalizer.SerializeCanonical(preimage);
     }
 
     private static object CanonicalizeFactPayload(PolicyRequestInput request)
@@ -993,15 +1025,23 @@ public sealed class PolicyEvaluationService(
         var cause = previousBundle is null
             ? metadata is null ? "INITIAL" : "FACT_PROVIDER_EVALUATION"
             : declaredCause!;
+        // SPEC 05 REQ-01: the material projection is derived from the exact persisted snapshot,
+        // the confirmed manifest and the provider provenance; no provider is consulted again.
+        var requestSnapshot = metadata?.InputCanonicalJson;
+        var materialProjection = requestSnapshot is null || metadata?.ManifestDigest is null
+            ? null
+            : PolicyApprovalTargets.Build(requestSnapshot, metadata.ManifestDigest, metadata.Provenance);
         bundle = bundle with
         {
             Operation = operation,
             ActivationId = metadata?.ActivationId,
             FactsDigest = metadata?.FactsDigest,
             ManifestDigest = metadata?.ManifestDigest,
+            ManifestCanonicalJson = metadata?.ManifestCanonicalJson,
             InputCanonicalJson = inputCanonical,
             // pi-lens-ignore: CS0117
-            RequestSnapshotJson = metadata?.InputCanonicalJson,
+            RequestSnapshotJson = requestSnapshot,
+            MaterialProjection = materialProjection,
             InputDigest = inputDigest,
             ResultDigest = resultDigest,
             // pi-lens-ignore: CS0117

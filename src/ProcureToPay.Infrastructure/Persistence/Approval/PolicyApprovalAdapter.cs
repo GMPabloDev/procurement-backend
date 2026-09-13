@@ -1,0 +1,497 @@
+using System.Collections.Immutable;
+using Microsoft.EntityFrameworkCore;
+using ProcureToPay.Application.Abstractions;
+using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.Organization;
+using ProcureToPay.Domain.Modules.Policy;
+using ProcureToPay.Infrastructure.Persistence.Policy;
+using ProcureToPay.Domain.SharedKernel;
+
+namespace ProcureToPay.Infrastructure.Persistence.Approval;
+
+/// <summary>
+/// Trusted in-process adapter that turns the persisted Policy evaluation of a Purchase Request
+/// into a single idempotent approval submission (SPEC 05 REQ-01, REQ-03, REQ-04).
+///
+/// Every target comes from the confirmed completeness manifest and the persisted material
+/// projection of the bundle; the caller only supplies the subject reference and the submission
+/// key. Each SPEC 02 effect has exactly one projection: approval requirements for
+/// <c>REQUIRE_APPROVAL</c>, external prerequisites with a versioned owner for automatic controls
+/// and no node for effects the owning domain applies. Unknown controls, missing projections or
+/// corrupt digests fail closed before any case exists.
+/// </summary>
+public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IApprovalSubmissionAdapter
+{
+    public const string AdapterId = "policy-approval-adapter";
+    /// <summary>Adapter contract version; the submission command carries this exact value.</summary>
+    public const string ContractVersion = "v1";
+    public const string AdapterIdentity = "policy-approval-adapter/v1";
+    public const string SubjectType = "PURCHASE_REQUEST";
+    public const string Operation = "SUBMIT_PURCHASE_REQUEST";
+    public const string SnapshotContractVersion = "policy-evaluation-snapshot/v1";
+
+    private static readonly ApprovalAdapterDescriptor DescriptorValue = new(
+        AdapterId, SubjectType, Operation, ContractVersion, RequesterRequired: false);
+
+    private static readonly IReadOnlyDictionary<PolicyEffectType, string> OwnerAdapters =
+        new Dictionary<PolicyEffectType, string>
+        {
+            [PolicyEffectType.RequireBudgetCheck] = "budget-check-owner",
+            [PolicyEffectType.RequireSupportingDocument] = "supporting-document-owner",
+            [PolicyEffectType.RequireActiveSupplier] = "active-supplier-owner",
+            [PolicyEffectType.RequireQuotations] = "quotation-status-owner",
+            [PolicyEffectType.RequireProcurement] = "procurement-stage-owner"
+        };
+
+    private static readonly IReadOnlyDictionary<string, int> StageOrder = new Dictionary<string, int>(
+        StringComparer.Ordinal)
+    {
+        ["DEPARTMENT"] = 1,
+        ["PRE_PROCUREMENT"] = 2,
+        ["PROCUREMENT"] = 3,
+        ["PRE_PO"] = 4
+    };
+
+    public ApprovalAdapterDescriptor Descriptor => DescriptorValue;
+
+    public async Task<ApprovalSubmission> BuildAsync(
+        ApprovalSubmissionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (!string.Equals(request.SubjectType, SubjectType, StringComparison.Ordinal) ||
+            !string.Equals(request.Operation, Operation, StringComparison.Ordinal))
+        {
+            throw new ApprovalDependencyUnavailableException(
+                "The policy approval adapter only serves Purchase Request submissions.");
+        }
+
+        var record = await dbContext.PolicyEvaluationBundles
+            .AsNoTracking()
+            .Where(bundle =>
+                bundle.OrganizationId == request.OrganizationId &&
+                bundle.SubjectId == request.SubjectId &&
+                bundle.SubjectVersion == request.SubjectVersion)
+            .OrderByDescending(bundle => bundle.EvaluationSequence)
+            .FirstOrDefaultAsync(cancellationToken)
+            ?? throw new ApprovalDependencyUnavailableException(
+                "No persisted policy evaluation is available for the requested subject version.");
+
+        var bundle = Rehydrate(record);
+        await VerifyDigestsAsync(record, bundle, cancellationToken);
+        if (bundle.Result == PolicyResult.Blocked)
+        {
+            throw new DomainConflictException(
+                "A blocked policy evaluation cannot be submitted to the approval workflow.");
+        }
+
+        var material = MaterialTargets(bundle);
+        return Map(bundle, material, record, request);
+    }
+
+    /// <summary>
+    /// Pure mapping of a verified evaluation into the submission graph: one projection per SPEC 02
+    /// effect, prerequisites with their fixed versioned owners and explicit dependencies by stage
+    /// and target (SPEC 05 REQ-03, REQ-04). Exposed for the mapping matrix tests.
+    /// </summary>
+    public static ApprovalSubmission Map(
+        PolicyEvaluationBundle bundle,
+        IReadOnlyDictionary<Guid, ApprovalTarget> material,
+        PolicyEvaluationBundleRecord record,
+        ApprovalSubmissionRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(bundle);
+        ArgumentNullException.ThrowIfNull(material);
+        ArgumentNullException.ThrowIfNull(record);
+        ArgumentNullException.ThrowIfNull(request);
+        var nodes = new List<Node>();
+        var requirements = new List<ApprovalRequirementDefinition>();
+        var prerequisites = new List<ExternalPrerequisiteDefinition>();
+        foreach (var control in bundle.Controls)
+        {
+            switch (control.Type)
+            {
+                case PolicyEffectType.Allow:
+                case PolicyEffectType.RequirePo:
+                case PolicyEffectType.AllowDirectPurchase:
+                    break;
+                case PolicyEffectType.Block:
+                    throw new DomainConflictException(
+                        $"The evaluation contains a blocking control '{control.RequirementKey}'.");
+                case PolicyEffectType.RequireApproval:
+                    nodes.Add(RequirementNode(control, material, request));
+                    break;
+                default:
+                    nodes.Add(PrerequisiteNode(control, material, request));
+                    break;
+            }
+        }
+
+        foreach (var node in nodes)
+        {
+            if (node.IsRequirement)
+            {
+                var parts = node.Parts!;
+                requirements.Add(new ApprovalRequirementDefinition(
+                    node.Key,
+                    node.Stage,
+                    parts.Role,
+                    parts.Authority,
+                    parts.Scope,
+                    // pi-lens-ignore: lsp:CS0117
+                    [ApprovalDecisionAction.Approve, ApprovalDecisionAction.Reject],
+                    parts.Exclusions,
+                    node.Targets,
+                    DependenciesFor(node, nodes)));
+            }
+            else
+            {
+                prerequisites.Add(node.Prerequisite!);
+            }
+        }
+
+        return new ApprovalSubmission(
+            request.SubmissionKey,
+            request.OrganizationId,
+            SubjectType,
+            request.SubjectId,
+            request.SubjectVersion,
+            Operation,
+            SnapshotDigest(record, bundle),
+            request.RequesterId,
+            request.OriginatorId,
+            requirements,
+            prerequisites);
+    }
+    private static PolicyEvaluationBundle Rehydrate(PolicyEvaluationBundleRecord record)
+    {
+        try
+        {
+            return PolicyEvaluationBundleRehydrator.FromJson(record.BundleJson);
+        }
+        catch (Exception exception) when (exception is System.Text.Json.JsonException or KeyNotFoundException or
+                                             InvalidOperationException or FormatException)
+        {
+            throw new ApprovalDependencyUnavailableException("The persisted policy evaluation is corrupted.");
+        }
+    }
+
+    private async Task VerifyDigestsAsync(
+        PolicyEvaluationBundleRecord record,
+        PolicyEvaluationBundle bundle,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(bundle.ResultDigest, record.ResultDigest, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(bundle.InputDigest, record.InputDigest, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(bundle.PolicyContentDigest, record.PolicyContentDigest, StringComparison.OrdinalIgnoreCase) ||
+            bundle.Subject.Id != record.SubjectId ||
+            bundle.Subject.Version != record.SubjectVersion)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                "The persisted policy evaluation does not match its row identity.");
+        }
+
+        if (string.IsNullOrWhiteSpace(bundle.InputCanonicalJson) ||
+            !string.Equals(
+                PolicyCanonicalizer.Hash(bundle.InputCanonicalJson), bundle.InputDigest,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ApprovalDependencyUnavailableException("The policy input digest is not reproducible.");
+        }
+
+        var recomputedResult = PolicyCanonicalizer.Hash(PolicyCanonicalizer.CanonicalizeEvaluationResult(
+            bundle.InputDigest,
+            bundle.ScopeEvaluations,
+            bundle.Controls,
+            bundle.Result,
+            bundle.Diff.Count == 0 ? null : bundle.Diff));
+        if (!string.Equals(recomputedResult, bundle.ResultDigest, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ApprovalDependencyUnavailableException("The policy result digest is not reproducible.");
+        }
+
+        if (string.IsNullOrWhiteSpace(bundle.ManifestDigest) || string.IsNullOrWhiteSpace(bundle.ManifestCanonicalJson) ||
+            !string.Equals(
+                PolicyCanonicalizer.Hash(bundle.ManifestCanonicalJson), bundle.ManifestDigest,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ApprovalDependencyUnavailableException("The confirmed completeness manifest is unavailable.");
+        }
+
+        var policy = await dbContext.PolicySetVersions
+            .AsNoTracking()
+            .SingleOrDefaultAsync(version => version.Id == record.PolicySetVersionId, cancellationToken)
+            ?? throw new ApprovalDependencyUnavailableException("The evaluated policy version does not exist.");
+        if (!string.Equals(policy.ContentDigest, bundle.PolicyContentDigest, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(PolicyCanonicalizer.Hash(policy.ContentJson), policy.ContentDigest,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ApprovalDependencyUnavailableException("The evaluated policy content digest is not reproducible.");
+        }
+
+        if (bundle.MaterialProjection is null ||
+            !string.Equals(bundle.MaterialProjection.ContractVersion, PolicyApprovalTargets.ContractVersion,
+                StringComparison.Ordinal))
+        {
+            throw new ApprovalDependencyUnavailableException(
+                "The evaluation has no material target projection; it must be reevaluated.");
+        }
+
+        // Recompute every projected digest from the persisted snapshot so a tampered projection
+        // row cannot introduce a target the workflow would otherwise trust.
+        foreach (var target in bundle.MaterialProjection.Targets)
+        {
+            var recomputed = PolicyApprovalTargets.ComputeMaterialDigest(
+                bundle.RequestSnapshotJson!,
+                bundle.ManifestDigest,
+                bundle.MaterialProjection.Provenance,
+                new PolicySubjectReference(target.Id, target.Version));
+            if (!string.Equals(recomputed, target.MaterialSnapshotDigest, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ApprovalDependencyUnavailableException(
+                    "The material target projection of the evaluation is not reproducible.");
+            }
+        }
+    }
+
+    private static IReadOnlyDictionary<Guid, ApprovalTarget> MaterialTargets(PolicyEvaluationBundle bundle)
+    {
+        if (string.IsNullOrWhiteSpace(bundle.RequestSnapshotJson) || bundle.MaterialProjection is null)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                "The evaluation has no material target projection; it must be reevaluated.");
+        }
+
+        return bundle.MaterialProjection.Targets.ToDictionary(
+            target => target.Id,
+            target => new ApprovalTarget(
+                PolicyApprovalTargets.TargetType, target.Id, target.Version, target.MaterialSnapshotDigest));
+    }
+
+    private static Node RequirementNode(
+        PolicyGeneratedControl control,
+        IReadOnlyDictionary<Guid, ApprovalTarget> material,
+        ApprovalSubmissionRequest request)
+    {
+        var approval = control.Approval
+            ?? throw new ApprovalDependencyUnavailableException(
+                $"The approval control '{control.RequirementKey}' has no descriptor.");
+        var targets = Targets(control, material).ToImmutableArray();
+        if (targets.Length == 0)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                $"The approval control '{control.RequirementKey}' has no confirmed target.");
+        }
+
+        var exclusions = Exclusions(request);
+        var scope = ParseScope(approval.DecisionScope, request.OrganizationId);
+        var authority = approval.AuthorityType is null || approval.AuthorityLevel is null
+            ? AuthorityRequirement.None
+            : AuthorityRequirement.Required(
+                approval.AuthorityType.Value, approval.AuthorityLevel.Rank, approval.AmountBase,
+                approval.BaseCurrency);
+        return Node.ForRequirement(
+            new ApprovalRequirementParts(control.RequirementKey, approval.Role, authority, scope, exclusions),
+            control.Phase,
+            targets);
+    }
+
+    private static Node PrerequisiteNode(
+        PolicyGeneratedControl control,
+        IReadOnlyDictionary<Guid, ApprovalTarget> material,
+        ApprovalSubmissionRequest request)
+    {
+        if (!OwnerAdapters.TryGetValue(control.Type, out var ownerAdapter))
+        {
+            throw new ApprovalDependencyUnavailableException(
+                $"The policy control '{control.RequirementKey}' of type '{control.Type}' has no defined owner.");
+        }
+
+        var targets = Targets(control, material).ToImmutableArray();
+        if (targets.Length == 0)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                $"The control '{control.RequirementKey}' has no confirmed target.");
+        }
+
+        var parameters = Parameters(control);
+        var prerequisite = new ExternalPrerequisiteDefinition(
+            control.RequirementKey,
+            ownerAdapter,
+            "v1",
+            control.Type.ToString().ToUpperInvariant(),
+            SourceControlDigest(control, parameters, targets),
+            parameters,
+            targets);
+        return Node.ForPrerequisite(prerequisite, control.Phase, targets);
+    }
+
+    private static IEnumerable<ApprovalTarget> Targets(
+        PolicyGeneratedControl control,
+        IReadOnlyDictionary<Guid, ApprovalTarget> material)
+    {
+        if (control.SubjectIds.Count == 0)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                $"The control '{control.RequirementKey}' covers no line.");
+        }
+
+        foreach (var subjectId in control.SubjectIds.OrderBy(id => id))
+        {
+            if (!material.TryGetValue(subjectId, out var target))
+            {
+                throw new ApprovalDependencyUnavailableException(
+                    $"The control '{control.RequirementKey}' covers a line without a material projection.");
+            }
+
+            yield return target;
+        }
+    }
+
+    private static ImmutableHashSet<Guid> Exclusions(ApprovalSubmissionRequest request)
+    {
+        var exclusions = ImmutableHashSet.CreateBuilder<Guid>();
+        exclusions.Add(request.OriginatorId);
+        if (request.RequesterId is Guid requester && requester != Guid.Empty)
+        {
+            exclusions.Add(requester);
+        }
+
+        return exclusions.ToImmutable();
+    }
+
+    private static DecisionScopeDescriptor ParseScope(string decisionScope, Guid organizationId)
+    {
+        try
+        {
+            return DecisionScopeDescriptor.Parse(decisionScope, organizationId);
+        }
+        catch (DomainValidationException exception)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                $"The approval decision scope is not canonical decision-scope/v1: {exception.Message}");
+        }
+    }
+
+    private static string Stage(PolicyGeneratedControl control) =>
+        StageOrder.ContainsKey(control.Phase)
+            ? control.Phase
+            : throw new ApprovalDependencyUnavailableException(
+                $"The control '{control.RequirementKey}' declares an unknown stage '{control.Phase}'.");
+
+    private static string Parameters(PolicyGeneratedControl control) => control.Type switch
+    {
+        PolicyEffectType.RequireBudgetCheck => ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+            ("amount_base", control.AmountBase is null
+                ? ApprovalCanonicalJson.Null()
+                : ApprovalCanonicalJson.String(ApprovalCanonicalJson.FormatDecimal(control.AmountBase.Value))),
+            ("base_currency", ApprovalCanonicalJson.StringOrNull(control.BaseCurrency)),
+            ("cost_center_ids", ApprovalCanonicalJson.Set(
+                control.CostCenterIds.OrderBy(id => id).Select(ApprovalCanonicalJson.String))))),
+        PolicyEffectType.RequireSupportingDocument => ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+            ("document_types", ApprovalCanonicalJson.Set(control.SupportingDocumentTypes)),
+            ("minimum_count", ApprovalCanonicalJson.Number(1)))),
+        PolicyEffectType.RequireActiveSupplier => "{}",
+        PolicyEffectType.RequireQuotations => ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+            ("minimum_allowed_quotations", ApprovalCanonicalJson.NumberOrNull(control.MinimumAllowedQuotations)),
+            ("minimum_quotations", ApprovalCanonicalJson.NumberOrNull(control.MinimumQuotations)))),
+        PolicyEffectType.RequireProcurement => ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+            ("phase", ApprovalCanonicalJson.String(control.Phase)))),
+        _ => throw new ApprovalDependencyUnavailableException(
+            $"The control '{control.RequirementKey}' of type '{control.Type}' has no defined parameters.")
+    };
+
+    private static string SourceControlDigest(
+        PolicyGeneratedControl control,
+        string parameters,
+        ImmutableArray<ApprovalTarget> targets) =>
+        ApprovalCanonicalJson.Digest(ApprovalCanonicalJson.Object(
+            ("parameters", ApprovalCanonicalJson.String(parameters)),
+            ("phase", ApprovalCanonicalJson.String(control.Phase)),
+            ("requirement_key", ApprovalCanonicalJson.String(control.RequirementKey)),
+            ("targets", ApprovalRequirementDefinition.TargetsValue(targets)),
+            ("type", ApprovalCanonicalJson.String(control.Type.ToString().ToUpperInvariant()))));
+
+    private static string SnapshotDigest(PolicyEvaluationBundleRecord record, PolicyEvaluationBundle bundle) =>
+        ApprovalCanonicalJson.Digest(ApprovalCanonicalJson.Object(
+            ("base_result_digest", ApprovalCanonicalJson.String(bundle.ResultDigest)),
+            ("bundle_id", ApprovalCanonicalJson.String(record.Id)),
+            ("contract_version", ApprovalCanonicalJson.String(SnapshotContractVersion)),
+            ("evaluation_sequence", ApprovalCanonicalJson.Number(record.EvaluationSequence)),
+            ("fact_manifest_digest", ApprovalCanonicalJson.String(bundle.ManifestDigest!)),
+            ("operation", ApprovalCanonicalJson.String(record.Operation)),
+            ("policy_content_digest", ApprovalCanonicalJson.String(bundle.PolicyContentDigest)),
+            ("policy_version_id", ApprovalCanonicalJson.String(record.PolicySetVersionId)),
+            ("subject_id", ApprovalCanonicalJson.String(record.SubjectId)),
+            ("subject_type", ApprovalCanonicalJson.String(SubjectType)),
+            ("subject_version", ApprovalCanonicalJson.Number(record.SubjectVersion))));
+
+    /// <summary>
+    /// Explicit dependencies by confirmed target (SPEC 05 REQ-04, DEC-04): every node depends on
+    /// the strictly earlier stage nodes that share at least one target, so Department runs first,
+    /// Finance/IT/Legal stay parallel inside PRE_PROCUREMENT and PROCUREMENT/PRE_PO wait for the
+    /// controls that precede them.
+    /// </summary>
+    private static ImmutableArray<ApprovalDependencyRef> DependenciesFor(Node node, IReadOnlyList<Node> nodes)
+    {
+        var predecessors = new List<ApprovalDependencyRef>();
+        foreach (var other in nodes)
+        {
+            if (ReferenceEquals(other, node) ||
+                StageOrder[other.Stage] >= StageOrder[node.Stage])
+            {
+                continue;
+            }
+
+            var shared = other.Targets
+                .Where(target => node.Targets.Any(candidate => candidate.SameIdentity(target)))
+                .OrderBy(target => target.CanonicalIdentity, StringComparer.Ordinal)
+                .ToArray();
+            if (shared.Length == 0)
+            {
+                continue;
+            }
+
+            predecessors.Add(new ApprovalDependencyRef(
+                other.IsRequirement ? DependencyPredecessorKind.Approval : DependencyPredecessorKind.External,
+                other.Key,
+                shared));
+        }
+
+        return predecessors.ToImmutableArray();
+    }
+
+    private sealed record Node(
+        string Key,
+        string Stage,
+        ImmutableArray<ApprovalTarget> Targets,
+        bool IsRequirement,
+        ApprovalRequirementParts? Parts,
+        ExternalPrerequisiteDefinition? Prerequisite)
+    {
+        public static Node ForRequirement(
+            ApprovalRequirementParts parts,
+            string stage,
+            ImmutableArray<ApprovalTarget> targets) =>
+            new(parts.Key, RequireStage(stage, parts.Key), targets, true, parts, null);
+
+        public static Node ForPrerequisite(
+            ExternalPrerequisiteDefinition prerequisite,
+            string stage,
+            ImmutableArray<ApprovalTarget> targets) =>
+            new(prerequisite.Key, RequireStage(stage, prerequisite.Key), targets, false, null, prerequisite);
+
+        private static string RequireStage(string stage, string key) =>
+            StageOrder.ContainsKey(stage)
+                ? stage
+                : throw new ApprovalDependencyUnavailableException(
+                    $"The policy control '{key}' declares an unknown stage '{stage}'.");
+    }
+
+    private sealed record ApprovalRequirementParts(
+        string Key,
+        SystemRole Role,
+        AuthorityRequirement Authority,
+        DecisionScopeDescriptor Scope,
+        ImmutableHashSet<Guid> Exclusions);
+}

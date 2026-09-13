@@ -26,7 +26,15 @@ public sealed record ApprovalDecisionOutcome(
     string CaseStatus,
     int CaseVersion,
     bool Replayed,
-    IReadOnlyList<Guid> OutboxEventIds);
+    IReadOnlyList<Guid> OutboxEventIds)
+{
+    /// <summary>
+    /// Evidence digest of the linked policy exception, present only when the decided requirement
+    /// carries a <c>policy-exception-request/v1</c> extension. It is the value Policy sends back
+    /// to <c>POST /v1/policy-exceptions/verify</c> (SPEC 05 REQ-05, REQ-06).
+    /// </summary>
+    public string? PolicyExceptionEvidenceDigest { get; init; }
+}
 
 /// <summary>
 /// Authorized, immutable and idempotent decisions (REQ-06, REQ-08, NFR-01, NFR-02): only the

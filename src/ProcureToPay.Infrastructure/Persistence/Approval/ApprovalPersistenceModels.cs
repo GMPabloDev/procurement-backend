@@ -417,3 +417,69 @@ public sealed class DecisionEvidenceRevocationRecord
     public string Reason { get; set; } = string.Empty;
     public DateTimeOffset CreatedAt { get; set; }
 }
+
+/// <summary>
+/// Immutable persisted policy exception extension linked one-to-one to an ordinary approval
+/// requirement (SPEC 05 REQ-05). It stores every property of the <c>binding</c> preimage and
+/// never duplicates state derivable from the case or the requirement.
+/// </summary>
+public sealed class ApprovalPolicyExceptionRequestRecord
+{
+    public Guid Id { get; set; }
+    public int Version { get; set; } = 1;
+    public Guid OrganizationId { get; set; }
+    public Guid CaseId { get; set; }
+    public Guid RequirementId { get; set; }
+    public string RequirementKey { get; set; } = string.Empty;
+    public string SubjectType { get; set; } = string.Empty;
+    public Guid SubjectId { get; set; }
+    public int SubjectVersion { get; set; }
+    public Guid BaseBundleId { get; set; }
+    public string BaseResultDigest { get; set; } = string.Empty;
+    public Guid PolicyVersionId { get; set; }
+    public string PolicyContentDigest { get; set; } = string.Empty;
+    public string ManifestDigest { get; set; } = string.Empty;
+    public string TargetRequirementKey { get; set; } = string.Empty;
+    /// <summary>Canonical JSON array of the covered lines under <c>approval-canonical-json/v2</c>.</summary>
+    public string CoveredLinesJson { get; set; } = string.Empty;
+    public int From { get; set; }
+    public int To { get; set; }
+    public int Floor { get; set; }
+    public Guid ReferenceId { get; set; }
+    public Guid? RequesterId { get; set; }
+    public Guid OriginatorId { get; set; }
+    public Guid WorkloadSubjectId { get; set; }
+    public DateTimeOffset RequestedAt { get; set; }
+    public DateTimeOffset RequestedValidTo { get; set; }
+    public string Nonce { get; set; } = string.Empty;
+    public string Binding { get; set; } = string.Empty;
+    public DateTimeOffset CreatedAt { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+}
+
+/// <summary>
+/// Immutable verification of a policy exception (SPEC 05 REQ-06, REQ-08). Two unique keys
+/// serialize concurrent replays and forbid reusing a nonce or a workflow decision for a
+/// different binding.
+/// </summary>
+public sealed class ApprovalPolicyExceptionVerificationRecord
+{
+    public Guid Id { get; set; }
+    public int Version { get; set; } = 1;
+    public Guid OrganizationId { get; set; }
+    public Guid RequestId { get; set; }
+    public Guid CaseId { get; set; }
+    public Guid RequirementId { get; set; }
+    public string VerifierType { get; set; } = string.Empty;
+    public Guid WorkflowDecisionId { get; set; }
+    public int WorkflowDecisionVersion { get; set; }
+    public string WorkflowDecisionDigest { get; set; } = string.Empty;
+    public string EvidenceDigest { get; set; } = string.Empty;
+    public string Binding { get; set; } = string.Empty;
+    public string Nonce { get; set; } = string.Empty;
+    public bool Verified { get; set; }
+    public string FailureCode { get; set; } = string.Empty;
+    public string? RevocationReference { get; set; }
+    public DateTimeOffset VerifiedAt { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+}

@@ -146,6 +146,9 @@ public sealed record PolicyEvaluationBundle(
     public string? ManifestCanonicalJson { get; init; }
     public string? InputCanonicalJson { get; init; }
     public string? RequestSnapshotJson { get; init; }
+
+    /// <summary>Material projection of every covered line for the approval adapter (SPEC 05 REQ-01).</summary>
+    public PolicyMaterialProjection? MaterialProjection { get; init; }
     public Guid? ActivationId { get; init; }
     public Guid? PreviousBundleId { get; init; }
 

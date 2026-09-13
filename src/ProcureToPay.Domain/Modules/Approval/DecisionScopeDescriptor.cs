@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.SharedKernel;
 
@@ -10,6 +11,7 @@ namespace ProcureToPay.Domain.Modules.Approval;
 /// properties <c>{schema_version, organization_id, scopes}</c> where every scope entry is
 /// <c>{dimension, reference_id, reference_version}</c>.
 /// </summary>
+[JsonConverter(typeof(DecisionScopeDescriptorJsonConverter))]
 public sealed class DecisionScopeDescriptor
 {
     public const string SchemaVersion = "decision-scope/v1";
@@ -252,3 +254,22 @@ public sealed class DecisionScopeDescriptor
 }
 
 public sealed record DecisionScopeEntry(ScopeDimension Dimension, Guid? ReferenceId, int? ReferenceVersion);
+
+/// <summary>
+/// Strict JSON converter: a descriptor is only accepted when its serialized form is exactly the
+/// canonical <c>decision-scope/v1</c> JSON, so a non-canonical wire payload fails closed.
+/// </summary>
+public sealed class DecisionScopeDescriptorJsonConverter : JsonConverter<DecisionScopeDescriptor>
+{
+    public override DecisionScopeDescriptor Read(
+        ref Utf8JsonReader reader,
+        Type typeToConvert,
+        JsonSerializerOptions options)
+    {
+        using var document = JsonDocument.ParseValue(ref reader);
+        return DecisionScopeDescriptor.Parse(document.RootElement.GetRawText());
+    }
+
+    public override void Write(Utf8JsonWriter writer, DecisionScopeDescriptor value, JsonSerializerOptions options) =>
+        writer.WriteRawValue(value.ToCanonicalJson());
+}

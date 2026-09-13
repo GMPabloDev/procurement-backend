@@ -374,6 +374,15 @@ public sealed class ApprovalSupersessionService(
                 .Where(record => evidenceIds.Contains(record.Id))
                 .ToArrayAsync(cancellationToken))
             .ToDictionary(record => record.Id);
+        // Policy exception requirements never carry forward (SPEC 05 REQ-05, CA-08): a waiver is
+        // bound to one evaluation and needs its own case and decision, so it is mapped as a new
+        // requirement that must be decided again.
+        var exceptionRequirementIds = (await dbContext.ApprovalPolicyExceptionRequests
+                .AsNoTracking()
+                .Where(record => record.CaseId == previousCase.Id)
+                .Select(record => record.RequirementId)
+                .ToArrayAsync(cancellationToken))
+            .ToHashSet();
 
         foreach (var newRequirement in newCase.Requirements
                      .OrderBy(requirement => requirement.WorkflowRequirementKey, StringComparer.Ordinal))
@@ -407,6 +416,7 @@ public sealed class ApprovalSupersessionService(
             var previous = previousRequirements.FirstOrDefault(candidate =>
                 candidate.Identities.SetEquals(mappedIdentities));
             if (previous.Requirement is null ||
+                exceptionRequirementIds.Contains(previous.Requirement.Id) ||
                 !decisionByRequirement.TryGetValue(previous.Requirement.Id, out var sourceDecision) ||
                 !evidenceById.TryGetValue(sourceDecision.EvidenceId, out var evidence) ||
                 evidence.Status != ApprovalEvolutionCodes.EvidenceValid)

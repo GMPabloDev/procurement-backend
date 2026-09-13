@@ -1,5 +1,6 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using ProcureToPay.Api.Authentication;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -74,6 +75,17 @@ var requireHttpsMetadata = bool.TryParse(
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(ApprovalServiceAuthentication.Scheme, options =>
+    {
+        // SPEC 05 REQ-06: the policy exception verifier trusts only service tokens issued for
+        // its dedicated audience; org user tokens remain on the default scheme.
+        options.Authority = authority;
+        options.Audience = builder.Configuration["Authentication:ServiceJwt:Audience"]
+            ?? ApprovalServiceAuthentication.DefaultAudience;
+        options.RequireHttpsMetadata = requireHttpsMetadata;
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters.ValidTypes = ["JWT"];
+    })
     .AddJwtBearer(options =>
     {
         options.Authority = authority;
@@ -115,7 +127,8 @@ builder.Services
     .AddSqlServer(sqlServerConnectionString, name: "sqlserver", tags: ["ready"])
     .AddCheck<OrganizationBootstrapHealthCheck>("organization-bootstrap", tags: ["ready"])
     .AddCheck<PolicyConfigurationHealthCheck>("policy-configuration", tags: ["ready"])
-    .AddCheck<ApprovalHealthCheck>("approval", tags: ["ready"]);
+    .AddCheck<ApprovalHealthCheck>("approval", tags: ["ready"])
+    .AddCheck<PolicyExceptionHealthCheck>("policy-exception", tags: ["ready"]);
 
 var telemetryServiceName = builder.Configuration["OpenTelemetry:ServiceName"]
     ?? builder.Environment.ApplicationName;

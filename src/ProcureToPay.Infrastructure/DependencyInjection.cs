@@ -31,6 +31,8 @@ public static class DependencyInjection
         services.AddScoped<OrganizationEligibilityService>();
         services.AddScoped<PolicyPersistenceService>();
         services.AddSingleton<PolicyWorkloadAllowlist>();
+        services.AddSingleton<IPolicyWorkloadAllowlist>(provider =>
+            provider.GetRequiredService<PolicyWorkloadAllowlist>());
         // pi-lens-ignore: CS0246
         services.AddScoped<PolicyFactProviderRegistry>();
         var workflowUrl = configuration["Policy:ExceptionWorkflow:BaseUrl"];
@@ -48,6 +50,28 @@ public static class DependencyInjection
             });
             services.AddScoped<IQuotationWaiverVerifier>(provider =>
                 provider.GetRequiredService<HttpQuotationWaiverVerifier>());
+            var tokenEndpoint = configuration["Policy:ExceptionWorkflow:TokenEndpoint"];
+            if (!string.IsNullOrWhiteSpace(tokenEndpoint))
+            {
+                if (!Uri.TryCreate(tokenEndpoint, UriKind.Absolute, out var tokenBaseAddress))
+                {
+                    throw new InvalidOperationException("Policy exception token endpoint is invalid.");
+                }
+
+                services.AddHttpClient<ClientCredentialsPolicyExceptionTokenProvider>(client =>
+                {
+                    client.BaseAddress = tokenBaseAddress;
+                    client.Timeout = TimeSpan.FromSeconds(5);
+                });
+                services.AddScoped<IPolicyExceptionServiceTokenProvider>(provider =>
+                    provider.GetRequiredService<ClientCredentialsPolicyExceptionTokenProvider>());
+            }
+            else
+            {
+                // No credential source: the verifier fails closed with 503 instead of calling
+                // the workflow unauthenticated (SPEC 05 NFR-03).
+                services.AddSingleton<IPolicyExceptionServiceTokenProvider, UnavailablePolicyExceptionTokenProvider>();
+            }
         }
         else
         {
@@ -94,6 +118,9 @@ public static class DependencyInjection
         services.AddScoped<IApprovalSubmissionAdapterRegistry>(provider =>
             new ApprovalSubmissionAdapterRegistry(provider.GetServices<IApprovalSubmissionAdapter>()));
         services.AddScoped<ApprovalSubmissionService>();
+        services.AddScoped<IApprovalSubmissionAdapter, PolicyApprovalAdapter>();
+        services.AddScoped<PolicyExceptionSubmissionService>();
+        services.AddScoped<PolicyExceptionVerificationService>();
         services.AddScoped<ApprovalWorkflowService>();
         services.AddScoped<ApprovalDecisionService>();
         services.AddScoped<ApprovalQueryService>();

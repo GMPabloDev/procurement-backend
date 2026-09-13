@@ -64,6 +64,10 @@ public static class ApprovalTelemetry
         "approval.evidence_revocations",
         description: "Evidence revocations by outcome (SPEC 04 REQ-06).");
 
+    public static readonly Counter<long> PolicyExceptions = Meter.CreateCounter<long>(
+        "approval.policy_exceptions",
+        description: "Policy exception submissions and verifications by outcome (SPEC 05 NFR-04).");
+
     public static readonly Histogram<double> OperationDuration = Meter.CreateHistogram<double>(
         "approval.operation.duration",
         unit: "ms",
@@ -120,6 +124,13 @@ public static class ApprovalTelemetry
     /// <summary>Records one evidence revocation without exposing the evidence or its reason (NFR-04).</summary>
     public static void RecordEvidenceRevocation(string outcome) =>
         EvidenceRevocations.Add(1, Tags("REVOKE_EVIDENCE", outcome));
+
+    /// <summary>
+    /// Records one policy exception submission or verification by outcome. Only the state is
+    /// emitted: never bindings, nonces, reasons or snapshots (SPEC 05 NFR-04).
+    /// </summary>
+    public static void RecordPolicyException(string outcome) =>
+        PolicyExceptions.Add(1, Tags("POLICY_EXCEPTION", outcome));
 
     /// <summary>Records one completed reconciliation pass and what it changed (REQ-04, NFR-03).</summary>
     public static void RecordReconciliation(int reassigned, int unassigned)

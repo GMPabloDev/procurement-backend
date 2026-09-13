@@ -68,6 +68,35 @@ public sealed class ApprovalSubmissionService(
                 command.OriginatorId,
                 correlationReference),
             cancellationToken);
+        return await SubmitPreparedAsync(command, descriptor, submission, occurredAt, afterPersist: null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Ingests a submission already built by a trusted in-process command (SPEC 05 REQ-05). The
+    /// optional <paramref name="afterPersist"/> hook runs inside the same transaction, after the
+    /// case graph is materialized and before it is committed, so an extension row cannot exist
+    /// without its case and vice versa.
+    /// </summary>
+    public async Task<ApprovalSubmissionOutcome> SubmitPreparedAsync(
+        ApprovalSubmissionCommand command,
+        ApprovalAdapterDescriptor descriptor,
+        ApprovalSubmission submission,
+        DateTimeOffset occurredAt,
+        Action<ApprovalCase>? afterPersist,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(submission);
+        allowlist.EnsureAllowed(command.Workload);
+        _ = ApprovalLimits.RequireKey(command.SubmissionKey, "submission_key");
+        // pi-lens-ignore: lsp:CS0117
+        var correlationReference = ApprovalLimits.RequireCorrelation(command.CorrelationReference);
+        if (command.OrganizationId == Guid.Empty)
+        {
+            throw new DomainValidationException("A submission requires an organization.");
+        }
+
         ApprovalSubmissionRules.Validate(submission, descriptor, command.Workload);
         if (!string.Equals(submission.SubmissionKey, command.SubmissionKey, StringComparison.Ordinal))
         {
@@ -135,6 +164,7 @@ public sealed class ApprovalSubmissionService(
             await assignmentEngine.AssignUnassignedAsync(
                 approvalCase, utcNow, correlationReference, rootAudit.Id, cancellationToken);
             PersistNewCase(approvalCase, submission, command, fingerprint, utcNow);
+            afterPersist?.Invoke(approvalCase);
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
