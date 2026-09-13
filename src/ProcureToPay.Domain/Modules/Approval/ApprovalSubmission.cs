@@ -43,28 +43,42 @@ public sealed record ApprovalRequirementDefinition
         Authority = authority ?? throw new DomainValidationException("An approval requirement needs an authority.");
         AuthorizationMatrix.Validate(role, Authority);
         DecisionScope = decisionScope ?? throw new DomainValidationException("An approval requirement needs a scope.");
-        Actions = (allowedActions ?? []).ToImmutableHashSet();
+        var actionSequence = (allowedActions ?? []).ToArray();
+        if (actionSequence.Length != actionSequence.Distinct().Count())
+        {
+            throw new DomainConflictException("An approval requirement cannot repeat actions.");
+        }
+
+        Actions = actionSequence.ToImmutableHashSet();
         if (Actions.Count == 0 || Actions.Any(action => !Enum.IsDefined(action)))
         {
             throw new DomainValidationException("An approval requirement needs at least one allowed action.");
         }
 
-        ExcludedUserIds = (excludedUserIds ?? []).ToImmutableHashSet();
+        var exclusionSequence = (excludedUserIds ?? []).ToArray();
+        if (exclusionSequence.Length != exclusionSequence.Distinct().Count())
+        {
+            throw new DomainConflictException("An approval requirement cannot repeat excluded actors.");
+        }
+
+        ExcludedUserIds = exclusionSequence.ToImmutableHashSet();
         if (ExcludedUserIds.Any(id => id == Guid.Empty))
         {
             throw new DomainValidationException("Excluded actors cannot be empty identities.");
         }
 
-        Targets = (targets ?? []).ToImmutableHashSet();
-        if (Targets.Count == 0)
+        var targetSequence = (targets ?? []).ToArray();
+        if (targetSequence.Length == 0)
         {
             throw new DomainValidationException("An approval requirement needs at least one target.");
         }
 
-        if (Targets.Count != Targets.Select(target => target.CanonicalIdentity).Distinct(StringComparer.Ordinal).Count())
+        if (targetSequence.Length != targetSequence.Select(target => target.CanonicalIdentity).Distinct(StringComparer.Ordinal).Count())
         {
             throw new DomainConflictException("An approval requirement cannot repeat targets.");
         }
+
+        Targets = targetSequence.ToImmutableHashSet();
 
         Dependencies = (dependencies ?? []).ToImmutableArray();
     }
@@ -148,11 +162,18 @@ public sealed record ExternalPrerequisiteDefinition
         }
 
         ParametersJson = parametersJson;
-        Targets = (targets ?? []).ToImmutableHashSet();
-        if (Targets.Count == 0)
+        var targetSequence = (targets ?? []).ToArray();
+        if (targetSequence.Length == 0)
         {
             throw new DomainValidationException("A prerequisite needs at least one target.");
         }
+
+        if (targetSequence.Length != targetSequence.Select(target => target.CanonicalIdentity).Distinct(StringComparer.Ordinal).Count())
+        {
+            throw new DomainConflictException("A prerequisite cannot repeat targets.");
+        }
+
+        Targets = targetSequence.ToImmutableHashSet();
     }
 
     public string Key { get; }
@@ -339,15 +360,17 @@ public static class ApprovalSubmissionRules
                 "The adapter contract requires requester_id for this operation.");
         }
 
-        var excluded = submission.Requirements.SelectMany(requirement => requirement.ExcludedUserIds).ToHashSet();
-        if (!excluded.Contains(submission.OriginatorId))
+        foreach (var requirement in submission.Requirements)
         {
-            throw new DomainValidationException("originator_id must be excluded from every approval requirement.");
-        }
+            if (!requirement.ExcludedUserIds.Contains(submission.OriginatorId))
+            {
+                throw new DomainValidationException("originator_id must be excluded from every approval requirement.");
+            }
 
-        if (submission.RequesterId is not null && !excluded.Contains(submission.RequesterId.Value))
-        {
-            throw new DomainValidationException("requester_id must be excluded from every approval requirement.");
+            if (submission.RequesterId is not null && !requirement.ExcludedUserIds.Contains(submission.RequesterId.Value))
+            {
+                throw new DomainValidationException("requester_id must be excluded from every approval requirement.");
+            }
         }
 
         if (submission.RequesterId is not null && submission.RequesterId == submission.OriginatorId)
@@ -366,20 +389,14 @@ public static class ApprovalSubmissionRules
             throw new DomainConflictException("Two approval requirements resolve to the same workflow key.");
         }
 
-        // Partitioning by the adapter is legitimate (REQ-02), but one source requirement
-        // cannot cover the same target twice through different workflow requirements.
-        foreach (var group in submission.Requirements.GroupBy(
-                     requirement => requirement.SourceRequirementKey, StringComparer.Ordinal))
+        // Each class of key is unique within the case (Datos y contratos): an adapter cannot
+        // split one source requirement into several workflow requirements inside a case.
+        var duplicatedSourceKey = submission.Requirements
+            .GroupBy(requirement => requirement.SourceRequirementKey, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicatedSourceKey is not null)
         {
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var target in group.SelectMany(requirement => requirement.Targets))
-            {
-                if (!seen.Add(target.CanonicalIdentity))
-                {
-                    throw new DomainConflictException(
-                        $"Source requirement '{group.Key}' repeats the same target across partitions.");
-                }
-            }
+            throw new DomainConflictException("A source requirement key cannot repeat within a case.");
         }
     }
 
@@ -390,8 +407,14 @@ public static class ApprovalSubmissionRules
             .ToHashSet(StringComparer.Ordinal);
         var prerequisiteKeys = submission.Prerequisites
             .Select(prerequisite => prerequisite.Key)
-            .ToHashSet(StringComparer.Ordinal);
-        if (requirementKeys.Overlaps(prerequisiteKeys))
+            .ToArray();
+        if (prerequisiteKeys.Length != prerequisiteKeys.Distinct(StringComparer.Ordinal).Count())
+        {
+            throw new DomainConflictException("A prerequisite key cannot repeat within a case.");
+        }
+
+        var prerequisiteKeySet = prerequisiteKeys.ToHashSet(StringComparer.Ordinal);
+        if (requirementKeys.Overlaps(prerequisiteKeySet))
         {
             throw new DomainConflictException("Requirement and prerequisite keys cannot collide.");
         }
@@ -413,7 +436,7 @@ public static class ApprovalSubmissionRules
                         throw new DomainValidationException("A requirement cannot depend on itself.");
                     }
                 }
-                else if (!prerequisiteKeys.Contains(dependency.PredecessorKey))
+                else if (!prerequisiteKeySet.Contains(dependency.PredecessorKey))
                 {
                     throw new DomainValidationException(
                         $"Dependency '{dependency.PredecessorKey}' does not reference a submitted prerequisite.");

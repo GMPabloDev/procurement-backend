@@ -205,23 +205,23 @@ public sealed class ApprovalController(
             cancellationToken));
     }
 
-    /// <summary>ADMIN and AUDITOR see the requirements with no eligible candidate (REQ-09).</summary>
+    /// <summary>ADMIN sees the requirements with no eligible candidate (REQ-09).</summary>
     [HttpGet("operations/unassigned")]
     // pi-lens-ignore: lsp:CS0246
     public async Task<ActionResult<IReadOnlyList<ApprovalUnassignedView>>> GetUnassigned(
         CancellationToken cancellationToken)
     {
-        var profile = await RequireAdministrativeAsync(requireAdmin: false, cancellationToken);
+        var profile = await RequireAdministrativeAsync(requireAdmin: true, cancellationToken);
         return Ok(await operationsQueryService.GetUnassignedAsync(profile.OrganizationId, cancellationToken));
     }
 
-    /// <summary>Reconciliation state for ADMIN and AUDITOR (NFR-03).</summary>
+    /// <summary>Reconciliation state for ADMIN (NFR-03).</summary>
     [HttpGet("operations/reconciliation")]
     // pi-lens-ignore: lsp:CS0246
     public async Task<ActionResult<ApprovalReconciliationStateView>> GetReconciliationState(
         CancellationToken cancellationToken)
     {
-        var profile = await RequireAdministrativeAsync(requireAdmin: false, cancellationToken);
+        var profile = await RequireAdministrativeAsync(requireAdmin: true, cancellationToken);
         return Ok(await operationsQueryService.GetReconciliationStateAsync(
             profile.OrganizationId, DateTimeOffset.UtcNow, cancellationToken));
     }
@@ -248,23 +248,23 @@ public sealed class ApprovalController(
             cancellationToken));
     }
 
-    /// <summary>Outbox backlog and reconciliation state for ADMIN and AUDITOR (REQ-10).</summary>
+    /// <summary>Outbox backlog and reconciliation state for ADMIN (REQ-10).</summary>
     [HttpGet("operations/outbox")]
     // pi-lens-ignore: lsp:CS0246
     public async Task<ActionResult<ApprovalOutboxBacklog>> GetOutboxBacklog(CancellationToken cancellationToken)
     {
-        var profile = await RequireAdministrativeAsync(requireAdmin: false, cancellationToken);
+        var profile = await RequireAdministrativeAsync(requireAdmin: true, cancellationToken);
         return Ok(await outboxAdministrationService.GetBacklogAsync(
             profile.OrganizationId, DateTimeOffset.UtcNow, cancellationToken));
     }
 
-    /// <summary>Dead letters awaiting an administrative decision for ADMIN and AUDITOR (REQ-10).</summary>
+    /// <summary>Dead letters awaiting an administrative decision for ADMIN (REQ-10).</summary>
     [HttpGet("operations/outbox/dead-letters")]
     // pi-lens-ignore: lsp:CS0246
     public async Task<ActionResult<IReadOnlyList<ApprovalOutboxBacklogEntry>>> GetDeadLetters(
         CancellationToken cancellationToken)
     {
-        var profile = await RequireAdministrativeAsync(requireAdmin: false, cancellationToken);
+        var profile = await RequireAdministrativeAsync(requireAdmin: true, cancellationToken);
         return Ok(await outboxAdministrationService.GetDeadLettersAsync(
             profile.OrganizationId, cancellationToken));
     }

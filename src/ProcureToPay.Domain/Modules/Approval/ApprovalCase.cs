@@ -353,6 +353,13 @@ public sealed class ApprovalCase
     {
         ArgumentNullException.ThrowIfNull(task);
         var requirement = RequireRequirement(task.RequirementId);
+        // The declared actions are validated before any mutation so a rejected action leaves
+        // both the task and the requirement untouched (REQ-02).
+        if (!requirement.Actions.Contains(action))
+        {
+            throw new DomainConflictException("The action is not allowed for this approval requirement.");
+        }
+
         task.ApplyDecision(action);
         requirement.ApplyDecision(action);
 
@@ -569,6 +576,7 @@ public sealed class ApprovalRequirement
         AuthorityRequirement authority,
         string decisionScopeJson,
         IEnumerable<Guid> excludedUserIds,
+        IEnumerable<ApprovalDecisionAction> allowedActions,
         IEnumerable<ApprovalTarget> targets,
         IEnumerable<ApprovalDependencyRef> dependencies)
     {
@@ -581,6 +589,7 @@ public sealed class ApprovalRequirement
         Authority = authority;
         DecisionScopeJson = decisionScopeJson;
         ExcludedUserIds = excludedUserIds.ToImmutableArray();
+        Actions = allowedActions.ToImmutableArray();
         Targets = targets.ToImmutableArray();
         Dependencies = dependencies.ToImmutableArray();
         Status = ApprovalRequirementStatus.Waiting;
@@ -595,6 +604,7 @@ public sealed class ApprovalRequirement
     public AuthorityRequirement Authority { get; }
     public string DecisionScopeJson { get; }
     public IReadOnlyList<Guid> ExcludedUserIds { get; }
+    public IReadOnlyList<ApprovalDecisionAction> Actions { get; }
     public IReadOnlyList<ApprovalTarget> Targets { get; }
     public IReadOnlyList<ApprovalDependencyRef> Dependencies { get; }
     public ApprovalRequirementStatus Status { get; private set; }
@@ -616,6 +626,7 @@ public sealed class ApprovalRequirement
             definition.Authority,
             definition.DecisionScope.ToCanonicalJson(),
             definition.ExcludedUserIds,
+            definition.Actions,
             definition.Targets,
             definition.Dependencies);
 
@@ -629,6 +640,7 @@ public sealed class ApprovalRequirement
         AuthorityRequirement authority,
         string decisionScopeJson,
         IEnumerable<Guid> excludedUserIds,
+        IEnumerable<ApprovalDecisionAction> allowedActions,
         IEnumerable<ApprovalTarget> targets,
         IEnumerable<ApprovalDependencyRef> dependencies,
         ApprovalRequirementStatus status,
@@ -636,7 +648,7 @@ public sealed class ApprovalRequirement
     {
         var requirement = new ApprovalRequirement(
             id, caseId, sourceRequirementKey, workflowRequirementKey, stageCode, role, authority,
-            decisionScopeJson, excludedUserIds, targets, dependencies)
+            decisionScopeJson, excludedUserIds, allowedActions, targets, dependencies)
         {
             Status = status,
             Version = version
@@ -688,6 +700,11 @@ public sealed class ApprovalRequirement
         if (Status != ApprovalRequirementStatus.Pending)
         {
             throw new DomainConflictException("Only a pending requirement can be decided.");
+        }
+
+        if (!Actions.Contains(action))
+        {
+            throw new DomainConflictException("The action is not allowed for this approval requirement.");
         }
 
         Status = action switch

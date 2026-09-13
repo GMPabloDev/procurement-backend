@@ -196,6 +196,44 @@ public sealed class ApprovalWorkflowIntegrationTests
         Assert.Equal(outcome.CaseId, signalled.CaseId);
     }
 
+    [Fact]
+    public async Task Prerequisite_signal_with_a_stale_expected_version_is_a_conflict()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await SqlEnvironment.StartAsync(cancellationToken);
+        var target = StubAdapter.Target("LINE", Guid.Parse("88888888-8888-8888-8888-888888888888"));
+        var adapter = new StubAdapter(
+            new ApprovalRequirementDefinition(
+                "DEPARTMENT_REQ", "DEPARTMENT", SystemRole.DepartmentApprover,
+                AuthorityRequirement.Required(ApprovalAuthorityType.BusinessNeed, 1, null, null),
+                OrganizationDecisionScope(), [ApprovalDecisionAction.Approve], [StubAdapter.Originator],
+                [target], []),
+            new ExternalPrerequisiteDefinition(
+                "BUDGET_CHECK", "adapter", "v1", "BUDGET_CHECK", new string('d', 64),
+                "{\"minimum\":1}", [target]));
+        var (service, workflow) = environment.CreateServices(adapter);
+        await service.SubmitAsync(Command("submission-signal-stale"), DateTimeOffset.UtcNow, cancellationToken);
+
+        Guid prerequisiteId;
+        await using (var context = environment.CreateContext())
+        {
+            prerequisiteId = (await context.ApprovalPrerequisites.SingleAsync(cancellationToken)).Id;
+        }
+
+        // A fresh prerequisite is at version 1: signalling against version 2 is a stale view
+        // and must be a conflict (REQ-03), not a transition.
+        var stale = new ApprovalSignalCommand(
+            Workload, true, "signal-stale", 2, "evidence", new string('e', 64), "correlation");
+        await Assert.ThrowsAsync<DomainConflictException>(() =>
+            workflow.SignalAsync(prerequisiteId, stale, DateTimeOffset.UtcNow, cancellationToken));
+
+        await using var verification = environment.CreateContext();
+        Assert.Equal(0, await verification.ApprovalPrerequisiteSignals.CountAsync(cancellationToken));
+        var prerequisite = await verification.ApprovalPrerequisites.SingleAsync(cancellationToken);
+        Assert.Equal(PrerequisiteStatus.Waiting, (PrerequisiteStatus)prerequisite.Status);
+        Assert.Equal(0, await verification.ApprovalOutboxEvents.CountAsync(cancellationToken));
+    }
+
     private static DecisionScopeDescriptor OrganizationDecisionScope() =>
         DecisionScopeDescriptor.Create(
             OrganizationId, [new DecisionScopeEntry(ScopeDimension.Organization, null, null)]);

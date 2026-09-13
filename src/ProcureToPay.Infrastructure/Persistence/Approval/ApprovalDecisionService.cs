@@ -219,6 +219,14 @@ public sealed class ApprovalDecisionService(
 
         var result = ResultCode(command.Action);
 
+        // The persisted preimage versions are exactly the ones the caller had to match, so they
+        // are captured before the transition advances them (REQ-06). The aggregate transition
+        // is also validated and applied before anything touches the change tracker: a rejected
+        // action (e.g. outside the declared set, REQ-02) leaves no tracked rows behind.
+        var decisionRequirementVersion = requirement.Version;
+        var decisionTaskVersion = task.Version;
+        approvalCase.ApplyDecision(task, command.Action);
+
         // The command root audit exists before its automatic effects reference it (REQ-08).
         var rootAudit = ApprovalEvidence.Root(
             approvalCase,
@@ -256,8 +264,8 @@ public sealed class ApprovalDecisionService(
             DecisionDigest = decision.DecisionDigest,
             AuthorityEvidenceDigest = decision.AuthorityEvidenceDigest,
             EligibilityEvidenceJson = decision.EligibilityEvidenceJson,
-            RequirementVersion = requirement.Version,
-            TaskVersion = task.Version,
+            RequirementVersion = decisionRequirementVersion,
+            TaskVersion = decisionTaskVersion,
             CorrelationReference = decision.CorrelationReference,
             Version = decision.Version
         });
@@ -287,7 +295,6 @@ public sealed class ApprovalDecisionService(
             currentAssignment.ReleasedAt = utcNow;
         }
 
-        approvalCase.ApplyDecision(task, command.Action);
         var resultSource = approvalCase.SourceOf(requirement);
         var outboxIds = new List<Guid>();
         if (command.Action == ApprovalDecisionAction.Approve)

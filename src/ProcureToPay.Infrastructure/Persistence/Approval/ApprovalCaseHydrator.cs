@@ -30,6 +30,7 @@ public static class ApprovalCaseHydrator
                 ApprovalJsonPersistence.DeserializeAuthority(record.AuthorityJson),
                 record.DecisionScopeJson,
                 ApprovalJsonPersistence.DeserializeGuids(record.ExcludedUserIdsJson),
+                ApprovalJsonPersistence.DeserializeActions(record.ActionsJson),
                 ApprovalJsonPersistence.DeserializeTargets(record.TargetsJson),
                 ApprovalJsonPersistence.DeserializeDependencies(record.DependenciesJson),
                 (ApprovalRequirementStatus)record.Status,

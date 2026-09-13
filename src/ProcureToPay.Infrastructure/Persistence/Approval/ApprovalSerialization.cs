@@ -79,6 +79,28 @@ public static class ApprovalJsonPersistence
     /// <summary>Minimized scope snapshot kept for audit and evidence (SPEC 01 scope set).</summary>
     public static string SerializeScope(AuthorizationScopeSet scope) => scope.ToString();
 
+    /// <summary>The declared decision actions of a requirement (REQ-02); stored uppercase.</summary>
+    public static string SerializeActions(IEnumerable<ApprovalDecisionAction> actions) =>
+        JsonSerializer.Serialize(
+            actions.Select(action => action.ToString().ToUpperInvariant()).ToArray(), Options);
+
+    public static IReadOnlyList<ApprovalDecisionAction> DeserializeActions(string json)
+    {
+        var codes = JsonSerializer.Deserialize<string[]>(json, Options) ?? [];
+        var actions = new List<ApprovalDecisionAction>(codes.Length);
+        foreach (var code in codes)
+        {
+            if (!Enum.TryParse<ApprovalDecisionAction>(code, ignoreCase: true, out var action))
+            {
+                throw new DomainValidationException("Stored approval action is invalid.");
+            }
+
+            actions.Add(action);
+        }
+
+        return actions;
+    }
+
     private sealed record TargetPayload(string? Type, Guid Id, int Version, string? MaterialSnapshotDigest)
     {
         public static TargetPayload From(ApprovalTarget target) =>

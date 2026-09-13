@@ -13,7 +13,7 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-11 04:45 -05
-> **Actualizado:** 2026-09-12 01:00 -05
+> **Actualizado:** 2026-09-13 01:21 -05
 > **HEAD verificado:** Pendiente
 > **Commit de integración:** Pendiente
 
@@ -165,6 +165,25 @@
 - HEAD: working-tree sobre `spec-03-approval-workflow` (`Commit base` `0e25ab77…`).
 - Próximo paso: commit del usuario y verificación independiente (ronda 2/2).
 
+### CP-07 — 2026-09-13 — Corrección de los 9 hallazgos del gate (Bloques 1–4)
+
+- Tareas: T-01–T-06 (`Verificada`) — correcciones post-gate sin cambio de contrato.
+- Cambios (triaje de la ronda 2/2 aplicado):
+  - **R2** — `ApprovalReconciliationService.ProcessAsync` usa reloj actual para claim, renovación, comprobación de holder y completion (`TimeProvider`, por defecto `TimeProvider.System`), sin reutilizar `occurredAt` como reloj de lease; el root audit de una corrida organizacional usa el instante real y `requested_at` el UTC del audit.
+  - **R8** — `ApprovalGoldenVectorTests` fija los bytes literales de los cuatro preimages restantes (signal, authority evidence, workflow decision y decision fingerprint), revisados campo a campo contra la tabla REQ-08, con SHA-256 calculado por implementación independiente.
+  - **R13** — `ApprovalRequirement` conserva `Actions` (dominio, `ActionsJson` persistido, hidratación y mapeo EF) y la decisión rechaza con `409` una acción fuera del set; migración aditiva `20260913064411_ApprovalRequirementActions` con `Down` no destructivo.
+  - **R14** — `ValidateActors` exige la exclusión de originator/requester en cada requirement.
+  - **R15** — la señal compara `ExpectedVersion` con la versión persistida y responde `409` ante versión obsoleta antes de transicionar.
+  - **R16** — acciones, exclusiones, targets y targets de prerequisite rechazan duplicados sobre la secuencia original; el conteo de 10.000 vínculos ya no puede reducirse por colapso.
+  - **R17** — `source_requirement_key` y las keys de prerequisite son únicas dentro del caso; se elimina la interpretación de «particiones».
+  - **R18** — el worker pasa `audit.OccurredAt` como `requested_at` de la corrida por cambio organizacional.
+  - **R19** — `operations/unassigned`, `operations/reconciliation`, `operations/outbox` y `operations/outbox/dead-letters` exigen `ADMIN`; E2E comprueba el `403` de `AUDITOR`.
+- Defecto adicional corregido durante las pruebas: `ApprovalDecisionService` aplica la transición del agregado antes de añadir filas al change tracker (una acción rechazada no deja filas rastreadas para un reintento en el mismo scope) y persiste `RequirementVersion`/`TaskVersion` capturadas antes de la transición.
+- Tests añadidos/endurecidos: `Reconciliation_holder_stops_when_the_lease_expires_mid_run`, `Organization_change_run_keeps_the_triggering_audit_utc_as_requested_at`, `A_requirement_rejects_actions_outside_its_declared_set` (unitaria), `A_decision_outside_the_declared_actions_is_a_conflict`, `Prerequisite_signal_with_a_stale_expected_version_is_a_conflict`, duplicados/SoD por requirement en `ApprovalContractTests` y `403` de `AUDITOR` en las lecturas operativas.
+- Tests y checks sobre este árbol: build `--no-restore` **0 errores**; UnitTests **101/101**; IntegrationTests **43/43**; ApiE2ETests **12/12**; `specctl run-lint 03` ✅; `git diff --check` limpio.
+- HEAD: working-tree sobre `spec-03-approval-workflow` (contenido base `5513497…` + correcciones sin commitear).
+- Próximo paso: commit del usuario con este árbol exacto y ronda 3 autorizada de `sdd-implementation-reviewer` (delta sobre el commit).
+
 ## Evidencia de aceptación
 
 | Criterio | Estado | Evidencia | Verificador |
@@ -233,12 +252,12 @@
 
 ## Verificación independiente
 
-> **Resultado:** Con bloqueos (ronda 1 = BLOCK)
-> **Rondas:** 1/2
-> **Triaje:** 8 detalle-contrato / 2 ambigüedad / 2 prueba-faltante / 1 error-del-revisor
-> **Modelo efectivo:** `openai-codex/gpt-5.6-sol` (effort high) — coincide con el configurado en `subagents.json` y es distinto del orquestador; sin degradación
-> **Método:** Subagente `sdd-implementation-reviewer`, ronda 1 sobre `0e25ab77…fd80f4f`
-> **Fecha:** 2026-09-11 13:30 UTC
+> **Resultado:** Con bloqueos (ronda 2/2 = BLOCK) — el run no queda listo para integrar
+> **Rondas:** 2/2 (presupuesto de revisión del run consumido)
+> **Triaje (ronda 2):** 8 detalle-contrato / 1 prueba-faltante / 1 error-del-revisor descartado / 1 hueco de proceso resuelto
+> **Modelo efectivo:** `openai-codex/gpt-5.6-sol` (effort high) — coincide con el configurado en `subagents.json` y es distinto del orquestador (`deepseek-v4-pro`); sin degradación
+> **Método:** Subagente `sdd-implementation-reviewer`; ronda 1 sobre `0e25ab77…fd80f4f` (histórica, abajo) y ronda 2 sobre `5513497fad…` (árbol limpio)
+> **Fecha:** ronda 1: 2026-09-11 13:30 UTC · ronda 2: 2026-09-13 06:21 UTC
 
 El revisor leyó archivos y ejecutó comprobaciones propias (build, `specctl`, `git`, `hashlib` sobre el vector de submission — coincidió en `de1d2652…`). Veredicto: **BLOCK**, con 12 hallazgos bloqueantes. Triaje verificado contra el contrato por el orquestador:
 
@@ -285,6 +304,29 @@ Trabajo de Fase 4 completado **antes** del gate, para no delegarle la conformida
 - Gate ejecutado sobre `HEAD verificado` = `fd80f4fd4171dbddd2c57207b47385c716b52030` (commit del usuario), rango `0e25ab77…fd80f4f`. Resultado: **BLOCK (ronda 1/2)**, ver arriba.
 - La actualización administrativa de este run (registro de `HEAD verificado` y del resultado del gate) queda sin commitear por diseño: el flujo prohíbe que el agente haga commit y corresponde al usuario commitear los metadatos.
 
+#### Ronda 2/2 — 2026-09-13 06:21 UTC (BLOCK)
+
+Revisión full sobre el contrato revisión 3 y el árbol `5513497fad…` (HEAD, rama `spec-03-approval-workflow`, working tree limpio). El revisor confirmó la identidad del árbol (la spec en HEAD difiere del blob aprobado solo en `Ejecución: En implementación`; `specctl digest 03` idéntico), no reejecutó las suites (build 0/0, Unit 99/99, Integration 39/39, E2E 12/12 del árbol probado) y no usó LSP por la degradación documentada. Veredicto: **BLOCK**. Triaje del orquestador contra el contrato: los 9 hallazgos abiertos son válidos y corresponden a reglas claras del contrato o a prueba faltante; ninguno exige `/spec revisar`.
+
+Los hallazgos de la ronda 1 quedaron resueltos en el árbol de la revisión 3: R1 (worker productivo en `Program.cs`), R3 (applock serializa selección/carga/assignment), R4 (replay con artefactos originales), R5 (`AUDITOR` para evidencia organizacional), R6 (correlation fuera de trazas), R7 (`Down` no destructivo), R9 (outbox cerrado a resultados), R10 (`ADMIN`/`AUDITOR` excluidos de candidatura y decisión), R11 (carrera exige `DomainConflictException`) y PROC-1 (candidato commiteado y limpio). Las dos ambigüedades de la ronda 1 se resolvieron en el contrato revisión 3 y no reabren.
+
+Hallazgos abiertos (bloqueantes):
+
+- **R2 — Reloj congelado en los leases de reconciliación** (`ApprovalReconciliationService.cs:193-298`). `ProcessAsync` reutiliza `occurredAt` para claim, renovación, comprobación de holder y completion: la renovación nunca extiende `locked_until` más allá de claim+30 s reales, la comprobación no detecta expiración y completion confirma con lease vencido si nadie reclama. REQ-10: «`locked_until=now+30s`», renovación, «cada transacción de caso comprueba owner, token y no expiración», «solo el lease vigente avanza cursor o completa». Usar reloj actual (`DateTimeOffset.UtcNow` o proveedor) en las operaciones de lease, separado de `requested_at`.
+- **R8 — Preimages de golden vectors sin bytes literales** (`ApprovalGoldenVectorTests.cs:43-79`). Solo submission fija los bytes; signal, authority, workflow decision y decision fingerprint comparan únicamente SHA-256. CA-07 exige «schemas, bytes completos y los cinco SHA-256» y la fixture contractual dice que los tests «fijan los bytes completos derivados de esta fixture». Fijar los cuatro preimages literales.
+- **R13 — `allowedActions` se pierde y no se aplica** (`ApprovalCase.cs:562-620,686-700`; `ApprovalDecisionService`). `ApprovalRequirement` no conserva acciones ni `ApplyDecision` las comprueba: un requirement solo-`APPROVE` acepta `REJECT`/`REQUEST_CHANGES`. REQ-02: el requirement «contiene … acciones» y «respuestas distintas requieren requirements distintos antes de decidir». Conservar acciones y rechazar la acción fuera del set.
+- **R14 — SoD valida la unión, no cada requirement** (`ApprovalSubmission.cs:334-350`). Basta excluir al originator/requester en un requirement para pasar la validación y dejarlo candidato en otro. REQ-05: exclusiones por requirement, «exclusiones incompatibles con el adapter version se rechazan antes de persistir» y «un actor excluido no puede ser candidato, assignee ni decisor». Validar la exclusión en cada requirement.
+- **R15 — `ExpectedVersion` de señal nunca se compara** (`ApprovalWorkflowService.cs:148-176`). Solo entra al fingerprint; una señal con versión arbitraria sobre un prerequisite `WAITING` se acepta. REQ-03 autoriza el cambio «mediante `signal_key`, fingerprint y versión esperada». Rechazar versión distinta de la actual con `409` antes de transicionar.
+- **R16 — Duplicados colapsan en `ImmutableHashSet` antes de rechazarse** (`ApprovalSubmission.cs:46-66,131-167`). Acciones, exclusiones y targets duplicados se aceptan colapsados; el conteo de 10.000 vínculos se calcula después del colapso. REQ-09: «duplicarlo dentro de una entidad se rechaza»; los sets canónicos «rechazan duplicados». Detectar duplicados sobre la secuencia original y rechazarlos.
+- **R17 — `source_requirement_key` duplicadas aceptadas como «particiones»** (`ApprovalSubmission.cs:359-383`). La regla «cada clase de key es única dentro de su caso» y CA-02 («keys duplicadas … fallan») lo prohíben; la resolución de dependencias usa `SingleOrDefault`/`Single` sobre esa key y puede silenciar la insatisfacción o fallar con 500. Rechazar la segunda key con `409`.
+- **R18 — `requested_at` de corrida por cambio organizacional usa la hora del sweep** (`ApprovalWorkflowWorker.cs:113-137`). El worker no selecciona `audit.OccurredAt` y pasa el UTC del sweep; tras una caída se reinicia el presupuesto de 60 s (NFR-03). La regla de `ApprovalReconciliationRun` fija «`requested_at` es el UTC del audit organizacional que la disparó». Pasar el UTC del audit y separar el reloj de proceso (ver R2).
+- **R19 — `AUDITOR` obtiene lecturas operativas de `ADMIN`** (`ApprovalController.cs:206-275,396-417`). `GetUnassigned`, `GetReconciliationState`, `GetOutboxBacklog` y `GetDeadLetters` usan `requireAdmin:false`. REQ-09 asigna a `ADMIN` las consultas de `UNASSIGNED`, outbox y health, declara los permisos «no intercambiables» y CA-08 fija «`ADMIN` opera `UNASSIGNED`, reconciliación y outbox». Exigir `ADMIN` en esas cuatro superficies.
+- **R12 — Conformidad declarada sin sustento** mientras los anteriores sigan abiertos; se cierra al corregirlos.
+
+Descartados: **ERR-1** (identificar al actor en audit es evidencia contractual, no fuga de telemetría) y **PROC-1** quedó resuelto (candidato commiteado, árbol limpio).
+
+**Consecuencia:** el run no alcanza «Lista para integrar» (revisión con bloqueos). El presupuesto de dos rondas automáticas por run está consumido: corregir R2/R8/R13–R19 exige tests y commit real, y delegar otra ronda de `sdd-implementation-reviewer` exige autorización expresa del usuario con causa acotada. Las suites verdes de este árbol no se repiten.
+
 ## Resumen de cambios
 
 | Archivo | Motivo | Spec/tarea |
@@ -330,6 +372,7 @@ Trabajo de Fase 4 completado **antes** del gate, para no delegarle la conformida
 
 ## Cierre
 
+- Verificación independiente: BLOCK ronda 2/2 sobre `5513497fad…` (detalle en la sección Verificación independiente).
 - HEAD verificado: Pendiente.
 - Estrategia de integración: Pendiente.
 - Commit integrado en rama base: Pendiente.

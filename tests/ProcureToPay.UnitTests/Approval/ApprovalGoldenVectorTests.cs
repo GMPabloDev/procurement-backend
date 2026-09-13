@@ -46,6 +46,11 @@ public sealed class ApprovalGoldenVectorTests
 
         Expect(
             mismatches,
+            "signal_bytes",
+            SignalPreimage(),
+            SignalBytes());
+        Expect(
+            mismatches,
             "signal_digest",
             ApprovalFingerprints.SignalFingerprint(
                 PrerequisiteId, 1, Workload, true, "evidence://budget", new string('e', 64), "signal-1"),
@@ -54,10 +59,20 @@ public sealed class ApprovalGoldenVectorTests
         var eligibility = EvidenceJson();
         Expect(
             mismatches,
+            "authority_bytes",
+            AuthorityPreimage(eligibility),
+            AuthorityBytes());
+        Expect(
+            mismatches,
             "authority_digest",
             ApprovalFingerprints.AuthorityEvidenceDigest(eligibility),
             AuthorityDigest());
 
+        Expect(
+            mismatches,
+            "decision_bytes",
+            WorkflowDecisionPreimage(),
+            DecisionBytes());
         Expect(
             mismatches,
             "decision_digest",
@@ -72,12 +87,23 @@ public sealed class ApprovalGoldenVectorTests
 
         Expect(
             mismatches,
+            "decision_fingerprint_bytes",
+            DecisionFingerprintPreimage(),
+            DecisionFingerprintBytes());
+        Expect(
+            mismatches,
             "decision_fingerprint",
             ApprovalFingerprints.DecisionFingerprint(
                 CaseId, RequirementId, TaskId, 3, 2, targets, ApprovalDecisionAction.Approve,
                 "Aprobado por negocio", ActorId),
             DecisionFingerprint());
 
+        // The literals below were reviewed field by field against the REQ-08 table; their
+        // SHA-256 is pinned here with an independent implementation, not the domain digest.
+        Assert.Equal(SignalDigest(), Sha256Of(SignalBytes()));
+        Assert.Equal(AuthorityDigest(), Sha256Of(AuthorityBytes()));
+        Assert.Equal(DecisionDigest(), Sha256Of(DecisionBytes()));
+        Assert.Equal(DecisionFingerprint(), Sha256Of(DecisionFingerprintBytes()));
         Assert.Empty(mismatches);
     }
 
@@ -268,8 +294,7 @@ public sealed class ApprovalGoldenVectorTests
                 ApprovalEntitySource.Requirement(RequirementId, "WR-00000000000000000000000000000000").Code)));
     }
 
-    private static void Expect(List<string> mismatches, string name, string actual, string expected)
-    {
+    private static void Expect(List<string> mismatches, string name, string actual, string expected)    {
         if (!string.Equals(actual, expected, StringComparison.Ordinal))
         {
             mismatches.Add($"{name}: expected {expected} but got {actual}");
@@ -323,6 +348,71 @@ public sealed class ApprovalGoldenVectorTests
         ("evaluated_at", ApprovalCanonicalJson.String(Clock)),
         ("user_id", ApprovalCanonicalJson.String(ActorId))));
 
+    /// <summary>Canonical v2 preimage of the signal fingerprint (REQ-08 table).</summary>
+    private static string SignalPreimage() => ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+        ("canonicalization_version", ApprovalCanonicalJson.String(ApprovalCanonicalJson.CanonicalizationVersion)),
+        ("evidence_digest", ApprovalCanonicalJson.String(new string('e', 64))),
+        ("evidence_reference", ApprovalCanonicalJson.String("evidence://budget")),
+        ("owner_client_id", ApprovalCanonicalJson.String(Workload.ClientId)),
+        ("owner_issuer", ApprovalCanonicalJson.String(Workload.Issuer)),
+        ("prerequisite_id", ApprovalCanonicalJson.String(PrerequisiteId)),
+        ("prerequisite_version", ApprovalCanonicalJson.Number(1)),
+        ("result", ApprovalCanonicalJson.String("SATISFIED")),
+        ("signal_key", ApprovalCanonicalJson.String("signal-1"))));
+
+    /// <summary>Canonical v2 preimage of the authority evidence digest (delegations are null in this spec).</summary>
+    private static string AuthorityPreimage(string eligibilityEvidenceJson) =>
+        ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+            ("canonicalization_version", ApprovalCanonicalJson.String(ApprovalCanonicalJson.CanonicalizationVersion)),
+            ("delegation_id", ApprovalCanonicalJson.Null()),
+            ("delegation_version", ApprovalCanonicalJson.Null()),
+            ("eligibility_evidence", ApprovalCanonicalJson.String(eligibilityEvidenceJson))));
+
+    /// <summary>Canonical v2 preimage of the workflow decision digest (REQ-08 table).</summary>
+    private static string WorkflowDecisionPreimage() => ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+        ("action", ApprovalCanonicalJson.String(ApprovalDecisionAction.Approve)),
+        ("actor_user_id", ApprovalCanonicalJson.String(ActorId)),
+        ("authority_evidence_digest", ApprovalCanonicalJson.String(new string('b', 64))),
+        ("canonicalization_version", ApprovalCanonicalJson.String(ApprovalCanonicalJson.CanonicalizationVersion)),
+        ("case_id", ApprovalCanonicalJson.String(CaseId)),
+        ("decided_at", ApprovalCanonicalJson.String(Clock)),
+        ("decision_id", ApprovalCanonicalJson.String(DecisionId)),
+        ("decision_scope_digest", ApprovalCanonicalJson.String(
+            DecisionScopeDescriptor.Create(
+                OrganizationId, [new DecisionScopeEntry(ScopeDimension.Organization, null, null)]).Digest())),
+        ("decision_version", ApprovalCanonicalJson.Number(1)),
+        ("exclusions", ApprovalCanonicalJson.Set([ApprovalCanonicalJson.String(OriginatorId)])),
+        ("origin", ApprovalCanonicalJson.String(ApprovalDecisionOrigin.Human)),
+        ("reason", ApprovalCanonicalJson.String("Aprobado por negocio")),
+        ("requirement_key", ApprovalCanonicalJson.String("WR-00000000000000000000000000000000")),
+        ("segregation_satisfied", ApprovalCanonicalJson.Bool(true)),
+        ("snapshot_digest", ApprovalCanonicalJson.String(new string('a', 64))),
+        ("subject_id", ApprovalCanonicalJson.String(SubjectId)),
+        ("subject_type", ApprovalCanonicalJson.String("PURCHASE_REQUEST")),
+        ("subject_version", ApprovalCanonicalJson.Number(1)),
+        ("targets", ApprovalRequirementDefinition.TargetsValue(Targets()))));
+
+    /// <summary>Canonical v2 preimage of the decision fingerprint (REQ-08 table).</summary>
+    private static string DecisionFingerprintPreimage() => ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+        ("action", ApprovalCanonicalJson.String(ApprovalDecisionAction.Approve)),
+        ("actor_user_id", ApprovalCanonicalJson.String(ActorId)),
+        ("canonicalization_version", ApprovalCanonicalJson.String(ApprovalCanonicalJson.CanonicalizationVersion)),
+        ("case_id", ApprovalCanonicalJson.String(CaseId)),
+        ("reason", ApprovalCanonicalJson.String("Aprobado por negocio")),
+        ("requirement_id", ApprovalCanonicalJson.String(RequirementId)),
+        ("requirement_version", ApprovalCanonicalJson.Number(3)),
+        ("targets", ApprovalRequirementDefinition.TargetsValue(Targets())),
+        ("task_id", ApprovalCanonicalJson.String(TaskId)),
+        ("task_version", ApprovalCanonicalJson.Number(2))));
+
+    private static string SignalBytes() => SignalGoldenBytes;
+
+    private static string AuthorityBytes() => AuthorityGoldenBytes;
+
+    private static string DecisionBytes() => DecisionGoldenBytes;
+
+    private static string DecisionFingerprintBytes() => DecisionFingerprintGoldenBytes;
+
     private static string SubmissionBytes() => SubmissionGoldenBytes;
 
     private static string SubmissionDigest() =>
@@ -340,6 +430,11 @@ public sealed class ApprovalGoldenVectorTests
     private static string DecisionFingerprint() =>
         "0ffd7bc164c2daccc5930b473a5a523b5337f1f08ceff6ffbe73c1584e972f36";
 
+    /// <summary>Independent SHA-256 over the UTF-8 bytes of a golden preimage (no domain code).</summary>
+    private static string Sha256Of(string value) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+
     /// <summary>
     /// Exact canonical bytes of the v2 submission command preimage. Reviewed field by field
     /// against REQ-08 (ordinal key order, lowercase UUIDs, uppercase enums, sorted sets,
@@ -347,4 +442,19 @@ public sealed class ApprovalGoldenVectorTests
     /// </summary>
     private const string SubmissionGoldenBytes =
         """{"adapter_id":"adapter","adapter_version":"v1","canonicalization_version":"approval-canonical-json/v2","operation":"SUBMIT","organization_id":"11111111-1111-1111-1111-111111111111","originator_id":"88888888-8888-8888-8888-888888888888","prerequisites":[],"requester_id":null,"requirements":[{"actions":["APPROVE","REJECT"],"authority":{"amount_base":null,"base_currency":null,"kind":"REQUIRED","minimum_rank":1,"type":"BUSINESSNEED"},"dependencies":[],"exclusions":["88888888-8888-8888-8888-888888888888"],"role":"DEPARTMENTAPPROVER","scope":{"organization_id":"11111111-1111-1111-1111-111111111111","schema_version":"decision-scope/v1","scopes":[{"dimension":"ORGANIZATION","reference_id":null,"reference_version":null}]},"source_requirement_key":"DEPARTMENT_REQ","stage_code":"DEPARTMENT","targets":[{"id":"aaaaaaaa-0000-0000-0000-000000000001","material_snapshot_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","type":"LINE","version":1},{"id":"aaaaaaaa-0000-0000-0000-000000000002","material_snapshot_digest":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","type":"LINE","version":1}]}],"source_snapshot_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","subject_id":"99999999-9999-9999-9999-999999999999","subject_type":"PURCHASE_REQUEST","subject_version":1,"submission_key":"submission-golden","workload_client_id":"adapter","workload_issuer":"internal://procure-to-pay"}""";
+
+    // Exact canonical bytes of the remaining four v2 preimages of the CA-07 fixture, reviewed
+    // field by field against the REQ-08 table (ordinal key order, lowercase UUIDs, uppercase
+    // enums, sorted sets, nulls present); their SHA-256 matches the five contractual digests.
+    private const string SignalGoldenBytes =
+        """{"canonicalization_version":"approval-canonical-json/v2","evidence_digest":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","evidence_reference":"evidence://budget","owner_client_id":"adapter","owner_issuer":"internal://procure-to-pay","prerequisite_id":"55555555-5555-5555-5555-555555555555","prerequisite_version":1,"result":"SATISFIED","signal_key":"signal-1"}""";
+
+    private const string AuthorityGoldenBytes =
+        """{"canonicalization_version":"approval-canonical-json/v2","delegation_id":null,"delegation_version":null,"eligibility_evidence":"{\"evaluated_at\":\"2026-03-01T12:00:00.0000000Z\",\"user_id\":\"77777777-7777-7777-7777-777777777777\"}"}""";
+
+    private const string DecisionGoldenBytes =
+        """{"action":"APPROVE","actor_user_id":"77777777-7777-7777-7777-777777777777","authority_evidence_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","canonicalization_version":"approval-canonical-json/v2","case_id":"22222222-2222-2222-2222-222222222222","decided_at":"2026-03-01T12:00:00.0000000Z","decision_id":"66666666-6666-6666-6666-666666666666","decision_scope_digest":"b54c349040ca2907d59e1384a5c6dae32e2d8fed4c9d440e6b57946289749596","decision_version":1,"exclusions":["88888888-8888-8888-8888-888888888888"],"origin":"HUMAN","reason":"Aprobado por negocio","requirement_key":"WR-00000000000000000000000000000000","segregation_satisfied":true,"snapshot_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","subject_id":"99999999-9999-9999-9999-999999999999","subject_type":"PURCHASE_REQUEST","subject_version":1,"targets":[{"id":"aaaaaaaa-0000-0000-0000-000000000001","material_snapshot_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","type":"LINE","version":1},{"id":"aaaaaaaa-0000-0000-0000-000000000002","material_snapshot_digest":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","type":"LINE","version":1}]}""";
+
+    private const string DecisionFingerprintGoldenBytes =
+        """{"action":"APPROVE","actor_user_id":"77777777-7777-7777-7777-777777777777","canonicalization_version":"approval-canonical-json/v2","case_id":"22222222-2222-2222-2222-222222222222","reason":"Aprobado por negocio","requirement_id":"33333333-3333-3333-3333-333333333333","requirement_version":3,"targets":[{"id":"aaaaaaaa-0000-0000-0000-000000000001","material_snapshot_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","type":"LINE","version":1},{"id":"aaaaaaaa-0000-0000-0000-000000000002","material_snapshot_digest":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","type":"LINE","version":1}],"task_id":"44444444-4444-4444-4444-444444444444","task_version":2}""";
 }

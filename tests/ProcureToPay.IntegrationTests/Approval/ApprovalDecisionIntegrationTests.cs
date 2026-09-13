@@ -89,6 +89,44 @@ public sealed class ApprovalDecisionIntegrationTests
     }
 
     [Fact]
+    public async Task A_decision_outside_the_declared_actions_is_a_conflict()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await SqlEnvironment.StartAsync(cancellationToken);
+        await environment.SeedAsync(FirstApprover, cancellationToken);
+        var services = environment.CreateServices(allowedActions: [ApprovalDecisionAction.Approve]);
+        var submission = await services.Submission.SubmitAsync(
+            Command("submission-actions"), DateTimeOffset.UtcNow, cancellationToken);
+        var (taskId, taskVersion) = await environment.TaskAsync(submission.CaseId, cancellationToken);
+
+        // The requirement declares only APPROVE: any other action is a conflict (REQ-02).
+        await Assert.ThrowsAsync<DomainConflictException>(() => services.Decision.DecideAsync(
+            // pi-lens-ignore: lsp:CS0246
+            new ApprovalDecisionCommand(
+                taskId, ApprovalDecisionAction.Reject, "Rechazado por negocio", "decision-reject",
+                taskVersion, FirstApprover, "correlation-actions"),
+            DateTimeOffset.UtcNow,
+            cancellationToken));
+
+        var approved = await services.Decision.DecideAsync(
+            // pi-lens-ignore: lsp:CS0246
+            new ApprovalDecisionCommand(
+                taskId, ApprovalDecisionAction.Approve, "Aprobado por negocio", "decision-approve",
+                taskVersion, FirstApprover, "correlation-actions"),
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        Assert.Equal("APPROVED", approved.RequirementStatus);
+
+        await using var verification = environment.CreateContext();
+        // The rejected attempt left no decision, audit or outbox rows.
+        var decision = Assert.Single(await verification.ApprovalDecisions.ToArrayAsync(cancellationToken));
+        Assert.Equal(ApprovalDecisionAction.Approve, (ApprovalDecisionAction)decision.Action);
+        Assert.All(
+            await verification.ApprovalOutboxEvents.ToArrayAsync(cancellationToken),
+            record => Assert.Equal("APPROVED", record.Result));
+    }
+
+    [Fact]
     public async Task Decision_replay_returns_the_original_and_a_changed_payload_conflicts()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -492,8 +530,15 @@ public sealed class ApprovalDecisionIntegrationTests
         "correlation");
 
     /// <summary>A department requirement, optionally with a dependent one so rejection has a linked descendant.</summary>
-    private sealed class DepartmentAdapter(bool withDependentRequirement = false) : IApprovalSubmissionAdapter
+    private sealed class DepartmentAdapter(
+        bool withDependentRequirement = false,
+        IReadOnlyList<ApprovalDecisionAction>? allowedActions = null) : IApprovalSubmissionAdapter
     {
+        private readonly IReadOnlyList<ApprovalDecisionAction> allowedActions = allowedActions ??
+        [
+            ApprovalDecisionAction.Approve, ApprovalDecisionAction.Reject, ApprovalDecisionAction.RequestChanges
+        ];
+
         public ApprovalAdapterDescriptor Descriptor { get; } =
             new("adapter", "PURCHASE_REQUEST", "SUBMIT", "v1", false);
 
@@ -531,7 +576,7 @@ public sealed class ApprovalDecisionIntegrationTests
                 []));
         }
 
-        private static ApprovalRequirementDefinition Requirement(
+        private ApprovalRequirementDefinition Requirement(
             Guid organizationId,
             string sourceKey,
             string stageCode,
@@ -544,7 +589,7 @@ public sealed class ApprovalDecisionIntegrationTests
             DecisionScopeDescriptor.Create(
                 organizationId,
                 [new DecisionScopeEntry(ScopeDimension.Department, DepartmentId, 1)]),
-            [ApprovalDecisionAction.Approve, ApprovalDecisionAction.Reject, ApprovalDecisionAction.RequestChanges],
+            allowedActions,
             [OriginatorId],
             lineIds.Select(lineId => new ApprovalTarget("LINE", lineId, 1, new string('c', 64))).ToArray(),
             dependencies);
@@ -650,7 +695,8 @@ public sealed class ApprovalDecisionIntegrationTests
             ApprovalSubmissionService Submission,
             ApprovalDecisionService Decision,
             ApprovalReconciliationService Reconciliation) CreateServices(
-            bool withDependentRequirement = false)
+            bool withDependentRequirement = false,
+            IReadOnlyList<ApprovalDecisionAction>? allowedActions = null)
         {
             using var loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Warning));
             var configuration = new ConfigurationBuilder()
@@ -667,7 +713,8 @@ public sealed class ApprovalDecisionIntegrationTests
             return (
                 new ApprovalSubmissionService(
                     context,
-                    new ApprovalSubmissionAdapterRegistry([new DepartmentAdapter(withDependentRequirement)]),
+                    new ApprovalSubmissionAdapterRegistry(
+                        [new DepartmentAdapter(withDependentRequirement, allowedActions)]),
                     new ApprovalOwnerWorkloadRegistry(configuration, allowlist),
                     allowlist,
                     assignmentEngine,

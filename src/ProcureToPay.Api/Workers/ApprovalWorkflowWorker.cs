@@ -93,7 +93,6 @@ public sealed class ApprovalWorkflowWorker(
                     runId,
                     identity.Owner,
                     $"corr-{Guid.NewGuid():N}",
-                    utcNow,
                     cancellationToken);
             }
         }
@@ -119,7 +118,7 @@ public sealed class ApprovalWorkflowWorker(
                 !dbContext.ApprovalReconciliationRuns.Any(run => run.TriggerAuditId == audit.Id))
             .OrderBy(audit => audit.OccurredAt)
             .ThenBy(audit => audit.Id)
-            .Select(audit => new { audit.Id, audit.TargetType, audit.TargetId })
+            .Select(audit => new { audit.Id, audit.TargetType, audit.TargetId, audit.OccurredAt })
             .Take(MaxRunsPerSweep)
             .ToArrayAsync(cancellationToken);
 
@@ -129,11 +128,13 @@ public sealed class ApprovalWorkflowWorker(
                 dbContext, audit.TargetType, audit.TargetId, cancellationToken);
             foreach (var organizationId in organizationIds)
             {
+                // requested_at is the UTC of the triggering organizational audit (REQ-10),
+                // never the sweep instant: an overdue run keeps its original budget.
                 await reconciliation.RequestOrganizationChangeAsync(
                     organizationId,
                     audit.Id,
                     $"corr-{Guid.NewGuid():N}",
-                    utcNow,
+                    audit.OccurredAt.ToUniversalTime(),
                     cancellationToken);
             }
         }

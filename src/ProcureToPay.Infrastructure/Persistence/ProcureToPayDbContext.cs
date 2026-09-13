@@ -369,6 +369,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.Property(record => record.AuthorityJson).HasColumnType("nvarchar(max)").IsRequired();
         entity.Property(record => record.DecisionScopeJson).HasMaxLength(4000).IsRequired();
         entity.Property(record => record.ExcludedUserIdsJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.ActionsJson).HasColumnType("nvarchar(max)").IsRequired();
         entity.Property(record => record.TargetsJson).HasColumnType("nvarchar(max)").IsRequired();
         entity.Property(record => record.DependenciesJson).HasColumnType("nvarchar(max)").IsRequired();
         entity.Property(record => record.RowVersion).IsRowVersion();

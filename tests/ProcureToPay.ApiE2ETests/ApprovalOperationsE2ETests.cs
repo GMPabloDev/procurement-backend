@@ -597,6 +597,19 @@ public sealed class ApprovalOperationsE2ETests
         {
             Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
         }
+
+        // Symmetrically, AUDITOR never executes or reads administrative operations (REQ-09).
+        using (var forbiddenOps = await auditor.GetAsync(
+            "/api/v1/approval/operations/unassigned", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, forbiddenOps.StatusCode);
+        }
+
+        using (var forbiddenOutbox = await auditor.GetAsync(
+            "/api/v1/approval/operations/outbox", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, forbiddenOutbox.StatusCode);
+        }
     }
 
     private static SubmissionBody Body(Guid organizationId, string submissionKey) => new(

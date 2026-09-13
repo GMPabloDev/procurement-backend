@@ -245,6 +245,7 @@ public sealed class ApprovalSubmissionService(
                 AuthorityJson = ApprovalJsonPersistence.SerializeAuthority(requirement.Authority),
                 DecisionScopeJson = requirement.DecisionScopeJson,
                 ExcludedUserIdsJson = ApprovalJsonPersistence.SerializeGuids(requirement.ExcludedUserIds),
+                ActionsJson = ApprovalJsonPersistence.SerializeActions(requirement.Actions),
                 TargetsJson = ApprovalJsonPersistence.SerializeTargets(requirement.Targets),
                 DependenciesJson = ApprovalJsonPersistence.SerializeDependencies(requirement.Dependencies),
                 Status = (int)requirement.Status,

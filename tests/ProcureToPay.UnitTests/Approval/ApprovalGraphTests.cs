@@ -227,6 +227,44 @@ public sealed class ApprovalGraphTests
             DateTimeOffset.UtcNow, "correlation");
     }
 
+    [Fact]
+    public void A_requirement_rejects_actions_outside_its_declared_set()
+    {
+        var line = Target("LINE", Guid.NewGuid());
+        var definition = new ApprovalRequirementDefinition(
+            "DEPARTMENT_REQ", "DEPARTMENT", SystemRole.DepartmentApprover,
+            AuthorityRequirement.Required(ApprovalAuthorityType.BusinessNeed, 1, null, null),
+            DecisionScopeDescriptor.Create(
+                OrganizationId, [new DecisionScopeEntry(ScopeDimension.Organization, null, null)]),
+            [ApprovalDecisionAction.Approve],
+            [Originator],
+            [line],
+            []);
+        var submission = new ApprovalSubmission(
+            "submission-key", OrganizationId, "PURCHASE_REQUEST",
+            Guid.Parse("33333333-3333-3333-3333-333333333333"), 1, "SUBMIT",
+            new string('a', 64), null, Originator, [definition], []);
+        var approvalCase = ApprovalCase.Create(
+            Guid.NewGuid(), submission, Adapter, Workload,
+            new Dictionary<string, ApprovalWorkloadIdentity>(StringComparer.Ordinal),
+            new string('e', 64), DateTimeOffset.UtcNow, "correlation");
+
+        var task = approvalCase.TaskFor(approvalCase.Requirements[0].Id);
+        approvalCase.AssignTask(
+            task, Guid.NewGuid(), DateTimeOffset.UtcNow, 0, "{\"evidence\":true}", "Initial");
+
+        // The declared actions are the only admissible responses (REQ-02): a solo-APPROVE
+        // requirement must reject REJECT and REQUEST_CHANGES.
+        Assert.Throws<DomainConflictException>(() =>
+            approvalCase.ApplyDecision(task, ApprovalDecisionAction.Reject));
+        Assert.Throws<DomainConflictException>(() =>
+            approvalCase.ApplyDecision(task, ApprovalDecisionAction.RequestChanges));
+        approvalCase.ApplyDecision(task, ApprovalDecisionAction.Approve);
+        Assert.Equal(
+            ApprovalRequirementStatus.Approved,
+            approvalCase.RequireRequirement(task.RequirementId).Status);
+    }
+
     private static ApprovalRequirementDefinition BuildRequirement(
         string key,
         string stage,

@@ -133,23 +133,24 @@ public sealed class ApprovalContractTests
         var adapter = new ApprovalAdapterDescriptor("adapter", "PURCHASE_REQUEST", "SUBMIT", "v1", false);
         var workload = new ApprovalWorkloadIdentity("internal://procure-to-pay", "adapter");
 
-        // Partitioning by the adapter is legitimate (REQ-02): the same source key may carry
-        // different contracts, and the workflow key derived from the targets stays unique.
+        // Each class of key is unique within the case (Datos y contratos): an adapter cannot
+        // split one source requirement into several workflow requirements.
         var partitioned = BuildSubmission(
             originator,
             requirementExclusions: [originator],
             extraRequirement: BuildRequirement("REQ-A", originator, "FINANCE", [originator],
                 [Target("LINE", Guid.NewGuid())]));
-        ApprovalSubmissionRules.Validate(partitioned, adapter, workload);
-
-        // However, one source requirement cannot cover the same target through two partitions.
-        var shared = Target("LINE", Guid.Parse("77777777-7777-7777-7777-777777777777"));
-        var repeatedTarget = BuildSubmissionWith(
-            originator,
-            BuildRequirement("REQ-A", originator, "DEPARTMENT", [originator], [shared]),
-            BuildRequirement("REQ-A", originator, "FINANCE", [originator], [shared]));
         Assert.Throws<DomainConflictException>(() =>
-            ApprovalSubmissionRules.Validate(repeatedTarget, adapter, workload));
+            ApprovalSubmissionRules.Validate(partitioned, adapter, workload));
+
+        // SoD is per requirement: excluding the originator in one requirement is not enough.
+        var partialExclusion = BuildSubmission(
+            originator,
+            requirementExclusions: [originator],
+            extraRequirement: BuildRequirement("REQ-B", originator, "FINANCE", [],
+                [Target("LINE", Guid.NewGuid())]));
+        Assert.Throws<DomainValidationException>(() =>
+            ApprovalSubmissionRules.Validate(partialExclusion, adapter, workload));
 
         // originator_id must be excluded everywhere.
         var missingExclusion = BuildSubmission(
@@ -167,6 +168,60 @@ public sealed class ApprovalContractTests
             requesterId: Guid.NewGuid());
         Assert.Throws<DomainValidationException>(() =>
             ApprovalSubmissionRules.Validate(requesterNotExcluded, adapter, workload));
+    }
+
+    [Fact]
+    public void Submission_rules_reject_duplicated_actions_exclusions_targets_and_prerequisite_keys()
+    {
+        var originator = Guid.NewGuid();
+        var adapter = new ApprovalAdapterDescriptor("adapter", "PURCHASE_REQUEST", "SUBMIT", "v1", false);
+        var workload = new ApprovalWorkloadIdentity("internal://procure-to-pay", "adapter");
+        var target = Target("LINE", Guid.NewGuid());
+
+        // Duplicating a target inside one entity is rejected before any collapsing (REQ-09).
+        Assert.Throws<DomainConflictException>(() =>
+            BuildSubmissionWith(
+                originator,
+                BuildRequirement("REQ-A", originator, "DEPARTMENT", [originator], [target, target]),
+                null));
+
+        // Duplicated actions are rejected on the original sequence.
+        Assert.Throws<DomainConflictException>(() => new ApprovalRequirementDefinition(
+            "REQ-A", "DEPARTMENT", SystemRole.DepartmentApprover,
+            AuthorityRequirement.Required(ApprovalAuthorityType.BusinessNeed, 1, null, null),
+            DecisionScopeDescriptor.Create(
+                OrganizationId, [new DecisionScopeEntry(ScopeDimension.Organization, null, null)]),
+            [ApprovalDecisionAction.Approve, ApprovalDecisionAction.Approve],
+            [originator],
+            [target],
+            []));
+
+        // Duplicated exclusions are rejected on the original sequence.
+        Assert.Throws<DomainConflictException>(() => new ApprovalRequirementDefinition(
+            "REQ-A", "DEPARTMENT", SystemRole.DepartmentApprover,
+            AuthorityRequirement.Required(ApprovalAuthorityType.BusinessNeed, 1, null, null),
+            DecisionScopeDescriptor.Create(
+                OrganizationId, [new DecisionScopeEntry(ScopeDimension.Organization, null, null)]),
+            [ApprovalDecisionAction.Approve],
+            [originator, originator],
+            [target],
+            []));
+
+        // A prerequisite cannot repeat targets either.
+        Assert.Throws<DomainConflictException>(() => new ExternalPrerequisiteDefinition(
+            "PRQ", "adapter", "v1", "BUDGET_CHECK", new string('b', 64), "{}", [target, target]));
+
+        // A prerequisite key cannot repeat within the case.
+        var duplicatedPrerequisite = new ApprovalSubmission(
+            "key", OrganizationId, "PURCHASE_REQUEST", Guid.NewGuid(), 1, "SUBMIT",
+            new string('a', 64), null, originator,
+            [BuildRequirement("REQ-A", originator, "DEPARTMENT", [originator], [target])],
+            [
+                new ExternalPrerequisiteDefinition("PRQ", "adapter", "v1", "BUDGET_CHECK", new string('b', 64), "{}", [target]),
+                new ExternalPrerequisiteDefinition("PRQ", "adapter", "v1", "RISK_CHECK", new string('b', 64), "{}", [target])
+            ]);
+        Assert.Throws<DomainConflictException>(() =>
+            ApprovalSubmissionRules.Validate(duplicatedPrerequisite, adapter, workload));
     }
 
     [Fact]

@@ -330,7 +330,7 @@ public sealed class ApprovalAssignmentIntegrationTests
         }
 
         var blocked = await services.Reconciliation.ProcessAsync(
-            runId, "this-instance", "correlation-lease", requestedAt, cancellationToken);
+            runId, "this-instance", "correlation-lease", cancellationToken);
         Assert.False(blocked.Completed);
         Assert.Equal(0, blocked.Scanned);
         await using (var verification = environment.CreateContext())
@@ -353,7 +353,7 @@ public sealed class ApprovalAssignmentIntegrationTests
         }
 
         var reclaimed = await services.Reconciliation.ProcessAsync(
-            runId, "this-instance", "correlation-lease", requestedAt.AddMinutes(2), cancellationToken);
+            runId, "this-instance", "correlation-lease", cancellationToken);
         Assert.True(reclaimed.Completed);
         Assert.Equal(1, reclaimed.Scanned);
         Assert.Equal(1, reclaimed.Unassigned);
@@ -371,9 +371,103 @@ public sealed class ApprovalAssignmentIntegrationTests
 
         // A stale holder cannot advance or reopen the completed run.
         var stale = await services.Reconciliation.ProcessAsync(
-            runId, "other-instance", "correlation-lease", requestedAt.AddMinutes(3), cancellationToken);
+            runId, "other-instance", "correlation-lease", cancellationToken);
         Assert.False(stale.Completed);
         Assert.Equal(0, stale.Scanned);
+    }
+
+    [Fact]
+    public async Task Reconciliation_holder_stops_when_the_lease_expires_mid_run()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await SqlEnvironment.StartAsync(cancellationToken);
+        await environment.SeedOrganizationAsync(cancellationToken);
+        await environment.SeedApproverAsync(FirstApprover, "approver-a", cancellationToken);
+        var claimedAt = DateTimeOffset.UtcNow;
+        // The claim consumes the first value; everything after sees the lease 31 s later, i.e.
+        // expired. A frozen claim clock would keep the holder believing the lease is live.
+        var clock = new ScriptedTimeProvider(
+            [claimedAt], claimedAt.AddSeconds(LeaseSeconds + 1));
+        var services = environment.CreateServices(new DepartmentAdapter(DepartmentId, 1), clock);
+        var submission = await services.Submission.SubmitAsync(
+            Command("submission-lease-expiry"), claimedAt, cancellationToken);
+
+        await using (var revoking = environment.CreateContext())
+        {
+            var assignment = await revoking.RoleAssignments.SingleAsync(cancellationToken);
+            assignment.Status = (int)AssignmentStatus.Revoked;
+            assignment.RevokedAt = AssignedAt;
+            assignment.RevokedBy = AdminId;
+            await revoking.SaveChangesAsync(cancellationToken);
+        }
+
+        var runId = await services.Reconciliation.RequestAdminAsync(
+            OrganizationId, AdminId, "reconcile-lease-expiry", "correlation-lease-expiry", claimedAt, cancellationToken);
+
+        var outcome = await services.Reconciliation.ProcessAsync(
+            runId, "this-instance", "correlation-lease-expiry", cancellationToken);
+
+        // The holder must not confirm effects nor complete with an expired lease (REQ-10).
+        Assert.False(outcome.Completed);
+        Assert.Equal(0, outcome.Scanned);
+        await using (var verification = environment.CreateContext())
+        {
+            var run = await verification.ApprovalReconciliationRuns
+                .AsNoTracking()
+                .SingleAsync(record => record.Id == runId, cancellationToken);
+            Assert.Equal(ApprovalReconciliationCodes.StatusRunning, run.Status);
+            Assert.Null(run.CompletedAt);
+            Assert.Equal(1, run.FencingToken);
+            Assert.Equal(claimedAt.AddSeconds(LeaseSeconds), run.LockedUntil);
+        }
+    }
+
+    private const int LeaseSeconds = 30;
+
+    [Fact]
+    public async Task Organization_change_run_keeps_the_triggering_audit_utc_as_requested_at()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await SqlEnvironment.StartAsync(cancellationToken);
+        await environment.SeedOrganizationAsync(cancellationToken);
+        await environment.SeedApproverAsync(FirstApprover, "approver-a", cancellationToken);
+
+        // The organizational change happened in the past; the worker observes it only now.
+        var auditOccurredAt = DateTimeOffset.UtcNow.AddMinutes(-90);
+        Guid auditId;
+        await using (var context = environment.CreateContext())
+        {
+            var profile = await context.UserProfiles.SingleAsync(cancellationToken);
+            var audit = new AdministrativeAuditRecord
+            {
+                Id = Guid.NewGuid(),
+                ActorType = "USER",
+                ActorUserId = AdminId,
+                OccurredAt = auditOccurredAt,
+                Action = "PROFILE_UPDATED",
+                TargetType = "UserProfile",
+                TargetId = profile.Id,
+                ScopeJson = "[]",
+                Reason = "Test profile change",
+                CorrelationReference = "correlation-org-change"
+            };
+            context.AdministrativeAuditRecords.Add(audit);
+            await context.SaveChangesAsync(cancellationToken);
+            auditId = audit.Id;
+        }
+
+        var services = environment.CreateServices(new DepartmentAdapter(DepartmentId, 1));
+        var runId = await services.Reconciliation.RequestOrganizationChangeAsync(
+            OrganizationId, auditId, "correlation-org-change", auditOccurredAt, cancellationToken);
+
+        await using var verification = environment.CreateContext();
+        var run = await verification.ApprovalReconciliationRuns.SingleAsync(
+            record => record.Id == runId, cancellationToken);
+        // requested_at is the UTC of the triggering organizational audit, never the sweep
+        // instant: the 60 s budget starts at the change, not at the observation (REQ-10).
+        Assert.Equal(auditOccurredAt, run.RequestedAt);
+        Assert.Equal(auditId, run.TriggerAuditId);
+        Assert.Null(run.StartedAt);
     }
 
     private static async Task<Guid?> AssigneeOfAsync(
@@ -530,7 +624,8 @@ public sealed class ApprovalAssignmentIntegrationTests
 
         // pi-lens-ignore: lsp:CS0246
         public (ApprovalSubmissionService Submission, ApprovalReconciliationService Reconciliation) CreateServices(
-            IApprovalSubmissionAdapter adapter)
+            IApprovalSubmissionAdapter adapter,
+            TimeProvider? timeProvider = null)
         {
             using var loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Warning));
             var configuration = new ConfigurationBuilder()
@@ -558,9 +653,18 @@ public sealed class ApprovalAssignmentIntegrationTests
                     context,
                     assignmentEngine,
                     // pi-lens-ignore: lsp:CS0246
-                    loggerFactory.CreateLogger<ApprovalReconciliationService>()));
+                    loggerFactory.CreateLogger<ApprovalReconciliationService>(),
+                    timeProvider));
         }
 
         public async ValueTask DisposeAsync() => await container.DisposeAsync();
+    }
+
+    /// <summary>Returns scripted instants one by one and a fallback once exhausted (test clock).</summary>
+    private sealed class ScriptedTimeProvider(IEnumerable<DateTimeOffset> values, DateTimeOffset fallback) : TimeProvider
+    {
+        private readonly Queue<DateTimeOffset> values = new(values);
+
+        public override DateTimeOffset GetUtcNow() => values.Count > 0 ? values.Dequeue() : fallback;
     }
 }

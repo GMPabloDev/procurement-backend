@@ -36,6 +36,7 @@ public sealed class ApprovalRequirementRecord
     public string AuthorityJson { get; set; } = string.Empty;
     public string DecisionScopeJson { get; set; } = string.Empty;
     public string ExcludedUserIdsJson { get; set; } = string.Empty;
+    public string ActionsJson { get; set; } = string.Empty;
     public string TargetsJson { get; set; } = string.Empty;
     public string DependenciesJson { get; set; } = string.Empty;
     public int Status { get; set; }

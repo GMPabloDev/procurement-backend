@@ -175,6 +175,14 @@ public sealed class ApprovalWorkflowService(
                 replayedEvents);
         }
 
+        // The expected version authorizes the transition of the prerequisite at its current
+        // version (REQ-03): a signal against a stale view is a conflict, not a transition.
+        if (command.ExpectedVersion != prerequisiteRecord.Version)
+        {
+            ApprovalTelemetry.RecordConflict("SIGNAL");
+            throw new DomainConflictException("The prerequisite version does not match the expected version.");
+        }
+
         var requirementRecords = await dbContext.ApprovalRequirements
             .Where(record => record.CaseId == caseId)
             .ToArrayAsync(cancellationToken);

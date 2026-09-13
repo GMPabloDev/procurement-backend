@@ -24,8 +24,10 @@ public sealed record ApprovalReconciliationOutcome(
 public sealed class ApprovalReconciliationService(
     ProcureToPayDbContext dbContext,
     ApprovalAssignmentEngine assignmentEngine,
-    ILogger<ApprovalReconciliationService> logger)
+    ILogger<ApprovalReconciliationService> logger,
+    TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider timeProvider = timeProvider ?? TimeProvider.System;
     /// <summary>A due reconciliation must complete within 60 seconds (NFR-03).</summary>
     public static readonly TimeSpan MaxReconciliationAge = TimeSpan.FromSeconds(60);
 
@@ -133,7 +135,6 @@ public sealed class ApprovalReconciliationService(
         CancellationToken cancellationToken = default)
     {
         var correlation = ApprovalLimits.RequireCorrelation(correlationReference);
-        var utcNow = occurredAt.ToUniversalTime();
         var existing = await dbContext.ApprovalReconciliationRuns
             .AsNoTracking()
             .Where(record => record.OrganizationId == organizationId &&
@@ -149,8 +150,10 @@ public sealed class ApprovalReconciliationService(
         var rootAuditId = Guid.NewGuid();
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.ReadCommitted, cancellationToken);
+        // requested_at is the UTC of the triggering organizational audit (REQ-10); the root
+        // audit carries the real creation instant, never a backdated one.
         dbContext.ApprovalReconciliationRuns.Add(Row(ApprovalReconciliationRun.CreateOrganizationChange(
-            runId, organizationId, triggerAuditId, rootAuditId, utcNow)));
+            runId, organizationId, triggerAuditId, rootAuditId, occurredAt.ToUniversalTime())));
         dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.OrganizationRoot(
             organizationId,
             triggerAuditId,
@@ -158,7 +161,7 @@ public sealed class ApprovalReconciliationService(
             "RECONCILIATION_REQUESTED",
             runId,
             "Reconciliation requested by an organization change.",
-            utcNow,
+            timeProvider.GetUtcNow(),
             correlation));
         try
         {
@@ -194,11 +197,10 @@ public sealed class ApprovalReconciliationService(
         Guid runId,
         string owner,
         string correlationReference,
-        DateTimeOffset occurredAt,
         CancellationToken cancellationToken = default)
     {
         var correlation = ApprovalLimits.RequireCorrelation(correlationReference);
-        var utcNow = occurredAt.ToUniversalTime();
+        var utcNow = timeProvider.GetUtcNow();
 
         var claimed = await dbContext.ApprovalReconciliationRuns
             .Where(record => record.Id == runId &&
@@ -252,17 +254,18 @@ public sealed class ApprovalReconciliationService(
         {
             var remaining = runRecord.LockedUntil is null
                 ? TimeSpan.Zero
-                : runRecord.LockedUntil.Value - utcNow;
+                : runRecord.LockedUntil.Value - timeProvider.GetUtcNow();
             if (remaining < LeaseDuration - RenewalInterval)
             {
+                var renewedAt = timeProvider.GetUtcNow();
                 var renewed = await dbContext.ApprovalReconciliationRuns
                     .Where(record => record.Id == runId &&
                                      record.LeaseOwner == owner &&
                                      record.FencingToken == fencingToken &&
-                                     record.LockedUntil > utcNow)
+                                     record.LockedUntil > renewedAt)
                     .ExecuteUpdateAsync(
                         setters => setters
-                            .SetProperty(record => record.LockedUntil, utcNow + LeaseDuration)
+                            .SetProperty(record => record.LockedUntil, renewedAt + LeaseDuration)
                             .SetProperty(record => record.Version, record => record.Version + 1),
                         cancellationToken);
                 if (renewed == 0)
@@ -275,7 +278,7 @@ public sealed class ApprovalReconciliationService(
                     return Outcome(runRecord, scanned, reassigned, unassigned, unchanged, completed: false, utcNow);
                 }
 
-                runRecord.LockedUntil = utcNow + LeaseDuration;
+                runRecord.LockedUntil = renewedAt + LeaseDuration;
             }
 
             dbContext.ChangeTracker.Clear();
@@ -292,7 +295,7 @@ public sealed class ApprovalReconciliationService(
                 !string.Equals(holder.LeaseOwner, owner, StringComparison.Ordinal) ||
                 holder.FencingToken != fencingToken ||
                 holder.LockedUntil is null ||
-                holder.LockedUntil <= utcNow)
+                holder.LockedUntil <= timeProvider.GetUtcNow())
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Outcome(runRecord, scanned, reassigned, unassigned, unchanged, completed: false, utcNow);
@@ -346,15 +349,16 @@ public sealed class ApprovalReconciliationService(
             cursor = caseId;
         }
 
+        var completedAt = timeProvider.GetUtcNow();
         var completed = await dbContext.ApprovalReconciliationRuns
             .Where(record => record.Id == runId &&
                              record.LeaseOwner == owner &&
                              record.FencingToken == fencingToken &&
-                             record.LockedUntil > utcNow)
+                             record.LockedUntil > completedAt)
             .ExecuteUpdateAsync(
                 setters => setters
                     .SetProperty(record => record.Status, ApprovalReconciliationCodes.StatusCompleted)
-                    .SetProperty(record => record.CompletedAt, utcNow)
+                    .SetProperty(record => record.CompletedAt, completedAt)
                     .SetProperty(record => record.LockedUntil, (DateTimeOffset?)null)
                     .SetProperty(record => record.LeaseOwner, (string?)null)
                     .SetProperty(record => record.Version, record => record.Version + 1),
@@ -362,7 +366,7 @@ public sealed class ApprovalReconciliationService(
 
         if (completed > 0)
         {
-            await TouchWorkflowStateAsync(runRecord.OrganizationId, utcNow, owner, cancellationToken);
+            await TouchWorkflowStateAsync(runRecord.OrganizationId, completedAt, owner, cancellationToken);
         }
 
         logger.LogInformation(
@@ -395,7 +399,7 @@ public sealed class ApprovalReconciliationService(
     {
         var runId = await RequestAdminAsync(
             organizationId, actorUserId, reconciliationKey, correlationReference, occurredAt, cancellationToken);
-        return await ProcessAsync(runId, owner, correlationReference, occurredAt, cancellationToken);
+        return await ProcessAsync(runId, owner, correlationReference, cancellationToken);
     }
 
     private async Task TouchWorkflowStateAsync(
