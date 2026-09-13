@@ -73,6 +73,39 @@ public static class ApprovalJsonPersistence
     public static string SerializeGuids(IEnumerable<Guid> values) =>
         JsonSerializer.Serialize(values.OrderBy(value => value).ToArray(), Options);
 
+    /// <summary>Single append-only target of a carry-forward record (SPEC 04 REQ-05).</summary>
+    public static string SerializeTarget(ApprovalTarget target) =>
+        JsonSerializer.Serialize(TargetPayload.From(target), Options);
+
+    public static ApprovalTarget DeserializeTarget(string json)
+    {
+        var payload = JsonSerializer.Deserialize<TargetPayload>(json, Options)
+            ?? throw new DomainValidationException("Stored target is invalid.");
+        return new ApprovalTarget(payload.Type!, payload.Id, payload.Version, payload.MaterialSnapshotDigest!);
+    }
+
+    /// <summary>Bijective target mapping of a supersession (SPEC 04 REQ-04).</summary>
+    public static string SerializeSupersessionMapping(IEnumerable<ApprovalSupersessionMapping> mapping) =>
+        JsonSerializer.Serialize(
+            mapping.Select(entry => new SupersessionMappingPayload(
+                TargetPayload.From(entry.Previous),
+                TargetPayload.From(entry.Replacement),
+                entry.MaterialitySchemaVersion,
+                entry.MaterialityDigest)).ToArray(),
+            Options);
+
+    public static IReadOnlyList<ApprovalSupersessionMapping> DeserializeSupersessionMapping(string json)
+    {
+        var payloads = JsonSerializer.Deserialize<SupersessionMappingPayload[]>(json, Options) ?? [];
+        return payloads.Select(payload => ApprovalSupersessionMapping.Create(
+            new ApprovalTarget(payload.Previous!.Type!, payload.Previous.Id, payload.Previous.Version,
+                payload.Previous.MaterialSnapshotDigest!),
+            new ApprovalTarget(payload.Replacement!.Type!, payload.Replacement.Id, payload.Replacement.Version,
+                payload.Replacement.MaterialSnapshotDigest!),
+            payload.MaterialitySchemaVersion!,
+            payload.MaterialityDigest!)).ToArray();
+    }
+
     public static IReadOnlyList<Guid> DeserializeGuids(string json) =>
         JsonSerializer.Deserialize<Guid[]>(json, Options) ?? [];
 
@@ -119,4 +152,10 @@ public static class ApprovalJsonPersistence
         int? MinimumRank,
         decimal? AmountBase,
         string? BaseCurrency);
+
+    private sealed record SupersessionMappingPayload(
+        TargetPayload? Previous,
+        TargetPayload? Replacement,
+        string? MaterialitySchemaVersion,
+        string? MaterialityDigest);
 }

@@ -2,6 +2,7 @@ using System.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.Organization;
 
 namespace ProcureToPay.Infrastructure.Persistence.Approval;
 
@@ -190,6 +191,123 @@ public sealed class ApprovalReconciliationService(
     }
 
     /// <summary>
+    /// A confirmed activation or revocation requests exactly one run per delegation version,
+    /// transition and scheduled instant; its root audit is the audit of the command that caused
+    /// it, so the run, its cause and its cases share one immutable chain (SPEC 04 REQ-03).
+    /// </summary>
+    public async Task<Guid> RequestDelegationChangeAsync(
+        Guid organizationId,
+        Guid delegationId,
+        int delegationVersion,
+        ApprovalDelegationTransition transition,
+        DateTimeOffset scheduledAt,
+        Guid triggerAuditId,
+        string correlationReference,
+        CancellationToken cancellationToken = default)
+    {
+        var correlation = ApprovalLimits.RequireCorrelation(correlationReference);
+        var existing = await dbContext.ApprovalReconciliationRuns
+            .AsNoTracking()
+            .Where(record => record.OrganizationId == organizationId &&
+                             record.DelegationId == delegationId &&
+                             record.DelegationVersion == delegationVersion &&
+                             record.DelegationTransition == ApprovalDelegationCodes.Code(transition) &&
+                             record.DelegationScheduledAt == scheduledAt)
+            .Select(record => (Guid?)record.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (existing is not null)
+        {
+            return existing.Value;
+        }
+
+        var runId = Guid.NewGuid();
+        dbContext.ApprovalReconciliationRuns.Add(Row(ApprovalReconciliationRun.CreateDelegationChange(
+            runId, organizationId, delegationId, delegationVersion, transition, scheduledAt, triggerAuditId,
+            rootAuditId: triggerAuditId, requestedAt: scheduledAt)));
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            dbContext.ChangeTracker.Clear();
+            var winner = await FindDelegationRunAsync(
+                organizationId, delegationId, delegationVersion, transition, scheduledAt, cancellationToken);
+            if (winner is null)
+            {
+                throw;
+            }
+
+            return winner.Value;
+        }
+
+        _ = correlation;
+        return runId;
+    }
+
+    /// <summary>
+    /// A confirmed expiry requests exactly one SYSTEM run caused by the delegation version and
+    /// its <c>valid_to</c> (SPEC 04 REQ-03).
+    /// </summary>
+    public async Task<Guid> RequestDelegationExpiryAsync(
+        Guid organizationId,
+        Guid delegationId,
+        int delegationVersion,
+        DateTimeOffset scheduledAt,
+        Guid expiryAuditId,
+        CancellationToken cancellationToken = default)
+    {
+        var existing = await FindDelegationRunAsync(
+            organizationId, delegationId, delegationVersion, ApprovalDelegationTransition.Expire, scheduledAt,
+            cancellationToken);
+        if (existing is not null)
+        {
+            return existing.Value;
+        }
+
+        var runId = Guid.NewGuid();
+        dbContext.ApprovalReconciliationRuns.Add(Row(ApprovalReconciliationRun.CreateDelegationExpiry(
+            runId, organizationId, delegationId, delegationVersion, scheduledAt, expiryAuditId,
+            requestedAt: scheduledAt)));
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            dbContext.ChangeTracker.Clear();
+            var winner = await FindDelegationRunAsync(
+                organizationId, delegationId, delegationVersion, ApprovalDelegationTransition.Expire, scheduledAt,
+                cancellationToken);
+            if (winner is null)
+            {
+                throw;
+            }
+
+            return winner.Value;
+        }
+
+        return runId;
+    }
+
+    private Task<Guid?> FindDelegationRunAsync(
+        Guid organizationId,
+        Guid delegationId,
+        int delegationVersion,
+        ApprovalDelegationTransition transition,
+        DateTimeOffset scheduledAt,
+        CancellationToken cancellationToken) =>
+        dbContext.ApprovalReconciliationRuns
+            .AsNoTracking()
+            .Where(record => record.OrganizationId == organizationId &&
+                             record.DelegationId == delegationId &&
+                             record.DelegationVersion == delegationVersion &&
+                             record.DelegationTransition == ApprovalDelegationCodes.Code(transition) &&
+                             record.DelegationScheduledAt == scheduledAt)
+            .Select(record => (Guid?)record.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+
+    /// <summary>
     /// Processes one run under its lease. A holder that lost the lease stops; an expired lease can
     /// be reclaimed by another instance and continues from the persisted cursor (REQ-10).
     /// </summary>
@@ -230,6 +348,9 @@ public sealed class ApprovalReconciliationService(
         var fencingToken = runRecord.FencingToken;
         var rootAuditId = runRecord.RootAuditId;
         var cursor = runRecord.CursorCaseId;
+        // A delegation run only re-evaluates the tasks covered by the delegation that caused it
+        // (SPEC 04 REQ-03); the organization reconciliation keeps covering every open case.
+        var coverage = await DelegationCoverageAsync(runRecord, cancellationToken);
         var caseIds = await dbContext.ApprovalCases
             .AsNoTracking()
             .Where(record => record.OrganizationId == runRecord.OrganizationId &&
@@ -329,7 +450,7 @@ public sealed class ApprovalReconciliationService(
             if (approvalCase.Status is ApprovalCaseStatus.Open or ApprovalCaseStatus.Blocked)
             {
                 var outcomes = await assignmentEngine.ReconcilePendingAsync(
-                    approvalCase, assignmentRecords, utcNow, correlation, rootAuditId, cancellationToken);
+                    approvalCase, assignmentRecords, utcNow, correlation, rootAuditId, cancellationToken, coverage);
                 reassigned += outcomes.Count(outcome => outcome.Kind == ApprovalAssignmentOutcomeKind.Reassigned);
                 unassigned += outcomes.Count(outcome => outcome.Kind == ApprovalAssignmentOutcomeKind.Unassigned);
                 unchanged += outcomes.Count(outcome => outcome.Kind == ApprovalAssignmentOutcomeKind.Unchanged);
@@ -422,6 +543,37 @@ public sealed class ApprovalReconciliationService(
         return await ProcessAsync(runId, owner, correlationReference, cancellationToken);
     }
 
+    private async Task<ApprovalDelegationCoverage?> DelegationCoverageAsync(
+        ApprovalReconciliationRunRecord runRecord,
+        CancellationToken cancellationToken)
+    {
+        if (runRecord.Trigger is not (ApprovalReconciliationCodes.TriggerDelegationChange or
+            ApprovalReconciliationCodes.TriggerDelegationExpiry) ||
+            runRecord.DelegationId is null)
+        {
+            return null;
+        }
+
+        var delegation = await dbContext.ApprovalDelegations
+            .AsNoTracking()
+            .SingleOrDefaultAsync(record => record.Id == runRecord.DelegationId, cancellationToken);
+        if (delegation is null)
+        {
+            return null;
+        }
+
+        var descriptor = DecisionScopeDescriptor.Parse(delegation.DecisionScopeJson);
+        var scope = await new ApprovalScopeResolver(dbContext).ResolveAsync(
+            descriptor, delegation.OrganizationId, cancellationToken);
+        return new ApprovalDelegationCoverage(
+            delegation.Id,
+            delegation.Version,
+            delegation.DelegatorUserId,
+            delegation.DelegateeUserId,
+            (SystemRole)delegation.Role,
+            scope);
+    }
+
     private async Task TouchWorkflowStateAsync(
         Guid organizationId,
         DateTimeOffset utcNow,
@@ -445,7 +597,8 @@ public sealed class ApprovalReconciliationService(
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
-    private static ApprovalReconciliationRunRecord Row(ApprovalReconciliationRun run) => new()
+    /// <summary>Persistence mapping of a run, shared with the delegation service (SPEC 04 REQ-03).</summary>
+    public static ApprovalReconciliationRunRecord Row(ApprovalReconciliationRun run) => new()
     {
         Id = run.Id,
         OrganizationId = run.OrganizationId,
@@ -453,6 +606,12 @@ public sealed class ApprovalReconciliationService(
         ActorUserId = run.ActorUserId,
         ReconciliationKey = run.ReconciliationKey,
         TriggerAuditId = run.TriggerAuditId,
+        DelegationId = run.DelegationId,
+        DelegationVersion = run.DelegationVersion,
+        DelegationTransition = run.DelegationTransition is null
+            ? null
+            : ApprovalDelegationCodes.Code(run.DelegationTransition.Value),
+        DelegationScheduledAt = run.DelegationScheduledAt,
         Status = ApprovalReconciliationCodes.Code(run.Status),
         RequestedAt = run.RequestedAt,
         StartedAt = run.StartedAt,

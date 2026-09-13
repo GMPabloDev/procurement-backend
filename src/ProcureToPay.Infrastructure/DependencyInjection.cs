@@ -100,6 +100,11 @@ public static class DependencyInjection
         services.AddScoped<ApprovalScopeResolver>();
         services.AddScoped<ApprovalAssignmentEngine>();
         services.AddScoped<ApprovalReconciliationService>();
+        services.AddScoped<ApprovalDelegationService>();
+        services.AddScoped<ApprovalDelegationTransitionProcessor>();
+        services.AddScoped<ApprovalSupersessionService>();
+        services.AddScoped<ApprovalEvidenceRevocationService>();
+        services.AddScoped<ApprovalHistoryQueryService>();
         services.AddScoped<ApprovalOperationsQueryService>();
         services.AddScoped<ApprovalInboxQueryService>();
         services.AddScoped<ApprovalOutboxAdministrationService>();

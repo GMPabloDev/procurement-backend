@@ -17,7 +17,9 @@ public sealed record ApprovalSubmissionRequest(
     string SubmissionKey,
     Guid? RequesterId,
     Guid OriginatorId,
-    string CorrelationReference);
+    string CorrelationReference,
+    /// <summary>Previous case of a new immutable version; null for a first submission (SPEC 04 REQ-04).</summary>
+    Guid? PreviousCaseId = null);
 
 public interface IApprovalSubmissionAdapter
 {

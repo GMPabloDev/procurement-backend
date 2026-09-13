@@ -63,6 +63,7 @@ public sealed class ApprovalWorkflowWorker(
         var dbContext = scope.ServiceProvider.GetRequiredService<ProcureToPayDbContext>();
         var dispatcher = scope.ServiceProvider.GetRequiredService<ApprovalOutboxDispatcher>();
         var reconciliation = scope.ServiceProvider.GetRequiredService<ApprovalReconciliationService>();
+        var delegations = scope.ServiceProvider.GetRequiredService<ApprovalDelegationTransitionProcessor>();
         var identity = scope.ServiceProvider.GetRequiredService<ApprovalInstanceIdentity>();
         var utcNow = DateTimeOffset.UtcNow;
 
@@ -76,6 +77,12 @@ public sealed class ApprovalWorkflowWorker(
         {
             await dispatcher.DispatchAsync(
                 organizationId, identity.Owner, utcNow, cancellationToken: cancellationToken);
+
+            // Scheduled delegation transitions run before their reconciliation runs so a due
+            // activation or expiry confirms its audit and run within the 60 second budget
+            // (SPEC 04 REQ-03, CA-03).
+            await delegations.ProcessDueAsync(
+                identity.Owner, utcNow, cancellationToken: cancellationToken);
 
             var dueRuns = await dbContext.ApprovalReconciliationRuns
                 .AsNoTracking()

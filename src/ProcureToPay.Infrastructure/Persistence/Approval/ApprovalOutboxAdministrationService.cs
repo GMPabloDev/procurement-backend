@@ -14,7 +14,8 @@ public sealed record ApprovalOutboxBacklog(
     DateTimeOffset? OldestPendingCreatedAt,
     TimeSpan? OldestPendingAge,
     bool IsOverdue,
-    bool ReconciliationOverdue);
+    bool ReconciliationOverdue,
+    bool DelegationTransitionOverdue);
 
 /// <summary>
 /// Administrative operation of the outbox (REQ-10, NFR-03): backlog visibility and replay of
@@ -52,7 +53,27 @@ public sealed class ApprovalOutboxAdministrationService(
             oldest,
             age,
             age is not null && age.Value > MaxPendingAge,
-            await IsReconciliationOverdueAsync(organizationId, utcNow, cancellationToken));
+            await IsReconciliationOverdueAsync(organizationId, utcNow, cancellationToken),
+            await IsDelegationTransitionOverdueAsync(organizationId, utcNow, cancellationToken));
+    }
+
+    /// <summary>
+    /// A delegation transition is due while a pending job has not been confirmed within the 60
+    /// second budget (SPEC 04 REQ-03, NFR-01). Idle deployments with no scheduled job stay healthy.
+    /// </summary>
+    public async Task<bool> IsDelegationTransitionOverdueAsync(
+        Guid organizationId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        var utcNow = now.ToUniversalTime();
+        return await dbContext.ApprovalDelegationTransitionJobs
+            .AsNoTracking()
+            .AnyAsync(
+                record => record.OrganizationId == organizationId &&
+                          record.Status == ApprovalDelegationCodes.JobPending &&
+                          record.ScheduledAt <= utcNow - ApprovalReconciliationService.MaxReconciliationAge,
+                cancellationToken);
     }
 
     /// <summary>

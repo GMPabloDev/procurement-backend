@@ -56,18 +56,27 @@ public sealed record ApprovalAssignmentOutcome(
     int Load);
 
 /// <summary>
+/// Direct eligible candidate plus the real delegation that routed it, if any (SPEC 04 REQ-02).
+/// The delegation never grants authority: the candidate is still a direct result of the SPEC 01
+/// resolver and the delegator is removed from the effective set.
+/// </summary>
+public sealed record EffectiveCandidate(EligibleCandidate Candidate, Guid? DelegationId, int? DelegationVersion);
+
+/// <summary>
 /// Deterministic routing of activation and reconciliation (REQ-04, REQ-05, NFR-01, NFR-03):
-/// converts the stored decision scope, asks the SPEC 01 resolver, excludes active reserved-role
-/// holders (DEC-08), picks the lowest current load with a canonical-UUID tie-break, and never
-/// falls back when no candidate exists. Selection, load reservation and assignment stay inside
-/// the caller's transaction; every automatic change is written as a SYSTEM effect of the root
-/// audit that caused it (REQ-08).
+/// converts the stored decision scope, asks the SPEC 01 resolver, applies the effective-set
+/// transformation of SPEC 04 REQ-02, excludes active reserved-role holders (DEC-08), picks the
+/// lowest current load with a canonical-UUID tie-break, and never falls back when no candidate
+/// exists. Selection, load reservation and assignment stay inside the caller's transaction;
+/// every automatic change is written as a SYSTEM effect of the root audit that caused it (REQ-08).
 /// </summary>
 public sealed class ApprovalAssignmentEngine(
     ProcureToPayDbContext dbContext,
     IOrganizationEligibilityService eligibility,
     ApprovalScopeResolver scopeResolver)
 {
+    private readonly Dictionary<(Guid OrganizationId, int Role, DateTimeOffset EvaluatedAt), IReadOnlyList<ApprovalDelegationCoverage>> delegationCache = [];
+
     /// <summary>Assigns every activated requirement that has no assignee yet (REQ-04).</summary>
     public async Task<IReadOnlyList<ApprovalAssignmentOutcome>> AssignUnassignedAsync(
         ApprovalCase approvalCase,
@@ -86,7 +95,9 @@ public sealed class ApprovalAssignmentEngine(
                      .Where(item => item.Status == ApprovalRequirementStatus.Unassigned))
         {
             var task = approvalCase.TaskFor(requirement.Id);
-            var candidates = await ResolveCandidatesAsync(approvalCase, requirement, utcNow, cancellationToken);
+            var requirementScope = await ResolveRequirementScopeAsync(approvalCase, requirement, cancellationToken);
+            var candidates = await ResolveCandidatesAsync(
+                approvalCase, requirement, requirementScope, utcNow, cancellationToken);
             var chosen = Select(candidates, loads);
             if (chosen is null)
             {
@@ -98,16 +109,16 @@ public sealed class ApprovalAssignmentEngine(
                 continue;
             }
 
-            var load = LoadOf(loads, chosen.User.Id);
-            var evidence = ApprovalEligibilityEvidence.Canonicalize(chosen.Evidence);
+            var load = LoadOf(loads, chosen.Candidate.User.Id);
+            var evidence = ApprovalEligibilityEvidence.Canonicalize(chosen.Candidate.Evidence);
             approvalCase.AssignTask(
-                task, chosen.User.Id, utcNow, load, evidence, ApprovalAssignmentCause.Initial.ToString());
-            loads[chosen.User.Id] = load + 1;
+                task, chosen.Candidate.User.Id, utcNow, load, evidence, ApprovalAssignmentCause.Initial.ToString());
+            loads[chosen.Candidate.User.Id] = load + 1;
             dbContext.ApprovalAssignments.Add(Assignment(
                 approvalCase, requirement, task, chosen, load, ApprovalAssignmentCause.Initial, utcNow));
             ApprovalTelemetry.RecordAssignment("ASSIGNED");
             outcomes.Add(new ApprovalAssignmentOutcome(
-                requirement.Id, task.Id, ApprovalAssignmentOutcomeKind.Assigned, chosen.User.Id, load));
+                requirement.Id, task.Id, ApprovalAssignmentOutcomeKind.Assigned, chosen.Candidate.User.Id, load));
         }
 
         WriteEffects(approvalCase, rootAuditId, utcNow, correlationReference);
@@ -117,7 +128,9 @@ public sealed class ApprovalAssignmentEngine(
     /// <summary>
     /// Idempotent reconciliation (REQ-04, NFR-03): a PENDING requirement whose current
     /// assignee stopped being eligible is reassigned to the new best candidate, or released
-    /// back to UNASSIGNED when nobody is eligible. A decided task never changes.
+    /// back to UNASSIGNED when nobody is eligible. A decided task never changes. A delegation
+    /// run passes its coverage so only the requirements it governs are re-evaluated (SPEC 04
+    /// REQ-03).
     /// </summary>
     public async Task<IReadOnlyList<ApprovalAssignmentOutcome>> ReconcilePendingAsync(
         ApprovalCase approvalCase,
@@ -125,7 +138,8 @@ public sealed class ApprovalAssignmentEngine(
         DateTimeOffset occurredAt,
         string correlationReference,
         Guid rootAuditId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        ApprovalDelegationCoverage? coverageFilter = null)
     {
         ArgumentNullException.ThrowIfNull(approvalCase);
         var utcNow = occurredAt.ToUniversalTime();
@@ -146,9 +160,17 @@ public sealed class ApprovalAssignmentEngine(
                 continue;
             }
 
-            var candidates = await ResolveCandidatesAsync(approvalCase, requirement, utcNow, cancellationToken);
+            var requirementScope = await ResolveRequirementScopeAsync(approvalCase, requirement, cancellationToken);
+            if (coverageFilter is not null &&
+                (requirement.Role != coverageFilter.Role || !coverageFilter.Scope.Covers(requirementScope)))
+            {
+                continue;
+            }
+
+            var candidates = await ResolveCandidatesAsync(
+                approvalCase, requirement, requirementScope, utcNow, cancellationToken);
             var stillEligible = candidates
-                .FirstOrDefault(candidate => candidate.User.Id == assignee.Value);
+                .FirstOrDefault(candidate => candidate.Candidate.User.Id == assignee.Value);
             if (stillEligible is not null)
             {
                 outcomes.Add(new ApprovalAssignmentOutcome(
@@ -174,31 +196,46 @@ public sealed class ApprovalAssignmentEngine(
                 continue;
             }
 
-            var load = LoadOf(loads, chosen.User.Id);
-            approvalCase.ReassignTask(task, chosen.User.Id);
-            loads[chosen.User.Id] = load + 1;
+            var load = LoadOf(loads, chosen.Candidate.User.Id);
+            approvalCase.ReassignTask(task, chosen.Candidate.User.Id);
+            loads[chosen.Candidate.User.Id] = load + 1;
             dbContext.ApprovalAssignments.Add(Assignment(
                 approvalCase, requirement, task, chosen, load, ApprovalAssignmentCause.Reassigned, utcNow));
             ApprovalTelemetry.RecordAssignment("REASSIGNED");
             outcomes.Add(new ApprovalAssignmentOutcome(
-                requirement.Id, task.Id, ApprovalAssignmentOutcomeKind.Reassigned, chosen.User.Id, load));
+                requirement.Id, task.Id, ApprovalAssignmentOutcomeKind.Reassigned, chosen.Candidate.User.Id, load));
         }
 
         WriteEffects(approvalCase, rootAuditId, utcNow, correlationReference);
         return outcomes;
     }
 
-    /// <summary>True when the pending assignee is still an eligible candidate (REQ-06).</summary>
-    public async Task<EligibleCandidate?> FindEligibleCandidateAsync(
+    /// <summary>
+    /// True when the pending assignee is still an effective candidate (REQ-06, SPEC 04 REQ-02);
+    /// the applied delegation travels with the candidate so the decision digest fixes its real
+    /// id and version.
+    /// </summary>
+    public async Task<EffectiveCandidate?> FindEligibleCandidateAsync(
         ApprovalCase approvalCase,
         ApprovalRequirement requirement,
         Guid actorUserId,
         DateTimeOffset evaluatedAt,
         CancellationToken cancellationToken = default)
     {
+        var requirementScope = await ResolveRequirementScopeAsync(approvalCase, requirement, cancellationToken);
         var candidates = await ResolveCandidatesAsync(
-            approvalCase, requirement, evaluatedAt.ToUniversalTime(), cancellationToken);
-        return candidates.FirstOrDefault(candidate => candidate.User.Id == actorUserId);
+            approvalCase, requirement, requirementScope, evaluatedAt.ToUniversalTime(), cancellationToken);
+        return candidates.FirstOrDefault(candidate => candidate.Candidate.User.Id == actorUserId);
+    }
+
+    /// <summary>Resolves a requirement's stored scope against the SPEC 01 catalog (REQ-02).</summary>
+    public async Task<AuthorizationScopeSet> ResolveRequirementScopeAsync(
+        ApprovalCase approvalCase,
+        ApprovalRequirement requirement,
+        CancellationToken cancellationToken = default)
+    {
+        var descriptor = DecisionScopeDescriptor.Parse(requirement.DecisionScopeJson);
+        return await scopeResolver.ResolveAsync(descriptor, approvalCase.OrganizationId, cancellationToken);
     }
 
     /// <summary>
@@ -226,34 +263,107 @@ public sealed class ApprovalAssignmentEngine(
             ? (approvalCase.RequireRequirement(effect.Source.Id).DecisionScopeJson, effect.Source.Id)
             : ("[]", null);
 
-    private async Task<IReadOnlyList<EligibleCandidate>> ResolveCandidatesAsync(
+    /// <summary>
+    /// Effective candidate set (SPEC 04 REQ-02, DEC-01): delegates never receive authority, so a
+    /// covered delegation only removes the delegator from the direct result and the delegatee is
+    /// routed exclusively when it also appears by merit in that original result.
+    /// </summary>
+    private async Task<IReadOnlyList<EffectiveCandidate>> ResolveCandidatesAsync(
         ApprovalCase approvalCase,
         ApprovalRequirement requirement,
+        AuthorizationScopeSet requirementScope,
         DateTimeOffset evaluatedAt,
         CancellationToken cancellationToken)
     {
-        var descriptor = DecisionScopeDescriptor.Parse(requirement.DecisionScopeJson);
-        var scope = await scopeResolver.ResolveAsync(descriptor, approvalCase.OrganizationId, cancellationToken);
-        var candidates = await eligibility.ResolveAsync(
+        var direct = await eligibility.ResolveAsync(
             EligibilityRequest.Create(
-                requirement.Role, scope, requirement.Authority, evaluatedAt, requirement.ExcludedUserIds),
+                requirement.Role, requirementScope, requirement.Authority, evaluatedAt, requirement.ExcludedUserIds),
             cancellationToken);
-        if (candidates.Count == 0)
+        if (direct.Count == 0)
         {
-            return candidates;
+            return [];
         }
+
+        var applicable = (await ApplicableDelegationsAsync(
+                approvalCase.OrganizationId, requirement.Role, evaluatedAt, cancellationToken))
+            .Where(coverage => coverage.Scope.Covers(requirementScope))
+            .ToArray();
+        var directIds = direct.Select(candidate => candidate.User.Id).ToHashSet();
+        var removedDelegators = applicable.Select(coverage => coverage.DelegatorUserId).ToHashSet();
+        var effective = direct
+            .Where(candidate => !removedDelegators.Contains(candidate.User.Id))
+            .Where(candidate => directIds.Contains(candidate.User.Id))
+            .ToArray();
 
         // DEC-08 / REQ-05: an active, already effective local ADMIN or AUDITOR assignment excludes
         // the user from candidacy, assignment and new decisions regardless of scope or accumulated
         // business roles and grants. The source of truth is queried at every evaluation.
         var reserved = await ReservedRoleHoldersAsync(
             approvalCase.OrganizationId,
-            candidates.Select(candidate => candidate.User.Id).Distinct().ToArray(),
+            effective.Select(candidate => candidate.User.Id).Distinct().ToArray(),
             cancellationToken);
-        return reserved.Count == 0
-            ? candidates
-            : candidates.Where(candidate => !reserved.Contains(candidate.User.Id)).ToArray();
+        var routed = reserved.Count == 0
+            ? effective
+            : effective.Where(candidate => !reserved.Contains(candidate.User.Id)).ToArray();
+
+        return routed
+            .Select(candidate => new EffectiveCandidate(
+                candidate, DelegationOf(candidate, applicable), DelegationVersionOf(candidate, applicable)))
+            .ToArray();
     }
+
+    private async Task<IReadOnlyList<ApprovalDelegationCoverage>> ApplicableDelegationsAsync(
+        Guid organizationId,
+        SystemRole role,
+        DateTimeOffset evaluatedAt,
+        CancellationToken cancellationToken)
+    {
+        var key = (organizationId, (int)role, evaluatedAt);
+        if (delegationCache.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        var active = ApprovalDelegationCodes.StatusActive;
+        var records = await dbContext.ApprovalDelegations
+            .AsNoTracking()
+            .Where(record =>
+                record.OrganizationId == organizationId &&
+                record.Role == (int)role &&
+                record.Status == active &&
+                record.ValidFrom <= evaluatedAt &&
+                record.ValidTo > evaluatedAt)
+            .OrderBy(record => record.Id)
+            .ToArrayAsync(cancellationToken);
+
+        var coverages = new List<ApprovalDelegationCoverage>(records.Length);
+        foreach (var record in records)
+        {
+            var descriptor = DecisionScopeDescriptor.Parse(record.DecisionScopeJson);
+            var scope = await scopeResolver.ResolveAsync(descriptor, organizationId, cancellationToken);
+            coverages.Add(new ApprovalDelegationCoverage(
+                record.Id, record.Version, record.DelegatorUserId, record.DelegateeUserId, role, scope));
+        }
+
+        delegationCache[key] = coverages;
+        return coverages;
+    }
+
+    private static Guid? DelegationOf(
+        EligibleCandidate candidate,
+        IReadOnlyList<ApprovalDelegationCoverage> applicable) =>
+        applicable
+            .Where(coverage => coverage.DelegateeUserId == candidate.User.Id)
+            .Select(coverage => (Guid?)coverage.DelegationId)
+            .FirstOrDefault();
+
+    private static int? DelegationVersionOf(
+        EligibleCandidate candidate,
+        IReadOnlyList<ApprovalDelegationCoverage> applicable) =>
+        applicable
+            .Where(coverage => coverage.DelegateeUserId == candidate.User.Id)
+            .Select(coverage => (int?)coverage.DelegationVersion)
+            .FirstOrDefault();
 
     private async Task<IReadOnlySet<Guid>> ReservedRoleHoldersAsync(
         Guid organizationId,
@@ -280,14 +390,19 @@ public sealed class ApprovalAssignmentEngine(
     }
 
     /// <summary>Lowest current PENDING load, tie-broken by canonical ascending UUID (DEC-02).</summary>
-    private static EligibleCandidate? Select(
-        IReadOnlyList<EligibleCandidate> candidates,
+    private static EffectiveCandidate? Select(
+        IReadOnlyList<EffectiveCandidate> candidates,
         IReadOnlyDictionary<Guid, int> loads) =>
-        // pi-lens-ignore: lsp:CS0103
-        ApprovalRoutingPolicy.SelectLowestLoad(candidates, loads);
+        candidates
+            .GroupBy(candidate => candidate.Candidate.User.Id)
+            .Select(group => group.OrderBy(candidate => candidate.Candidate.RoleAssignment.Id).First())
+            .OrderBy(candidate => ApprovalRoutingPolicy.LoadOf(loads, candidate.Candidate.User.Id))
+            .ThenBy(
+                candidate => ApprovalRoutingPolicy.CanonicalUserId(candidate.Candidate.User.Id),
+                StringComparer.Ordinal)
+            .FirstOrDefault();
 
     private static int LoadOf(IReadOnlyDictionary<Guid, int> loads, Guid userId) =>
-        // pi-lens-ignore: lsp:CS0103
         ApprovalRoutingPolicy.LoadOf(loads, userId);
 
     private static IEnumerable<ApprovalRequirement> Ordered(IEnumerable<ApprovalRequirement> requirements) =>
@@ -313,7 +428,7 @@ public sealed class ApprovalAssignmentEngine(
         ApprovalCase approvalCase,
         ApprovalRequirement requirement,
         ApprovalTask task,
-        EligibleCandidate candidate,
+        EffectiveCandidate candidate,
         int load,
         ApprovalAssignmentCause cause,
         DateTimeOffset occurredAt) =>
@@ -323,11 +438,12 @@ public sealed class ApprovalAssignmentEngine(
             CaseId = approvalCase.Id,
             OrganizationId = approvalCase.OrganizationId,
             TaskId = task.Id,
-            AssigneeUserId = candidate.User.Id,
+            AssigneeUserId = candidate.Candidate.User.Id,
             AssignedAt = occurredAt,
             Load = load,
             Cause = cause.ToString(),
-            // pi-lens-ignore: lsp:CS0103
-            EligibilityEvidenceJson = ApprovalEligibilityEvidence.Canonicalize(candidate.Evidence)
+            EligibilityEvidenceJson = ApprovalEligibilityEvidence.Canonicalize(candidate.Candidate.Evidence),
+            DelegationId = candidate.DelegationId,
+            DelegationVersion = candidate.DelegationVersion
         };
 }

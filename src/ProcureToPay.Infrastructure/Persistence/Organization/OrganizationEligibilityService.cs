@@ -56,7 +56,11 @@ public sealed class OrganizationEligibilityService(ProcureToPayDbContext dbConte
         return grant;
     }
 
-    private static AuthorizationScopeSet ParseScope(string json)
+    /// <summary>
+    /// Parses the SPEC 01 authorization scope JSON persisted with an assignment or grant. Shared by
+    /// eligibility and by the delegation coverage checks (SPEC 04 REQ-01, REQ-02).
+    /// </summary>
+    public static AuthorizationScopeSet ParseScope(string json)
     {
         var entries = JsonSerializer.Deserialize<ScopeEntry[]>(json, ScopeJsonOptions)
             ?? throw new InvalidOperationException("Stored authorization scope is invalid.");

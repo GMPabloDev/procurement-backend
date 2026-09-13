@@ -50,17 +50,39 @@ public static partial class ApprovalFingerprints
             ("result", ApprovalCanonicalJson.String(satisfied ? "SATISFIED" : "FAILED")),
             ("signal_key", ApprovalCanonicalJson.String(signalKey))));
 
-    public static string AuthorityEvidenceDigest(string? eligibilityEvidenceJson)
+    public static string AuthorityEvidenceDigest(string? eligibilityEvidenceJson) =>
+        AuthorityEvidenceDigest(eligibilityEvidenceJson, delegationId: null, delegationVersion: null);
+
+    /// <summary>
+    /// <c>authority_evidence_digest</c> of SPEC 03: <c>delegation_id</c> and
+    /// <c>delegation_version</c> were reserved as nulls and become the real values when the
+    /// decision was routed under a delegation (SPEC 04 REQ-02, CA-02); the schema does not change.
+    /// </summary>
+    public static string AuthorityEvidenceDigest(
+        string? eligibilityEvidenceJson,
+        Guid? delegationId,
+        int? delegationVersion)
     {
         if (string.IsNullOrWhiteSpace(eligibilityEvidenceJson))
         {
             throw new DomainValidationException("Eligibility evidence is required.");
         }
 
+        if ((delegationId is null) != (delegationVersion is null))
+        {
+            throw new DomainValidationException(
+                "The delegation id and version of an authority evidence digest are both present or both null.");
+        }
+
+        if (delegationId is not null && (delegationId == Guid.Empty || delegationVersion < 1))
+        {
+            throw new DomainValidationException("A delegation evidence digest needs real identities.");
+        }
+
         return ApprovalCanonicalJson.Digest(ApprovalCanonicalJson.Object(
             ("canonicalization_version", ApprovalCanonicalJson.String(ApprovalCanonicalJson.CanonicalizationVersion)),
-            ("delegation_id", ApprovalCanonicalJson.Null()),
-            ("delegation_version", ApprovalCanonicalJson.Null()),
+            ("delegation_id", ApprovalCanonicalJson.StringOrNull(delegationId)),
+            ("delegation_version", ApprovalCanonicalJson.NumberOrNull(delegationVersion)),
             ("eligibility_evidence", ApprovalCanonicalJson.String(eligibilityEvidenceJson))));
     }
 
@@ -115,7 +137,9 @@ public sealed class ApprovalAssignment
         DateTimeOffset assignedAt,
         int load,
         string cause,
-        string eligibilityEvidenceJson)
+        string eligibilityEvidenceJson,
+        Guid? delegationId,
+        int? delegationVersion)
     {
         Id = id;
         CaseId = caseId;
@@ -126,6 +150,8 @@ public sealed class ApprovalAssignment
         Load = load;
         Cause = cause;
         EligibilityEvidenceJson = eligibilityEvidenceJson;
+        DelegationId = delegationId;
+        DelegationVersion = delegationVersion;
     }
 
     public Guid Id { get; }
@@ -138,6 +164,9 @@ public sealed class ApprovalAssignment
     public int Load { get; }
     public string Cause { get; }
     public string EligibilityEvidenceJson { get; }
+    /// <summary>Real delegation applied to the routing decision, if any (SPEC 04 REQ-02).</summary>
+    public Guid? DelegationId { get; }
+    public int? DelegationVersion { get; }
 
     public static ApprovalAssignment Create(
         Guid id,
@@ -148,7 +177,9 @@ public sealed class ApprovalAssignment
         DateTimeOffset assignedAt,
         int load,
         ApprovalAssignmentCause cause,
-        string eligibilityEvidenceJson)
+        string eligibilityEvidenceJson,
+        Guid? delegationId = null,
+        int? delegationVersion = null)
     {
         if (id == Guid.Empty || taskId == Guid.Empty || organizationId == Guid.Empty || assigneeUserId == Guid.Empty)
         {
@@ -165,9 +196,15 @@ public sealed class ApprovalAssignment
             throw new DomainValidationException("An assignment requires EligibilityEvidence.");
         }
 
+        if ((delegationId is null) != (delegationVersion is null) ||
+            (delegationId is not null && (delegationId == Guid.Empty || delegationVersion < 1)))
+        {
+            throw new DomainValidationException("An assignment delegation id and version are both present or both null.");
+        }
+
         return new ApprovalAssignment(
             id, caseId, taskId, organizationId, assigneeUserId, assignedAt, load, cause.ToString(),
-            eligibilityEvidenceJson);
+            eligibilityEvidenceJson, delegationId, delegationVersion);
     }
 
     public static ApprovalAssignment Restore(
@@ -180,10 +217,13 @@ public sealed class ApprovalAssignment
         DateTimeOffset? releasedAt,
         int load,
         string cause,
-        string eligibilityEvidenceJson)
+        string eligibilityEvidenceJson,
+        Guid? delegationId = null,
+        int? delegationVersion = null)
     {
         var assignment = new ApprovalAssignment(
-            id, caseId, taskId, organizationId, assigneeUserId, assignedAt, load, cause, eligibilityEvidenceJson)
+            id, caseId, taskId, organizationId, assigneeUserId, assignedAt, load, cause, eligibilityEvidenceJson,
+            delegationId, delegationVersion)
         {
             ReleasedAt = releasedAt
         };
@@ -203,14 +243,19 @@ public sealed class ApprovalDecision
         Guid? taskId,
         ApprovalDecisionAction action,
         ApprovalDecisionOrigin origin,
-        Guid actorUserId,
+        ApprovalDecisionActorType actorType,
+        Guid? actorUserId,
         string reason,
         DateTimeOffset decidedAt,
-        string decisionKey,
-        string fingerprint,
+        string? decisionKey,
+        string? fingerprint,
         string decisionDigest,
         string authorityEvidenceDigest,
         string eligibilityEvidenceJson,
+        Guid evidenceId,
+        int evidenceVersion,
+        Guid? sourceDecisionId,
+        Guid? rootHumanDecisionId,
         IEnumerable<ApprovalTarget> targets,
         string correlationReference)
     {
@@ -221,6 +266,7 @@ public sealed class ApprovalDecision
         TaskId = taskId;
         Action = action;
         Origin = origin;
+        ActorType = actorType;
         ActorUserId = actorUserId;
         Reason = reason;
         DecidedAt = decidedAt.ToUniversalTime();
@@ -229,6 +275,10 @@ public sealed class ApprovalDecision
         DecisionDigest = decisionDigest;
         AuthorityEvidenceDigest = authorityEvidenceDigest;
         EligibilityEvidenceJson = eligibilityEvidenceJson;
+        EvidenceId = evidenceId;
+        EvidenceVersion = evidenceVersion;
+        SourceDecisionId = sourceDecisionId;
+        RootHumanDecisionId = rootHumanDecisionId;
         Targets = targets.ToImmutableArray();
         CorrelationReference = correlationReference;
     }
@@ -240,26 +290,33 @@ public sealed class ApprovalDecision
     public Guid? TaskId { get; }
     public ApprovalDecisionAction Action { get; }
     public ApprovalDecisionOrigin Origin { get; }
-    public Guid ActorUserId { get; }
+    public ApprovalDecisionActorType ActorType { get; }
+    /// <summary>Null for a derive SYSTEM decision; never an empty identity (REQ-05, REQ-08).</summary>
+    public Guid? ActorUserId { get; }
     public string Reason { get; }
     public DateTimeOffset DecidedAt { get; }
-    public string DecisionKey { get; }
-    public string Fingerprint { get; }
+    /// <summary>Null for a carry-forward decision: it is not a command a caller can replay.</summary>
+    public string? DecisionKey { get; }
+    public string? Fingerprint { get; }
     public string DecisionDigest { get; }
     public string AuthorityEvidenceDigest { get; }
     public string EligibilityEvidenceJson { get; }
+    public Guid EvidenceId { get; }
+    public int EvidenceVersion { get; }
+    public Guid? SourceDecisionId { get; }
+    public Guid? RootHumanDecisionId { get; }
     public IReadOnlyList<ApprovalTarget> Targets { get; }
     public string CorrelationReference { get; }
     public int Version { get; private set; } = 1;
 
+    /// <summary>Human decision of the current assignee (SPEC 03 REQ-06).</summary>
     public static ApprovalDecision Create(
         Guid id,
         Guid caseId,
         Guid organizationId,
         Guid requirementId,
-        Guid? taskId,
+        Guid taskId,
         ApprovalDecisionAction action,
-        ApprovalDecisionOrigin origin,
         Guid actorUserId,
         string reason,
         DateTimeOffset decidedAt,
@@ -268,32 +325,104 @@ public sealed class ApprovalDecision
         string decisionDigest,
         string authorityEvidenceDigest,
         string eligibilityEvidenceJson,
+        Guid evidenceId,
+        int evidenceVersion,
         IEnumerable<ApprovalTarget> targets,
         string correlationReference)
     {
-        if (id == Guid.Empty || organizationId == Guid.Empty || requirementId == Guid.Empty ||
-            actorUserId == Guid.Empty)
+        RequireIdentities(id, organizationId, requirementId);
+        if (taskId == Guid.Empty)
         {
-            throw new DomainValidationException("A decision requires complete identities.");
+            throw new DomainValidationException("A human decision requires its task.");
         }
 
-        var materialized = (targets ?? throw new DomainValidationException("A decision needs its targets."))
-            .ToImmutableArray();
-        if (materialized.Length == 0)
+        if (actorUserId == Guid.Empty)
         {
-            throw new DomainValidationException("A decision needs at least one target.");
+            throw new DomainValidationException("A human decision requires its acting user.");
         }
 
+        RequireEvidence(evidenceId, evidenceVersion, eligibilityEvidenceJson);
         return new ApprovalDecision(
-            id, caseId, organizationId, requirementId, taskId, action, origin, actorUserId,
+            id,
+            caseId,
+            organizationId,
+            requirementId,
+            taskId,
+            action,
+            ApprovalDecisionOrigin.Human,
+            ApprovalDecisionActorType.Human,
+            actorUserId,
             ApprovalLimits.RequireReason(reason, "Decision reason"),
             decidedAt,
             ApprovalLimits.RequireKey(decisionKey, "decision_key"),
             ApprovalLimits.RequireSha256(fingerprint, "decision fingerprint"),
             ApprovalLimits.RequireSha256(decisionDigest, "decision digest"),
             ApprovalLimits.RequireSha256(authorityEvidenceDigest, "authority evidence digest"),
-            eligibilityEvidenceJson ?? throw new DomainValidationException("A decision requires EligibilityEvidence."),
-            materialized,
+            eligibilityEvidenceJson,
+            evidenceId,
+            evidenceVersion,
+            sourceDecisionId: null,
+            rootHumanDecisionId: id,
+            RequireTargets(targets),
+            correlationReference);
+    }
+
+    /// <summary>
+    /// Derived decision created by carry-forward (SPEC 04 REQ-05): SYSTEM/APPROVAL_WORKFLOW,
+    /// no task, no decision key and an immutable cause towards the human root decision.
+    /// </summary>
+    public static ApprovalDecision CreateCarryForward(
+        Guid id,
+        Guid caseId,
+        Guid organizationId,
+        Guid requirementId,
+        string reason,
+        DateTimeOffset decidedAt,
+        string decisionDigest,
+        string authorityEvidenceDigest,
+        string eligibilityEvidenceJson,
+        Guid evidenceId,
+        int evidenceVersion,
+        Guid sourceDecisionId,
+        Guid rootHumanDecisionId,
+        IEnumerable<ApprovalTarget> targets,
+        string correlationReference)
+    {
+        RequireIdentities(id, organizationId, requirementId);
+        if (sourceDecisionId == Guid.Empty || rootHumanDecisionId == Guid.Empty)
+        {
+            throw new DomainValidationException(
+                "A carry-forward decision requires its source and root human decisions.");
+        }
+
+        if (sourceDecisionId == id || rootHumanDecisionId == id)
+        {
+            throw new DomainValidationException("A carry-forward decision cannot derive from itself.");
+        }
+
+        RequireEvidence(evidenceId, evidenceVersion, eligibilityEvidenceJson);
+        return new ApprovalDecision(
+            id,
+            caseId,
+            organizationId,
+            requirementId,
+            taskId: null,
+            ApprovalDecisionAction.Approve,
+            ApprovalDecisionOrigin.CarryForward,
+            ApprovalDecisionActorType.System,
+            actorUserId: null,
+            ApprovalLimits.RequireReason(reason, "Decision reason"),
+            decidedAt,
+            decisionKey: null,
+            fingerprint: null,
+            ApprovalLimits.RequireSha256(decisionDigest, "decision digest"),
+            ApprovalLimits.RequireSha256(authorityEvidenceDigest, "authority evidence digest"),
+            eligibilityEvidenceJson,
+            evidenceId,
+            evidenceVersion,
+            sourceDecisionId,
+            rootHumanDecisionId,
+            RequireTargets(targets),
             correlationReference);
     }
 
@@ -305,31 +434,111 @@ public sealed class ApprovalDecision
         Guid? taskId,
         ApprovalDecisionAction action,
         ApprovalDecisionOrigin origin,
-        Guid actorUserId,
+        ApprovalDecisionActorType actorType,
+        Guid? actorUserId,
         string reason,
         DateTimeOffset decidedAt,
-        string decisionKey,
-        string fingerprint,
+        string? decisionKey,
+        string? fingerprint,
         string decisionDigest,
         string authorityEvidenceDigest,
         string eligibilityEvidenceJson,
+        Guid evidenceId,
+        int evidenceVersion,
+        Guid? sourceDecisionId,
+        Guid? rootHumanDecisionId,
         IEnumerable<ApprovalTarget> targets,
         string correlationReference,
         int version)
     {
-        var decision = Create(
-            id, caseId, organizationId, requirementId, taskId, action, origin, actorUserId, reason, decidedAt,
-            decisionKey, fingerprint, decisionDigest, authorityEvidenceDigest, eligibilityEvidenceJson, targets,
-            correlationReference);
-        decision.Version = version;
+        RequireIdentities(id, organizationId, requirementId);
+        RequireEvidence(evidenceId, evidenceVersion, eligibilityEvidenceJson);
+        var decision = new ApprovalDecision(
+            id,
+            caseId,
+            organizationId,
+            requirementId,
+            taskId,
+            action,
+            origin,
+            actorType,
+            actorUserId,
+            ApprovalLimits.RequireReason(reason, "Decision reason"),
+            decidedAt,
+            decisionKey,
+            fingerprint,
+            ApprovalLimits.RequireSha256(decisionDigest, "decision digest"),
+            ApprovalLimits.RequireSha256(authorityEvidenceDigest, "authority evidence digest"),
+            eligibilityEvidenceJson,
+            evidenceId,
+            evidenceVersion,
+            sourceDecisionId,
+            rootHumanDecisionId,
+            RequireTargets(targets),
+            correlationReference)
+        {
+            Version = version
+        };
         return decision;
+    }
+
+    private static void RequireIdentities(Guid id, Guid organizationId, Guid requirementId)
+    {
+        if (id == Guid.Empty || organizationId == Guid.Empty || requirementId == Guid.Empty)
+        {
+            throw new DomainValidationException("A decision requires complete identities.");
+        }
+    }
+
+    private static void RequireEvidence(Guid evidenceId, int evidenceVersion, string eligibilityEvidenceJson)
+    {
+        if (evidenceId == Guid.Empty)
+        {
+            throw new DomainValidationException("A decision requires its authority evidence identity.");
+        }
+
+        if (evidenceVersion < 1)
+        {
+            throw new DomainValidationException("A decision requires a positive evidence version.");
+        }
+
+        if (string.IsNullOrWhiteSpace(eligibilityEvidenceJson))
+        {
+            throw new DomainValidationException("A decision requires EligibilityEvidence.");
+        }
+    }
+
+    private static ApprovalTarget[] RequireTargets(IEnumerable<ApprovalTarget>? targets)
+    {
+        var materialized = (targets ?? throw new DomainValidationException("A decision needs its targets."))
+            .ToArray();
+        if (materialized.Length == 0)
+        {
+            throw new DomainValidationException("A decision needs at least one target.");
+        }
+
+        return materialized;
     }
 }
 
 public static class ApprovalOutboxPolicy
 {
-    /// <summary>Only <c>approval-result/v2</c> is publishable by this revision (REQ-08).</summary>
+    /// <summary>Contract version published by decisions of a human assignee (SPEC 03 REQ-08).</summary>
     public const string ContractVersion = "approval-result/v2";
+
+    /// <summary>
+    /// Every contract version this revision may publish: the v2 result, the derived
+    /// <c>approval-result/v3</c> and the two SPEC 04 lifecycle/revocation events (REQ-04, REQ-05,
+    /// REQ-06). An outbox row with any other version is a legacy row the preflight refuses.
+    /// </summary>
+    public static readonly IReadOnlySet<string> KnownContractVersions = new HashSet<string>(StringComparer.Ordinal)
+    {
+        ContractVersion,
+        ApprovalEvolutionCodes.ResultContractVersionV3,
+        ApprovalEvolutionCodes.LifecycleContractVersion,
+        ApprovalEvolutionCodes.EvidenceRevokedContractVersion
+    };
+
     public const int MaxAttempts = 10;
 
     public static TimeSpan DelayForAttempt(int attempt) => attempt switch
@@ -343,7 +552,8 @@ public static class ApprovalOutboxPolicy
 
     public static void ValidateResultCode(string result)
     {
-        if (result is not ("APPROVED" or "REJECTED" or "CHANGES_REQUESTED" or "CANCELLED" or "SATISFIED" or "FAILED"))
+        if (result is not ("APPROVED" or "REJECTED" or "CHANGES_REQUESTED" or "CANCELLED" or "SATISFIED" or "FAILED"
+            or "SUPERSEDED" or "REVOKED"))
         {
             throw new DomainValidationException("The outbox result code is invalid.");
         }
@@ -351,8 +561,9 @@ public static class ApprovalOutboxPolicy
 
     /// <summary>
     /// <c>result_source.type</c> and <c>result</c> must form a valid combination (REQ-08):
-    /// requirements admit APPROVED/REJECTED/CHANGES_REQUESTED/CANCELLED and prerequisites admit
-    /// SATISFIED/FAILED/CANCELLED.
+    /// requirements admit APPROVED/REJECTED/CHANGES_REQUESTED/CANCELLED, prerequisites admit
+    /// SATISFIED/FAILED/CANCELLED, a superseded case admits SUPERSEDED and a revoked evidence
+    /// admits REVOKED (SPEC 04 REQ-04, REQ-06).
     /// </summary>
     public static void ValidateResultCombination(ApprovalEntitySourceType type, string result)
     {
@@ -362,6 +573,8 @@ public static class ApprovalOutboxPolicy
             ApprovalEntitySourceType.ApprovalRequirement =>
                 result is "APPROVED" or "REJECTED" or "CHANGES_REQUESTED" or "CANCELLED",
             ApprovalEntitySourceType.ExternalPrerequisite => result is "SATISFIED" or "FAILED" or "CANCELLED",
+            ApprovalEntitySourceType.ApprovalCase => result is "SUPERSEDED",
+            ApprovalEntitySourceType.ApprovalEvidence => result is "REVOKED",
             _ => false
         };
         if (!valid)

@@ -7,7 +7,9 @@ public enum ApprovalEntitySourceType
 {
     ApprovalRequirement = 1,
     ExternalPrerequisite = 2,
-    ApprovalCase = 3
+    ApprovalCase = 3,
+    /// <summary>Internal source of an evidence revocation event (SPEC 04 REQ-06).</summary>
+    ApprovalEvidence = 4
 }
 
 /// <summary>
@@ -43,6 +45,9 @@ public sealed record ApprovalEntitySource
     public static ApprovalEntitySource Case(Guid caseId) =>
         new(ApprovalEntitySourceType.ApprovalCase, RequireId(caseId), key: null);
 
+    public static ApprovalEntitySource Evidence(Guid evidenceId) =>
+        new(ApprovalEntitySourceType.ApprovalEvidence, RequireId(evidenceId), key: null);
+
     public static ApprovalEntitySource Restore(ApprovalEntitySourceType type, Guid id, string? key)
     {
         _ = RequireId(id);
@@ -53,6 +58,7 @@ public sealed record ApprovalEntitySource
                     ? throw new DomainValidationException("A result source needs its stable key.")
                     : new ApprovalEntitySource(type, id, ApprovalLimits.RequireKey(key, "entity source key")),
             ApprovalEntitySourceType.ApprovalCase when key is null => new ApprovalEntitySource(type, id, null),
+            ApprovalEntitySourceType.ApprovalEvidence when key is null => new ApprovalEntitySource(type, id, null),
             _ => throw new DomainValidationException("The entity source type is invalid.")
         };
     }
@@ -63,6 +69,7 @@ public sealed record ApprovalEntitySource
         "APPROVAL_REQUIREMENT" => ApprovalEntitySourceType.ApprovalRequirement,
         "EXTERNAL_PREREQUISITE" => ApprovalEntitySourceType.ExternalPrerequisite,
         "APPROVAL_CASE" => ApprovalEntitySourceType.ApprovalCase,
+        "APPROVAL_EVIDENCE" => ApprovalEntitySourceType.ApprovalEvidence,
         _ => throw new DomainValidationException("The stored entity source code is invalid.")
     };
 
@@ -72,6 +79,7 @@ public sealed record ApprovalEntitySource
         ApprovalEntitySourceType.ApprovalRequirement => "APPROVAL_REQUIREMENT",
         ApprovalEntitySourceType.ExternalPrerequisite => "EXTERNAL_PREREQUISITE",
         ApprovalEntitySourceType.ApprovalCase => "APPROVAL_CASE",
+        ApprovalEntitySourceType.ApprovalEvidence => "APPROVAL_EVIDENCE",
         _ => throw new DomainValidationException("The entity source type is invalid.")
     };
 
@@ -80,6 +88,7 @@ public sealed record ApprovalEntitySource
         ApprovalEntitySourceType.ApprovalRequirement => "APPROVAL_REQUIREMENT",
         ApprovalEntitySourceType.ExternalPrerequisite => "EXTERNAL_PREREQUISITE",
         ApprovalEntitySourceType.ApprovalCase => "APPROVAL_CASE",
+        ApprovalEntitySourceType.ApprovalEvidence => "APPROVAL_EVIDENCE",
         _ => throw new DomainValidationException("The entity source type is invalid.")
     };
 
@@ -112,7 +121,9 @@ public static class ApprovalSystemActors
 public enum ApprovalAuditStream
 {
     Approval = 1,
-    Organization = 2
+    Organization = 2,
+    /// <summary>Cause of a delegation transition run (SPEC 04 REQ-03).</summary>
+    Delegation = 3
 }
 
 public sealed record ApprovalCausalLink
@@ -129,7 +140,16 @@ public sealed record ApprovalCausalLink
     public static ApprovalCausalLink Approval(Guid auditId) => new(ApprovalAuditStream.Approval, Require(auditId));
     public static ApprovalCausalLink Organization(Guid auditId) => new(ApprovalAuditStream.Organization, Require(auditId));
 
-    public string StreamCode => Stream == ApprovalAuditStream.Approval ? "APPROVAL" : "ORGANIZATION";
+    /// <summary>Cause of a delegation transition run: the delegation row that scheduled it.</summary>
+    public static ApprovalCausalLink Delegation(Guid auditId) => new(ApprovalAuditStream.Delegation, Require(auditId));
+
+    public string StreamCode => Stream switch
+    {
+        ApprovalAuditStream.Approval => "APPROVAL",
+        ApprovalAuditStream.Organization => "ORGANIZATION",
+        ApprovalAuditStream.Delegation => "DELEGATION",
+        _ => throw new DomainValidationException("The audit stream is invalid.")
+    };
 
     public CanonicalValue ToCanonicalValue() => ApprovalCanonicalJson.Object(
         ("audit_id", ApprovalCanonicalJson.String(AuditId)),

@@ -40,6 +40,39 @@ public sealed record ApprovalDecisionBody(
 
 public sealed record ApprovalSubmissionResponse(Guid CaseId, string Status, int Version, bool Replayed);
 
+public sealed record ApprovalTargetBody(string Type, Guid Id, int Version, string MaterialSnapshotDigest);
+
+public sealed record ApprovalDelegationCreateBody(
+    Guid DelegatorUserId,
+    Guid DelegateeUserId,
+    string Role,
+    string ScopeJson,
+    DateTimeOffset ValidFrom,
+    DateTimeOffset ValidTo,
+    string Reason,
+    string DelegationCommandKey);
+
+public sealed record ApprovalDelegationRevokeBody(int ExpectedVersion, string Reason, string DelegationCommandKey);
+
+public sealed record ApprovalSupersessionMappingBody(
+    ApprovalTargetBody Previous,
+    ApprovalTargetBody Replacement,
+    string MaterialitySchemaVersion,
+    string MaterialityDigest);
+
+public sealed record ApprovalSupersessionBody(
+    int ExpectedPreviousCaseVersion,
+    string SupersessionKey,
+    string SubmissionKey,
+    string? ContractVersion,
+    IReadOnlyList<ApprovalSupersessionMappingBody> TargetMapping);
+
+public sealed record ApprovalEvidenceRevocationBody(
+    int ExpectedEvidenceVersion,
+    string RevocationKey,
+    string Reason,
+    string? ReasonCode);
+
 public sealed record ApprovalWorkloadResponse(
     Guid CaseId,
     string Status,
@@ -64,6 +97,10 @@ public sealed class ApprovalController(
     ApprovalOutboxAdministrationService outboxAdministrationService,
     // pi-lens-ignore: lsp:CS0246
     ApprovalInboxQueryService inboxQueryService,
+    ApprovalDelegationService delegationService,
+    ApprovalSupersessionService supersessionService,
+    ApprovalEvidenceRevocationService evidenceRevocationService,
+    ApprovalHistoryQueryService historyQueryService,
     ApprovalInstanceIdentity instanceIdentity,
     ProcureToPayDbContext dbContext,
     CurrentUserProvisioningService provisioningService) : ControllerBase
@@ -200,6 +237,241 @@ public sealed class ApprovalController(
                 request.DecisionKey,
                 request.ExpectedTaskVersion,
                 profile.Id,
+                Correlation()),
+            DateTimeOffset.UtcNow,
+            cancellationToken));
+    }
+
+    /// <summary>
+    /// The delegator creates a bounded delegation; ADMIN organization scope may act as operational
+    /// relief with a reason (SPEC 04 REQ-01, CA-01).
+    /// </summary>
+    [HttpPost("delegations")]
+    // pi-lens-ignore: lsp:CS0246
+    public async Task<ActionResult<ApprovalDelegationOutcome>> CreateDelegation(
+        ApprovalDelegationCreateBody request,
+        CancellationToken cancellationToken)
+    {
+        var profile = await RequireActiveProfileAsync(cancellationToken);
+        var actorType = ApprovalDelegationActorType.Delegator;
+        if (profile.Id != request.DelegatorUserId)
+        {
+            await RequireAdministrativeAsync(requireAdmin: true, cancellationToken);
+            actorType = ApprovalDelegationActorType.Admin;
+        }
+
+        if (!Enum.TryParse<SystemRole>(request.Role, ignoreCase: true, out var role))
+        {
+            throw new DomainValidationException("The delegated role is invalid.");
+        }
+
+        var scope = DecisionScopeDescriptor.Parse(request.ScopeJson, profile.OrganizationId);
+        return Ok(await delegationService.CreateAsync(
+            // pi-lens-ignore: lsp:CS0246
+            new ApprovalDelegationCreateCommand(
+                actorType,
+                profile.Id,
+                profile.OrganizationId,
+                request.DelegatorUserId,
+                request.DelegateeUserId,
+                role,
+                scope,
+                request.ValidFrom,
+                request.ValidTo,
+                request.Reason,
+                request.DelegationCommandKey,
+                Correlation()),
+            DateTimeOffset.UtcNow,
+            cancellationToken));
+    }
+
+    /// <summary>The delegator or ADMIN revokes a scheduled or active delegation (SPEC 04 REQ-01).</summary>
+    [HttpPost("delegations/{delegationId:guid}/revoke")]
+    // pi-lens-ignore: lsp:CS0246
+    public async Task<ActionResult<ApprovalDelegationOutcome>> RevokeDelegation(
+        Guid delegationId,
+        ApprovalDelegationRevokeBody request,
+        CancellationToken cancellationToken)
+    {
+        var profile = await RequireActiveProfileAsync(cancellationToken);
+        var record = await dbContext.ApprovalDelegations
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                candidate => candidate.Id == delegationId && candidate.OrganizationId == profile.OrganizationId,
+                cancellationToken)
+            ?? throw new DomainNotFoundException("The approval delegation is not visible.");
+        var actorType = record.DelegatorUserId == profile.Id
+            ? ApprovalDelegationActorType.Delegator
+            : ApprovalDelegationActorType.Admin;
+        if (actorType == ApprovalDelegationActorType.Admin)
+        {
+            await RequireAdministrativeAsync(requireAdmin: true, cancellationToken);
+        }
+
+        return Ok(await delegationService.RevokeAsync(
+            // pi-lens-ignore: lsp:CS0246
+            new ApprovalDelegationRevokeCommand(
+                actorType,
+                profile.Id,
+                profile.OrganizationId,
+                delegationId,
+                request.ExpectedVersion,
+                request.Reason,
+                request.DelegationCommandKey,
+                Correlation()),
+            DateTimeOffset.UtcNow,
+            cancellationToken));
+    }
+
+    /// <summary>The approver reads delegations where they are delegator or delegatee (SPEC 04 REQ-07).</summary>
+    [HttpGet("delegations")]
+    // pi-lens-ignore: lsp:CS0246
+    public async Task<ActionResult<IReadOnlyList<ApprovalDelegationView>>> GetMyDelegations(
+        CancellationToken cancellationToken)
+    {
+        var profile = await RequireActiveProfileAsync(cancellationToken);
+        return Ok(await historyQueryService.GetMyDelegationsAsync(
+            profile.OrganizationId, profile.Id, cancellationToken));
+    }
+
+    /// <summary>Organizational AUDITOR read of every delegation (SPEC 04 REQ-07).</summary>
+    [HttpGet("delegations/organization")]
+    public async Task<ActionResult<IReadOnlyList<ApprovalDelegationView>>> GetOrganizationDelegations(
+        CancellationToken cancellationToken)
+    {
+        var profile = await RequireAuditorAsync(cancellationToken);
+        return Ok(await historyQueryService.GetOrganizationDelegationsAsync(
+            profile.OrganizationId, cancellationToken));
+    }
+
+    /// <summary>
+    /// The owning workload opens a new immutable version that supersedes the previous case
+    /// (SPEC 04 REQ-04). Only a bijective, complete mapping is accepted.
+    /// </summary>
+    [HttpPost("cases/{caseId:guid}/supersessions")]
+    // pi-lens-ignore: lsp:CS0246
+    public async Task<ActionResult<ApprovalSupersessionOutcome>> Supersede(
+        Guid caseId,
+        ApprovalSupersessionBody request,
+        CancellationToken cancellationToken)
+    {
+        var workload = ResolveWorkload();
+        var mapping = (request.TargetMapping ?? [])
+            .Select(entry => ApprovalSupersessionMapping.Create(
+                new ApprovalTarget(
+                    entry.Previous.Type,
+                    entry.Previous.Id,
+                    entry.Previous.Version,
+                    entry.Previous.MaterialSnapshotDigest),
+                new ApprovalTarget(
+                    entry.Replacement.Type,
+                    entry.Replacement.Id,
+                    entry.Replacement.Version,
+                    entry.Replacement.MaterialSnapshotDigest),
+                entry.MaterialitySchemaVersion,
+                entry.MaterialityDigest))
+            .ToArray();
+        return Ok(await supersessionService.SupersedeAsync(
+            // pi-lens-ignore: lsp:CS0246
+            new ApprovalSupersessionCommand(
+                workload,
+                caseId,
+                request.ExpectedPreviousCaseVersion,
+                request.SupersessionKey,
+                request.SubmissionKey,
+                request.ContractVersion,
+                mapping,
+                Correlation()),
+            DateTimeOffset.UtcNow,
+            cancellationToken));
+    }
+
+    /// <summary>
+    /// Version chain of a case for its originator, its owning workload or an organizational
+    /// AUDITOR; anything outside the visible scope is a 404 (SPEC 04 REQ-07).
+    /// </summary>
+    [HttpGet("cases/{caseId:guid}/history")]
+    // pi-lens-ignore: lsp:CS0246
+    public async Task<ActionResult<ApprovalCaseChainView>> GetCaseHistory(
+        Guid caseId,
+        CancellationToken cancellationToken)
+    {
+        var workload = TryResolveWorkload();
+        if (workload is not null)
+        {
+            return Ok(await historyQueryService.GetCaseChainForWorkloadAsync(
+                workload, caseId, cancellationToken));
+        }
+
+        var profile = await RequireActiveProfileAsync(cancellationToken);
+        var visible = await dbContext.ApprovalCases
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                record => record.Id == caseId && record.OrganizationId == profile.OrganizationId,
+                cancellationToken)
+            ?? throw new DomainNotFoundException("The approval case is not visible.");
+        var isAuditor = await dbContext.RoleAssignments.AnyAsync(
+            assignment => assignment.UserProfileId == profile.Id &&
+                          assignment.Status == (int)AssignmentStatus.Active &&
+                          assignment.ScopeJson == GlobalScopeJson &&
+                          assignment.Role == (int)SystemRole.Auditor,
+            cancellationToken);
+        if (!isAuditor && visible.OriginatorId != profile.Id)
+        {
+            throw new DomainNotFoundException("The approval case is not visible.");
+        }
+
+        return Ok(await historyQueryService.GetCaseChainAsync(
+            profile.OrganizationId, caseId, cancellationToken));
+    }
+
+    /// <summary>
+    /// The owning workload invalidates its binding; ADMIN only as incident containment with a
+    /// reason (SPEC 04 REQ-06, CA-06).
+    /// </summary>
+    [HttpPost("evidence/{evidenceId:guid}/revocations")]
+    // pi-lens-ignore: lsp:CS0246
+    public async Task<ActionResult<ApprovalEvidenceRevocationOutcome>> RevokeEvidence(
+        Guid evidenceId,
+        ApprovalEvidenceRevocationBody request,
+        CancellationToken cancellationToken)
+    {
+        var workload = TryResolveWorkload();
+        if (workload is not null)
+        {
+            return Ok(await evidenceRevocationService.RevokeAsync(
+                // pi-lens-ignore: lsp:CS0246
+                new ApprovalEvidenceRevocationCommand(
+                    EvidenceRevocationActorType.Workload,
+                    Guid.Empty,
+                    workload,
+                    Guid.Empty,
+                    evidenceId,
+                    request.ExpectedEvidenceVersion,
+                    request.RevocationKey,
+                    EvidenceRevocationReasonCode.OwnerInvalidation,
+                    request.Reason,
+                    Correlation()),
+                DateTimeOffset.UtcNow,
+                cancellationToken));
+        }
+
+        var profile = await RequireAdministrativeAsync(requireAdmin: true, cancellationToken);
+        var reasonCode = request.ReasonCode is null
+            ? EvidenceRevocationReasonCode.IncidentContainment
+            : ApprovalEvolutionCodes.ParseReasonCode(request.ReasonCode);
+        return Ok(await evidenceRevocationService.RevokeAsync(
+            // pi-lens-ignore: lsp:CS0246
+            new ApprovalEvidenceRevocationCommand(
+                EvidenceRevocationActorType.Admin,
+                profile.Id,
+                null,
+                profile.OrganizationId,
+                evidenceId,
+                request.ExpectedEvidenceVersion,
+                request.RevocationKey,
+                reasonCode,
+                request.Reason,
                 Correlation()),
             DateTimeOffset.UtcNow,
             cancellationToken));

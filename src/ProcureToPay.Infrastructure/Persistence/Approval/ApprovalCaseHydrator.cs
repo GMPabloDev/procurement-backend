@@ -122,6 +122,50 @@ public static class ApprovalCaseHydrator
 public static class ApprovalEvidence
 {
     /// <summary>
+    /// Root audit of a delegation transition run (SPEC 04 REQ-03): SYSTEM/APPROVAL_WORKFLOW with the
+    /// immutable DELEGATION causal link to the delegation row, its version and the scheduled
+    /// instant. It has no automatic effect key because it causes the run, it is not an effect of it.
+    /// </summary>
+    public static ApprovalAuditEntryRecord DelegationRoot(
+        Guid organizationId,
+        Guid delegationId,
+        Guid rootAuditId,
+        string action,
+        int delegationVersion,
+        DateTimeOffset validFrom,
+        DateTimeOffset validTo,
+        DateTimeOffset occurredAt,
+        string correlationReference) =>
+        new()
+        {
+            Id = rootAuditId,
+            OrganizationId = organizationId,
+            CaseId = null,
+            RequirementId = null,
+            ActorType = "SYSTEM",
+            ActorUserId = null,
+            ActorWorkloadIssuer = null,
+            ActorWorkloadClientId = null,
+            ActorSystemId = ApprovalSystemActors.ApprovalWorkflow,
+            CausedByAuditStream = "DELEGATION",
+            CausedByAuditId = delegationId,
+            AutomaticEffectKey = null,
+            OccurredAt = occurredAt.ToUniversalTime(),
+            Action = action,
+            TargetType = "DELEGATION",
+            TargetId = delegationId,
+            ScopeJson = "[]",
+            Reason = "Scheduled delegation transition confirmed.",
+            BeforeJson = null,
+            AfterJson = ApprovalCanonicalJson.Serialize(ApprovalCanonicalJson.Object(
+                ("delegation_id", ApprovalCanonicalJson.String(delegationId)),
+                ("delegation_version", ApprovalCanonicalJson.Number(delegationVersion)),
+                ("valid_from", ApprovalCanonicalJson.String(validFrom)),
+                ("valid_to", ApprovalCanonicalJson.String(validTo)))),
+            CorrelationReference = correlationReference
+        };
+
+    /// <summary>
     /// Root audit of a direct command: USER or WORKLOAD actor, no cause and no effect key (REQ-08).
     /// </summary>
     public static ApprovalAuditEntryRecord Root(
@@ -368,6 +412,158 @@ public static class ApprovalEvidence
                 result,
                 decisionId,
                 decisionDigest,
+                occurredAt),
+            State = (int)ApprovalOutboxState.Pending,
+            Attempts = 0,
+            NextAttemptAt = occurredAt.ToUniversalTime(),
+            CreatedAt = occurredAt.ToUniversalTime(),
+            CorrelationReference = correlationReference,
+            Version = 1
+        };
+    }
+
+    /// <summary>
+    /// <c>approval-result/v3</c> payload for a derived approval (SPEC 04 REQ-05): the same schema
+    /// as v2 with the derived <c>carry_forward_decision_digest</c> as <c>decision_digest</c>.
+    /// </summary>
+    public static ApprovalOutboxEventRecord CarryForwardOutbox(
+        ApprovalCase approvalCase,
+        ApprovalEntitySource resultSource,
+        ApprovalTarget target,
+        Guid decisionId,
+        string carryForwardDecisionDigest,
+        DateTimeOffset occurredAt,
+        string correlationReference)
+    {
+        ArgumentNullException.ThrowIfNull(resultSource);
+        var eventId = Guid.NewGuid();
+        return new ApprovalOutboxEventRecord
+        {
+            Id = eventId,
+            CaseId = approvalCase.Id,
+            OrganizationId = approvalCase.OrganizationId,
+            ResultSourceType = resultSource.Code,
+            ResultSourceId = resultSource.Id,
+            ResultSourceKey = resultSource.Key,
+            SourceCommandId = decisionId,
+            TargetType = target.Type,
+            TargetId = target.Id,
+            TargetVersion = target.Version,
+            MaterialSnapshotDigest = target.MaterialSnapshotDigest,
+            Result = "APPROVED",
+            ContractVersion = ApprovalEvolutionCodes.ResultContractVersionV3,
+            PayloadJson = ApprovalOutboxEvent.BuildPayload(
+                eventId,
+                ApprovalEvolutionCodes.ResultContractVersionV3,
+                approvalCase,
+                resultSource,
+                target,
+                "APPROVED",
+                decisionId,
+                carryForwardDecisionDigest,
+                occurredAt),
+            State = (int)ApprovalOutboxState.Pending,
+            Attempts = 0,
+            NextAttemptAt = occurredAt.ToUniversalTime(),
+            CreatedAt = occurredAt.ToUniversalTime(),
+            CorrelationReference = correlationReference,
+            Version = 1
+        };
+    }
+
+    /// <summary>
+    /// <c>approval-case-lifecycle/v1</c> event of one superseded target (SPEC 04 REQ-04): it never
+    /// widens the closed combinations of <c>approval-result/v2</c>.
+    /// </summary>
+    public static ApprovalOutboxEventRecord Lifecycle(
+        ApprovalCase newCase,
+        Guid previousCaseId,
+        ApprovalTarget target,
+        DateTimeOffset occurredAt,
+        string correlationReference)
+    {
+        ArgumentNullException.ThrowIfNull(newCase);
+        ArgumentNullException.ThrowIfNull(target);
+        var eventId = Guid.NewGuid();
+        return new ApprovalOutboxEventRecord
+        {
+            Id = eventId,
+            CaseId = newCase.Id,
+            OrganizationId = newCase.OrganizationId,
+            ResultSourceType = ApprovalEntitySource.CodeOf(ApprovalEntitySourceType.ApprovalCase),
+            ResultSourceId = previousCaseId,
+            ResultSourceKey = null,
+            SourceCommandId = null,
+            TargetType = target.Type,
+            TargetId = target.Id,
+            TargetVersion = target.Version,
+            MaterialSnapshotDigest = target.MaterialSnapshotDigest,
+            Result = ApprovalEvolutionCodes.LifecycleSuperseded,
+            ContractVersion = ApprovalEvolutionCodes.LifecycleContractVersion,
+            PayloadJson = ApprovalEvolutionEvents.BuildLifecyclePayload(
+                eventId,
+                ApprovalEvolutionCodes.LifecycleContractVersion,
+                newCase.Id,
+                newCase.OrganizationId,
+                previousCaseId,
+                newCase.SubjectType,
+                newCase.SubjectId,
+                newCase.SubjectVersion,
+                target,
+                occurredAt),
+            State = (int)ApprovalOutboxState.Pending,
+            Attempts = 0,
+            NextAttemptAt = occurredAt.ToUniversalTime(),
+            CreatedAt = occurredAt.ToUniversalTime(),
+            CorrelationReference = correlationReference,
+            Version = 1
+        };
+    }
+
+    /// <summary>
+    /// <c>approval-evidence-revoked/v1</c> event of one revoked evidence (SPEC 04 REQ-06): the free
+    /// reason stays in audit and the payload only carries its closed reason code.
+    /// </summary>
+    public static ApprovalOutboxEventRecord EvidenceRevoked(
+        Guid organizationId,
+        Guid caseId,
+        Guid evidenceId,
+        string evidenceDigest,
+        int evidenceVersion,
+        Guid decisionId,
+        Guid revocationId,
+        string actorType,
+        string reasonCode,
+        DateTimeOffset occurredAt,
+        string correlationReference)
+    {
+        var eventId = Guid.NewGuid();
+        return new ApprovalOutboxEventRecord
+        {
+            Id = eventId,
+            CaseId = caseId,
+            OrganizationId = organizationId,
+            ResultSourceType = ApprovalEntitySource.CodeOf(ApprovalEntitySourceType.ApprovalEvidence),
+            ResultSourceId = evidenceId,
+            ResultSourceKey = null,
+            SourceCommandId = revocationId,
+            TargetType = "APPROVAL_EVIDENCE",
+            TargetId = evidenceId,
+            TargetVersion = evidenceVersion,
+            MaterialSnapshotDigest = evidenceDigest,
+            Result = "REVOKED",
+            ContractVersion = ApprovalEvolutionCodes.EvidenceRevokedContractVersion,
+            PayloadJson = ApprovalEvolutionEvents.BuildEvidenceRevokedPayload(
+                eventId,
+                ApprovalEvolutionCodes.EvidenceRevokedContractVersion,
+                caseId,
+                organizationId,
+                decisionId,
+                evidenceId,
+                evidenceVersion,
+                actorType,
+                reasonCode,
+                revocationId,
                 occurredAt),
             State = (int)ApprovalOutboxState.Pending,
             Attempts = 0,

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Organization;
+using ProcureToPay.Domain.SharedKernel;
 
 namespace ProcureToPay.Infrastructure.Persistence.Approval;
 
@@ -43,10 +44,17 @@ public sealed record ApprovalCaseDecisionView(
     Guid RequirementId,
     Guid? TaskId,
     string Action,
-    Guid ActorUserId,
+    string Origin,
+    string ActorType,
+    Guid? ActorUserId,
     DateTimeOffset DecidedAt,
     string DecisionDigest,
     string AuthorityEvidenceDigest,
+    Guid EvidenceId,
+    int EvidenceVersion,
+    string EvidenceStatus,
+    Guid? SourceDecisionId,
+    Guid? RootHumanDecisionId,
     int TargetCount);
 
 /// <summary>
@@ -78,7 +86,9 @@ public sealed record ApprovalCaseAssignmentView(
     int Load,
     DateTimeOffset AssignedAt,
     DateTimeOffset? ReleasedAt,
-    string EligibilityEvidenceJson);
+    string EligibilityEvidenceJson,
+    Guid? DelegationId,
+    int? DelegationVersion);
 
 /// <summary>
 /// Minimized read surfaces of the approval workflow (REQ-09, NFR-05): the assignee inbox, the
@@ -164,7 +174,7 @@ public sealed class ApprovalInboxQueryService(ProcureToPayDbContext dbContext)
                 record.CaseId,
                 record.RequirementId,
                 ((ApprovalDecisionAction)record.Action).ToString().ToUpperInvariant(),
-                ((ApprovalDecisionOrigin)record.Origin).ToString().ToUpperInvariant(),
+                OriginCode((ApprovalDecisionOrigin)record.Origin),
                 record.DecidedAt,
                 // The actor's own justification is not minimized away: it is their own record.
                 record.Reason,
@@ -203,19 +213,41 @@ public sealed class ApprovalInboxQueryService(ProcureToPayDbContext dbContext)
             .GroupBy(id => id)
             .ToDictionary(group => group.Key, group => group.Count());
 
+        var evidenceIds = decisions.Select(record => record.EvidenceId).ToArray();
+        var evidenceStatuses = (await dbContext.DecisionAuthorityEvidences
+                .AsNoTracking()
+                .Where(record => evidenceIds.Contains(record.Id))
+                .Select(record => new { record.Id, record.Status })
+                .ToArrayAsync(cancellationToken))
+            .ToDictionary(entry => entry.Id, entry => entry.Status);
+
         return decisions
             .Select(record => new ApprovalCaseDecisionView(
                 record.Id,
                 record.RequirementId,
                 record.TaskId,
                 ((ApprovalDecisionAction)record.Action).ToString().ToUpperInvariant(),
+                OriginCode((ApprovalDecisionOrigin)record.Origin),
+                record.ActorType,
                 record.ActorUserId,
                 record.DecidedAt,
                 record.DecisionDigest,
                 record.AuthorityEvidenceDigest,
+                record.EvidenceId,
+                record.EvidenceVersion,
+                evidenceStatuses.TryGetValue(record.EvidenceId, out var status) ? status : "UNKNOWN",
+                record.SourceDecisionId,
+                record.RootHumanDecisionId,
                 counts.TryGetValue(record.Id, out var count) ? count : 0))
             .ToArray();
     }
+
+    private static string OriginCode(ApprovalDecisionOrigin origin) => origin switch
+    {
+        ApprovalDecisionOrigin.Human => "HUMAN",
+        ApprovalDecisionOrigin.CarryForward => "CARRY_FORWARD",
+        _ => throw new DomainValidationException("The stored decision origin is invalid.")
+    };
 
     /// <summary>Append-only assignment history of a case with its frozen eligibility evidence.</summary>
     public async Task<IReadOnlyList<ApprovalCaseAssignmentView>> GetCaseAssignmentsAsync(
@@ -240,7 +272,9 @@ public sealed class ApprovalInboxQueryService(ProcureToPayDbContext dbContext)
                 record.Load,
                 record.AssignedAt,
                 record.ReleasedAt,
-                record.EligibilityEvidenceJson))
+                record.EligibilityEvidenceJson,
+                record.DelegationId,
+                record.DelegationVersion))
             .ToArray();
     }
 

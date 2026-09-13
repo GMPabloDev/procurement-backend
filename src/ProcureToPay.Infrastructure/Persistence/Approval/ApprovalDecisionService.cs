@@ -106,8 +106,8 @@ public sealed class ApprovalDecisionService(
                 caseRecord.Id,
                 requirement.Id,
                 task.Id,
-                existing.RequirementVersion,
-                existing.TaskVersion,
+                existing.RequirementVersion!.Value,
+                existing.TaskVersion!.Value,
                 requirement.Targets,
                 command.Action,
                 reason,
@@ -160,12 +160,16 @@ public sealed class ApprovalDecisionService(
         }
 
         // Authority is revalidated for the actor with the requirement inputs and the server clock.
+        // The effective candidate carries the real delegation applied to the routing decision, if
+        // any, so the authority evidence digest fixes that id and version (SPEC 04 REQ-02, CA-02).
         var candidate = await assignmentEngine.FindEligibleCandidateAsync(
                 approvalCase, requirement, command.ActorUserId, utcNow, cancellationToken)
             ?? throw new DomainForbiddenException(
                 "The assignee is no longer eligible to decide this approval requirement.");
-        var eligibilityJson = ApprovalEligibilityEvidence.Canonicalize(candidate.Evidence);
-        var authorityDigest = ApprovalFingerprints.AuthorityEvidenceDigest(eligibilityJson);
+        var eligibilityJson = ApprovalEligibilityEvidence.Canonicalize(candidate.Candidate.Evidence);
+        var authorityDigest = ApprovalFingerprints.AuthorityEvidenceDigest(
+            eligibilityJson, candidate.DelegationId, candidate.DelegationVersion);
+        var evidenceId = Guid.NewGuid();
 
         var decisionId = Guid.NewGuid();
         var fingerprint = ApprovalFingerprints.DecisionFingerprint(
@@ -205,7 +209,6 @@ public sealed class ApprovalDecisionService(
             requirement.Id,
             task.Id,
             command.Action,
-            ApprovalDecisionOrigin.Human,
             command.ActorUserId,
             reason,
             utcNow,
@@ -214,6 +217,8 @@ public sealed class ApprovalDecisionService(
             decisionDigest,
             authorityDigest,
             eligibilityJson,
+            evidenceId,
+            evidenceVersion: 1,
             requirement.Targets,
             correlation);
 
@@ -256,6 +261,7 @@ public sealed class ApprovalDecisionService(
             TaskId = decision.TaskId,
             Action = (int)decision.Action,
             Origin = (int)decision.Origin,
+            ActorType = "HUMAN",
             ActorUserId = decision.ActorUserId,
             Reason = decision.Reason,
             DecidedAt = decision.DecidedAt,
@@ -264,10 +270,28 @@ public sealed class ApprovalDecisionService(
             DecisionDigest = decision.DecisionDigest,
             AuthorityEvidenceDigest = decision.AuthorityEvidenceDigest,
             EligibilityEvidenceJson = decision.EligibilityEvidenceJson,
+            EvidenceId = decision.EvidenceId,
+            EvidenceVersion = decision.EvidenceVersion,
+            SourceDecisionId = decision.SourceDecisionId,
+            RootHumanDecisionId = decision.RootHumanDecisionId,
             RequirementVersion = decisionRequirementVersion,
             TaskVersion = decisionTaskVersion,
             CorrelationReference = decision.CorrelationReference,
             Version = decision.Version
+        });
+
+        // One stable authority evidence identity per human root decision (SPEC 04 REQ-06, DEC-08):
+        // its digest is the v2 preimage, so the historical decision is never recalculated.
+        dbContext.DecisionAuthorityEvidences.Add(new DecisionAuthorityEvidenceRecord
+        {
+            Id = decision.EvidenceId,
+            OrganizationId = decision.OrganizationId,
+            RootHumanDecisionId = decision.Id,
+            Digest = decision.AuthorityEvidenceDigest,
+            EvidenceJson = decision.EligibilityEvidenceJson,
+            Version = decision.EvidenceVersion,
+            Status = ApprovalEvolutionCodes.EvidenceValid,
+            CreatedAt = decision.DecidedAt
         });
 
         foreach (var target in decision.Targets)

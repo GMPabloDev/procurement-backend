@@ -9,7 +9,9 @@ public enum ApprovalCaseStatus
     Open = 1,
     Blocked = 2,
     Completed = 3,
-    Cancelled = 4
+    Cancelled = 4,
+    /// <summary>Terminal state of a case replaced by a new version (SPEC 04 REQ-04).</summary>
+    Superseded = 5
 }
 
 public enum ApprovalRequirementStatus
@@ -20,7 +22,9 @@ public enum ApprovalRequirementStatus
     Approved = 4,
     Rejected = 5,
     ChangesRequested = 6,
-    Cancelled = 7
+    Cancelled = 7,
+    /// <summary>Terminal state of a requirement of a superseded case (SPEC 04 REQ-04).</summary>
+    Superseded = 8
 }
 
 public enum ApprovalTaskStatus
@@ -30,7 +34,9 @@ public enum ApprovalTaskStatus
     Approved = 3,
     Rejected = 4,
     ChangesRequested = 5,
-    Cancelled = 6
+    Cancelled = 6,
+    /// <summary>Terminal state of a task of a superseded case (SPEC 04 REQ-04).</summary>
+    Superseded = 7
 }
 
 public enum ApprovalDecisionAction
@@ -46,12 +52,21 @@ public enum ApprovalDecisionOrigin
     CarryForward = 2
 }
 
+/// <summary>Closed actor union of a decision: the human assignee or the derived SYSTEM effect.</summary>
+public enum ApprovalDecisionActorType
+{
+    Human = 1,
+    System = 2
+}
+
 public enum PrerequisiteStatus
 {
     Waiting = 1,
     Satisfied = 2,
     Failed = 3,
-    Cancelled = 4
+    Cancelled = 4,
+    /// <summary>Terminal state of a prerequisite of a superseded case (SPEC 04 REQ-04).</summary>
+    Superseded = 5
 }
 
 public enum ApprovalOutboxState
@@ -156,6 +171,25 @@ public static class ApprovalLimits
 
         return value;
     }
+
+    /// <summary>
+    /// Versioned schema identifiers such as <c>decision-scope/v1</c> or
+    /// <c>purchase-request-materiality/v1</c> (SPEC 04 REQ-04): they admit a <c>/</c> that keys do
+    /// not, so they use their own bounded alphabet.
+    /// </summary>
+    public static string RequireSchemaVersion(string? value, string field)
+    {
+        if (string.IsNullOrWhiteSpace(value) || !SchemaVersionPattern.IsMatch(value))
+        {
+            throw new DomainValidationException(
+                $"{field} must contain 1-128 characters of [A-Za-z0-9._:/-].");
+        }
+
+        return value;
+    }
+
+    private static readonly Regex SchemaVersionPattern =
+        new("^[A-Za-z0-9._:/-]{1,128}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 }
 
 /// <summary>Immutable target identity: type, id, version and material snapshot digest (REQ-02).</summary>

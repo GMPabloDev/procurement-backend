@@ -47,6 +47,11 @@ public sealed class ApprovalHealthCheck(ProcureToPayDbContext dbContext) : IHeal
                 reasons.Add("APPROVAL_RECONCILIATION_OVERDUE");
             }
 
+            if (backlog.DelegationTransitionOverdue)
+            {
+                reasons.Add("APPROVAL_DELEGATION_TRANSITION_OVERDUE");
+            }
+
             return reasons.Count == 0
                 ? HealthCheckResult.Healthy("Approval outbox and reconciliation are within contract.")
                 : HealthCheckResult.Degraded(string.Join(",", reasons));

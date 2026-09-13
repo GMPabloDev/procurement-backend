@@ -385,9 +385,9 @@ public sealed class ApprovalCase
             throw new DomainConflictException("The approval case is already cancelled.");
         }
 
-        if (Status == ApprovalCaseStatus.Completed)
+        if (Status is ApprovalCaseStatus.Completed or ApprovalCaseStatus.Superseded)
         {
-            throw new DomainConflictException("A completed approval case cannot be cancelled.");
+            throw new DomainConflictException("A completed or superseded approval case cannot be cancelled.");
         }
 
         var normalized = ApprovalLimits.RequireReason(reason);
@@ -448,9 +448,127 @@ public sealed class ApprovalCase
         Version++;
     }
 
+    /// <summary>
+    /// Applies a strict carry-forward to the new case (SPEC 04 REQ-05): the requirement becomes
+    /// APPROVED without a task, and its dependencies are re-evaluated in the same transition.
+    /// </summary>
+    public void ApplyCarryForward(ApprovalRequirement requirement)
+    {
+        ArgumentNullException.ThrowIfNull(requirement);
+        if (requirement.CaseId != Id)
+        {
+            throw new DomainNotFoundException("The carried requirement is not part of this case.");
+        }
+
+        if (requirement.Status is not (ApprovalRequirementStatus.Waiting or ApprovalRequirementStatus.Unassigned))
+        {
+            throw new DomainConflictException("Only a waiting or unassigned requirement can be carried forward.");
+        }
+
+        // A carried requirement is approved without a task: the derived decision replaces it.
+        tasks.RemoveAll(task => task.RequirementId == requirement.Id);
+        var before = requirement.Version;
+        requirement.MarkApprovedByCarryForward();
+        automaticEffects.Add(ApprovalAutomaticEffect.Create(
+            "REQUIREMENT_CARRY_FORWARD",
+            SourceOf(requirement),
+            "REQUIREMENT",
+            requirement.Id,
+            before,
+            requirement.Version,
+            StatusJson("UNASSIGNED"),
+            StatusJson("APPROVED"),
+            "Canonical equality with a previously approved requirement."));
+        ActivateEligibleRequirements();
+        Version++;
+        RecomputeStatus();
+    }
+
+    /// <summary>
+    /// Full-case supersession (SPEC 04 REQ-04, DEC-06): every non-terminal requirement,
+    /// prerequisite and task becomes the terminal <c>SUPERSEDED</c> state and the case never
+    /// reopens. Terminal decisions stay immutable and only their historical record remains.
+    /// </summary>
+    public void Supersede(DateTimeOffset occurredAt)
+    {
+        if (Status == ApprovalCaseStatus.Superseded)
+        {
+            throw new DomainConflictException("The approval case is already superseded.");
+        }
+
+        if (Status is not (ApprovalCaseStatus.Open or ApprovalCaseStatus.Blocked or ApprovalCaseStatus.Completed))
+        {
+            throw new DomainConflictException("Only a non-cancelled approval case can be superseded.");
+        }
+
+        var utcNow = occurredAt.ToUniversalTime();
+        foreach (var requirement in requirements.Where(item => !item.IsTerminal))
+        {
+            var before = requirement.Version;
+            var previous = requirement.Status;
+            requirement.Supersede();
+            automaticEffects.Add(ApprovalAutomaticEffect.Create(
+                "REQUIREMENT_SUPERSEDED",
+                SourceOf(requirement),
+                "REQUIREMENT",
+                requirement.Id,
+                before,
+                requirement.Version,
+                StatusJson(RequirementStatus(previous)),
+                StatusJson("SUPERSEDED"),
+                "The case was replaced by a new immutable version."));
+            var task = tasks.SingleOrDefault(item => item.RequirementId == requirement.Id);
+            if (task is not null && !task.IsTerminal)
+            {
+                var taskBefore = task.Version;
+                var taskPrevious = task.Status;
+                task.Supersede();
+                automaticEffects.Add(ApprovalAutomaticEffect.Create(
+                    "TASK_SUPERSEDED",
+                    SourceOf(requirement),
+                    "TASK",
+                    task.Id,
+                    taskBefore,
+                    task.Version,
+                    StatusJson(TaskStatus(taskPrevious)),
+                    StatusJson("SUPERSEDED"),
+                    "The case was replaced by a new immutable version."));
+            }
+        }
+
+        foreach (var prerequisite in prerequisites.Where(item => item.Status == PrerequisiteStatus.Waiting))
+        {
+            var before = prerequisite.Version;
+            prerequisite.Supersede();
+            automaticEffects.Add(ApprovalAutomaticEffect.Create(
+                "PREREQUISITE_SUPERSEDED",
+                SourceOf(prerequisite),
+                "PREREQUISITE",
+                prerequisite.Id,
+                before,
+                prerequisite.Version,
+                StatusJson("WAITING"),
+                StatusJson("SUPERSEDED"),
+                "The case was replaced by a new immutable version."));
+        }
+
+        Status = ApprovalCaseStatus.Superseded;
+        Version++;
+        automaticEffects.Add(ApprovalAutomaticEffect.Create(
+            "CASE_SUPERSEDED",
+            ApprovalEntitySource.Case(Id),
+            "CASE",
+            Id,
+            Version - 1,
+            Version,
+            StatusJson("OPEN"),
+            StatusJson("SUPERSEDED"),
+            "The case was replaced by a new immutable version."));
+    }
+
     public void RecomputeStatus()
     {
-        if (Status == ApprovalCaseStatus.Cancelled)
+        if (Status is ApprovalCaseStatus.Cancelled or ApprovalCaseStatus.Superseded)
         {
             return;
         }
@@ -549,6 +667,7 @@ public sealed class ApprovalCase
         ApprovalRequirementStatus.Rejected => "REJECTED",
         ApprovalRequirementStatus.ChangesRequested => "CHANGES_REQUESTED",
         ApprovalRequirementStatus.Cancelled => "CANCELLED",
+        ApprovalRequirementStatus.Superseded => "SUPERSEDED",
         _ => throw new DomainValidationException("The requirement status is invalid.")
     };
 
@@ -560,6 +679,7 @@ public sealed class ApprovalCase
         ApprovalTaskStatus.Rejected => "REJECTED",
         ApprovalTaskStatus.ChangesRequested => "CHANGES_REQUESTED",
         ApprovalTaskStatus.Cancelled => "CANCELLED",
+        ApprovalTaskStatus.Superseded => "SUPERSEDED",
         _ => throw new DomainValidationException("The task status is invalid.")
     };
 }
@@ -613,7 +733,8 @@ public sealed class ApprovalRequirement
     public bool IsTerminal => Status is ApprovalRequirementStatus.Approved
         or ApprovalRequirementStatus.Rejected
         or ApprovalRequirementStatus.ChangesRequested
-        or ApprovalRequirementStatus.Cancelled;
+        or ApprovalRequirementStatus.Cancelled
+        or ApprovalRequirementStatus.Superseded;
 
     public static ApprovalRequirement Create(Guid id, Guid caseId, ApprovalRequirementDefinition definition) =>
         new(
@@ -728,6 +849,30 @@ public sealed class ApprovalRequirement
         Status = ApprovalRequirementStatus.Cancelled;
         Version++;
     }
+
+    /// <summary>Terminal state of a requirement of a superseded case (SPEC 04 REQ-04).</summary>
+    public void Supersede()
+    {
+        if (IsTerminal)
+        {
+            throw new DomainConflictException("A terminal requirement cannot be superseded.");
+        }
+
+        Status = ApprovalRequirementStatus.Superseded;
+        Version++;
+    }
+
+    /// <summary>Approved by a derived carry-forward decision; it never creates a task (REQ-05).</summary>
+    public void MarkApprovedByCarryForward()
+    {
+        if (Status is not (ApprovalRequirementStatus.Waiting or ApprovalRequirementStatus.Unassigned))
+        {
+            throw new DomainConflictException("Only a waiting or unassigned requirement can be carried forward.");
+        }
+
+        Status = ApprovalRequirementStatus.Approved;
+        Version++;
+    }
 }
 
 public sealed class ApprovalTask
@@ -750,7 +895,8 @@ public sealed class ApprovalTask
     public bool IsTerminal => Status is ApprovalTaskStatus.Approved
         or ApprovalTaskStatus.Rejected
         or ApprovalTaskStatus.ChangesRequested
-        or ApprovalTaskStatus.Cancelled;
+        or ApprovalTaskStatus.Cancelled
+        or ApprovalTaskStatus.Superseded;
 
     public static ApprovalTask Create(Guid id, Guid caseId, Guid requirementId)
     {
@@ -861,6 +1007,19 @@ public sealed class ApprovalTask
         }
 
         Status = ApprovalTaskStatus.Cancelled;
+        CurrentAssigneeUserId = null;
+        Version++;
+    }
+
+    /// <summary>Terminal state of a task of a superseded case (SPEC 04 REQ-04).</summary>
+    public void Supersede()
+    {
+        if (IsTerminal)
+        {
+            throw new DomainConflictException("A terminal task cannot be superseded.");
+        }
+
+        Status = ApprovalTaskStatus.Superseded;
         CurrentAssigneeUserId = null;
         Version++;
     }
@@ -982,6 +1141,18 @@ public sealed class ExternalPrerequisite
         }
 
         Status = PrerequisiteStatus.Cancelled;
+        Version++;
+    }
+
+    /// <summary>Terminal state of a prerequisite of a superseded case (SPEC 04 REQ-04).</summary>
+    public void Supersede()
+    {
+        if (Status != PrerequisiteStatus.Waiting)
+        {
+            throw new DomainConflictException("Only a waiting prerequisite can be superseded.");
+        }
+
+        Status = PrerequisiteStatus.Superseded;
         Version++;
     }
 }

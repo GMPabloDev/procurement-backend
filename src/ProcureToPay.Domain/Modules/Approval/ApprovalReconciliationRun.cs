@@ -5,7 +5,11 @@ namespace ProcureToPay.Domain.Modules.Approval;
 public enum ApprovalReconciliationTrigger
 {
     Admin = 1,
-    OrganizationChange = 2
+    OrganizationChange = 2,
+    /// <summary>Confirmed activation or revocation of a delegation (SPEC 04 REQ-03).</summary>
+    DelegationChange = 3,
+    /// <summary>Confirmed expiry of a delegation (SPEC 04 REQ-03).</summary>
+    DelegationExpiry = 4
 }
 
 public enum ApprovalReconciliationRunStatus
@@ -20,6 +24,8 @@ public static class ApprovalReconciliationCodes
 {
     public const string TriggerAdmin = "ADMIN";
     public const string TriggerOrganizationChange = "ORGANIZATION_CHANGE";
+    public const string TriggerDelegationChange = "DELEGATION_CHANGE";
+    public const string TriggerDelegationExpiry = "DELEGATION_EXPIRY";
     public const string StatusPending = "PENDING";
     public const string StatusRunning = "RUNNING";
     public const string StatusCompleted = "COMPLETED";
@@ -28,6 +34,8 @@ public static class ApprovalReconciliationCodes
     {
         ApprovalReconciliationTrigger.Admin => TriggerAdmin,
         ApprovalReconciliationTrigger.OrganizationChange => TriggerOrganizationChange,
+        ApprovalReconciliationTrigger.DelegationChange => TriggerDelegationChange,
+        ApprovalReconciliationTrigger.DelegationExpiry => TriggerDelegationExpiry,
         _ => throw new DomainValidationException("The reconciliation trigger is invalid.")
     };
 
@@ -43,6 +51,8 @@ public static class ApprovalReconciliationCodes
     {
         TriggerAdmin => ApprovalReconciliationTrigger.Admin,
         TriggerOrganizationChange => ApprovalReconciliationTrigger.OrganizationChange,
+        TriggerDelegationChange => ApprovalReconciliationTrigger.DelegationChange,
+        TriggerDelegationExpiry => ApprovalReconciliationTrigger.DelegationExpiry,
         _ => throw new DomainValidationException("The stored reconciliation trigger is invalid.")
     };
 
@@ -69,6 +79,10 @@ public sealed class ApprovalReconciliationRun
         Guid? actorUserId,
         string? reconciliationKey,
         Guid? triggerAuditId,
+        Guid? delegationId,
+        int? delegationVersion,
+        ApprovalDelegationTransition? delegationTransition,
+        DateTimeOffset? delegationScheduledAt,
         Guid rootAuditId,
         DateTimeOffset requestedAt)
     {
@@ -78,6 +92,10 @@ public sealed class ApprovalReconciliationRun
         ActorUserId = actorUserId;
         ReconciliationKey = reconciliationKey;
         TriggerAuditId = triggerAuditId;
+        DelegationId = delegationId;
+        DelegationVersion = delegationVersion;
+        DelegationTransition = delegationTransition;
+        DelegationScheduledAt = delegationScheduledAt;
         RootAuditId = rootAuditId;
         RequestedAt = requestedAt.ToUniversalTime();
         Status = ApprovalReconciliationRunStatus.Pending;
@@ -89,6 +107,11 @@ public sealed class ApprovalReconciliationRun
     public Guid? ActorUserId { get; }
     public string? ReconciliationKey { get; }
     public Guid? TriggerAuditId { get; }
+    /// <summary>Delegation cause of a DELEGATION_CHANGE or DELEGATION_EXPIRY run (REQ-03).</summary>
+    public Guid? DelegationId { get; }
+    public int? DelegationVersion { get; }
+    public ApprovalDelegationTransition? DelegationTransition { get; }
+    public DateTimeOffset? DelegationScheduledAt { get; }
     public Guid RootAuditId { get; }
     public DateTimeOffset RequestedAt { get; }
     public ApprovalReconciliationRunStatus Status { get; private set; }
@@ -118,6 +141,7 @@ public sealed class ApprovalReconciliationRun
         return new ApprovalReconciliationRun(
             id, organizationId, ApprovalReconciliationTrigger.Admin, actorUserId,
             ApprovalLimits.RequireKey(reconciliationKey, "reconciliation_key"), triggerAuditId: null,
+            delegationId: null, delegationVersion: null, delegationTransition: null, delegationScheduledAt: null,
             rootAuditId, requestedAt);
     }
 
@@ -136,7 +160,58 @@ public sealed class ApprovalReconciliationRun
 
         return new ApprovalReconciliationRun(
             id, organizationId, ApprovalReconciliationTrigger.OrganizationChange, actorUserId: null,
-            reconciliationKey: null, triggerAuditId, rootAuditId, requestedAt);
+            reconciliationKey: null, triggerAuditId, delegationId: null, delegationVersion: null,
+            delegationTransition: null, delegationScheduledAt: null, rootAuditId, requestedAt);
+    }
+
+    /// <summary>
+    /// A confirmed activation or revocation requests exactly one run per delegation version and
+    /// transition; its root audit is the command audit that caused it (REQ-03).
+    /// </summary>
+    public static ApprovalReconciliationRun CreateDelegationChange(
+        Guid id,
+        Guid organizationId,
+        Guid delegationId,
+        int delegationVersion,
+        ApprovalDelegationTransition transition,
+        DateTimeOffset scheduledAt,
+        Guid triggerAuditId,
+        Guid rootAuditId,
+        DateTimeOffset requestedAt)
+    {
+        if (delegationId == Guid.Empty || triggerAuditId == Guid.Empty || rootAuditId == Guid.Empty)
+        {
+            throw new DomainValidationException("A delegation change run needs complete identities.");
+        }
+
+        return new ApprovalReconciliationRun(
+            id, organizationId, ApprovalReconciliationTrigger.DelegationChange, actorUserId: null,
+            reconciliationKey: null, triggerAuditId, delegationId, RequireVersion(delegationVersion),
+            transition, scheduledAt, rootAuditId, requestedAt);
+    }
+
+    /// <summary>
+    /// A confirmed expiry requests exactly one SYSTEM run caused by the delegation version and its
+    /// <c>valid_to</c> (REQ-03).
+    /// </summary>
+    public static ApprovalReconciliationRun CreateDelegationExpiry(
+        Guid id,
+        Guid organizationId,
+        Guid delegationId,
+        int delegationVersion,
+        DateTimeOffset scheduledAt,
+        Guid rootAuditId,
+        DateTimeOffset requestedAt)
+    {
+        if (delegationId == Guid.Empty || rootAuditId == Guid.Empty)
+        {
+            throw new DomainValidationException("A delegation expiry run needs complete identities.");
+        }
+
+        return new ApprovalReconciliationRun(
+            id, organizationId, ApprovalReconciliationTrigger.DelegationExpiry, actorUserId: null,
+            reconciliationKey: null, triggerAuditId: null, delegationId, RequireVersion(delegationVersion),
+            ApprovalDelegationTransition.Expire, scheduledAt, rootAuditId, requestedAt);
     }
 
     public static ApprovalReconciliationRun Restore(
@@ -146,6 +221,10 @@ public sealed class ApprovalReconciliationRun
         Guid? actorUserId,
         string? reconciliationKey,
         Guid? triggerAuditId,
+        Guid? delegationId,
+        int? delegationVersion,
+        ApprovalDelegationTransition? delegationTransition,
+        DateTimeOffset? delegationScheduledAt,
         Guid rootAuditId,
         ApprovalReconciliationRunStatus status,
         DateTimeOffset requestedAt,
@@ -160,7 +239,8 @@ public sealed class ApprovalReconciliationRun
         int version)
     {
         var run = new ApprovalReconciliationRun(
-            id, organizationId, trigger, actorUserId, reconciliationKey, triggerAuditId, rootAuditId, requestedAt)
+            id, organizationId, trigger, actorUserId, reconciliationKey, triggerAuditId, delegationId,
+            delegationVersion, delegationTransition, delegationScheduledAt, rootAuditId, requestedAt)
         {
             Status = status,
             StartedAt = startedAt,
@@ -256,4 +336,9 @@ public sealed class ApprovalReconciliationRun
 
         return normalized;
     }
+
+    private static int RequireVersion(int delegationVersion) =>
+        delegationVersion < 1
+            ? throw new DomainValidationException("A delegation run requires the delegation version.")
+            : delegationVersion;
 }

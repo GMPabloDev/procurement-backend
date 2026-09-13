@@ -48,6 +48,22 @@ public static class ApprovalTelemetry
         "approval.dead_letters",
         description: "Outbox events parked as dead letters.");
 
+    public static readonly Counter<long> Delegations = Meter.CreateCounter<long>(
+        "approval.delegations",
+        description: "Delegation lifecycle transitions by outcome (SPEC 04 REQ-01, REQ-03).");
+
+    public static readonly Counter<long> Supersessions = Meter.CreateCounter<long>(
+        "approval.supersessions",
+        description: "Full-case supersessions by outcome (SPEC 04 REQ-04).");
+
+    public static readonly Counter<long> CarryForwards = Meter.CreateCounter<long>(
+        "approval.carry_forwards",
+        description: "Strict carry-forward decisions by outcome (SPEC 04 REQ-05).");
+
+    public static readonly Counter<long> EvidenceRevocations = Meter.CreateCounter<long>(
+        "approval.evidence_revocations",
+        description: "Evidence revocations by outcome (SPEC 04 REQ-06).");
+
     public static readonly Histogram<double> OperationDuration = Meter.CreateHistogram<double>(
         "approval.operation.duration",
         unit: "ms",
@@ -85,6 +101,25 @@ public static class ApprovalTelemetry
 
     /// <summary>Records a contract conflict by the operation that detected it (NFR-05).</summary>
     public static void RecordConflict(string operation) => Conflicts.Add(1, Tags(operation, "CONFLICT"));
+
+    /// <summary>Records one delegation lifecycle transition; only its state, never its reason (NFR-04).</summary>
+    public static void RecordDelegation(string outcome) => Delegations.Add(1, Tags("DELEGATE", outcome));
+
+    /// <summary>Records one supersession outcome (SPEC 04 REQ-04, NFR-04).</summary>
+    public static void RecordSupersession(string outcome) => Supersessions.Add(1, Tags("SUPERSEDE", outcome));
+
+    /// <summary>Records how many derived decisions a carry-forward produced (SPEC 04 REQ-05).</summary>
+    public static void RecordCarryForward(int count)
+    {
+        if (count > 0)
+        {
+            CarryForwards.Add(count, Tags("CARRY_FORWARD", "CREATED"));
+        }
+    }
+
+    /// <summary>Records one evidence revocation without exposing the evidence or its reason (NFR-04).</summary>
+    public static void RecordEvidenceRevocation(string outcome) =>
+        EvidenceRevocations.Add(1, Tags("REVOKE_EVIDENCE", outcome));
 
     /// <summary>Records one completed reconciliation pass and what it changed (REQ-04, NFR-03).</summary>
     public static void RecordReconciliation(int reassigned, int unassigned)

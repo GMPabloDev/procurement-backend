@@ -36,6 +36,15 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<ApprovalSubmissionReservationRecord> ApprovalSubmissionReservations => Set<ApprovalSubmissionReservationRecord>();
     public DbSet<ApprovalWorkflowStateRecord> ApprovalWorkflowStates => Set<ApprovalWorkflowStateRecord>();
     public DbSet<ApprovalReconciliationRunRecord> ApprovalReconciliationRuns => Set<ApprovalReconciliationRunRecord>();
+    public DbSet<ApprovalDelegationRecord> ApprovalDelegations => Set<ApprovalDelegationRecord>();
+    public DbSet<ApprovalDelegationTransitionJobRecord> ApprovalDelegationTransitionJobs =>
+        Set<ApprovalDelegationTransitionJobRecord>();
+    public DbSet<CaseSupersessionRecord> CaseSupersessions => Set<CaseSupersessionRecord>();
+    public DbSet<DecisionAuthorityEvidenceRecord> DecisionAuthorityEvidences => Set<DecisionAuthorityEvidenceRecord>();
+    public DbSet<DecisionCarryForwardEntryRecord> DecisionCarryForwardEntries =>
+        Set<DecisionCarryForwardEntryRecord>();
+    public DbSet<DecisionEvidenceRevocationRecord> DecisionEvidenceRevocations =>
+        Set<DecisionEvidenceRevocationRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -67,6 +76,12 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigureApprovalSubmissionReservation(modelBuilder);
         ConfigureApprovalWorkflowState(modelBuilder);
         ConfigureApprovalReconciliationRun(modelBuilder);
+        ConfigureApprovalDelegation(modelBuilder);
+        ConfigureApprovalDelegationTransitionJob(modelBuilder);
+        ConfigureCaseSupersession(modelBuilder);
+        ConfigureDecisionAuthorityEvidence(modelBuilder);
+        ConfigureDecisionCarryForwardEntry(modelBuilder);
+        ConfigureDecisionEvidenceRevocation(modelBuilder);
         base.OnModelCreating(modelBuilder);
     }
 
@@ -431,7 +446,9 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.HasKey(record => record.Id);
         entity.Property(record => record.Cause).HasMaxLength(32).IsRequired();
         entity.Property(record => record.EligibilityEvidenceJson).HasColumnType("nvarchar(max)").IsRequired();
+        // Real delegation applied to the assignment, if any (SPEC 04 REQ-02, CA-02).
         entity.HasIndex(record => new { record.OrganizationId, record.AssigneeUserId, record.ReleasedAt });
+        entity.HasIndex(record => record.DelegationId);
         // Exactly one current assignment per task (REQ-10, CA-04): released history is append-only.
         entity.HasIndex(record => record.TaskId)
             .IsUnique()
@@ -445,14 +462,15 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.ToTable("ApprovalDecisions", "Approval");
         entity.HasKey(record => record.Id);
         entity.Property(record => record.Reason).HasMaxLength(1000).IsRequired();
-        entity.Property(record => record.DecisionKey).HasMaxLength(128).IsRequired();
-        entity.Property(record => record.Fingerprint).HasMaxLength(64).IsRequired();
+        // Null for a derived decision: the carry-forward has no replayable command key (REQ-05).
+        entity.Property(record => record.ActorType).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.DecisionKey).HasMaxLength(128);
+        entity.Property(record => record.Fingerprint).HasMaxLength(64);
         entity.Property(record => record.DecisionDigest).HasMaxLength(64).IsRequired();
         entity.Property(record => record.AuthorityEvidenceDigest).HasMaxLength(64).IsRequired();
         entity.Property(record => record.EligibilityEvidenceJson).HasColumnType("nvarchar(max)").IsRequired();
         // Stored fingerprint preimage versions (REQ-06): a replay must reproduce the digest.
-        entity.Property(record => record.RequirementVersion).IsRequired();
-        entity.Property(record => record.TaskVersion).IsRequired();
+        // They stay null for a derived decision, which has no task to match (SPEC 04 REQ-05).
         // Artifacts of the decision instant so a replay returns them instead of the current state.
         entity.Property(record => record.RequirementStatusAfter).IsRequired();
         entity.Property(record => record.TaskStatusAfter).IsRequired();
@@ -460,8 +478,13 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.Property(record => record.CaseVersionAfter).IsRequired();
         entity.Property(record => record.CorrelationReference).HasMaxLength(120).IsRequired();
         entity.Property(record => record.RowVersion).IsRowVersion();
-        entity.HasIndex(record => new { record.OrganizationId, record.ActorUserId, record.DecisionKey }).IsUnique();
+        // A human decision key is unique per actor; derived decisions never carry one (REQ-05, REQ-06).
+        entity.HasIndex(record => new { record.OrganizationId, record.ActorUserId, record.DecisionKey })
+            .IsUnique()
+            .HasFilter("[DecisionKey] IS NOT NULL")
+            .HasDatabaseName("IX_ApprovalDecisions_OrganizationId_ActorUserId_DecisionKey");
         entity.HasIndex(record => record.RequirementId);
+        entity.HasIndex(record => record.EvidenceId);
         entity.HasIndex(record => new { record.OrganizationId, record.ActorUserId, record.DecidedAt });
     }
 
@@ -577,6 +600,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.Property(record => record.Trigger).HasMaxLength(32).IsRequired();
         entity.Property(record => record.Status).HasMaxLength(32).IsRequired();
         entity.Property(record => record.ReconciliationKey).HasMaxLength(128);
+        entity.Property(record => record.DelegationTransition).HasMaxLength(32);
         entity.Property(record => record.LeaseOwner).HasMaxLength(120);
         entity.Property(record => record.LastError).HasMaxLength(200);
         entity.Property(record => record.RowVersion).IsRowVersion();
@@ -589,6 +613,128 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
             .IsUnique()
             .HasFilter("[TriggerAuditId] IS NOT NULL")
             .HasDatabaseName("IX_ApprovalReconciliationRuns_TriggerAudit");
+        // Exactly one run per delegation version, transition and scheduled instant (SPEC 04 REQ-03).
+        entity.HasIndex(record => new
+            {
+                record.OrganizationId,
+                record.DelegationId,
+                record.DelegationVersion,
+                record.DelegationTransition,
+                record.DelegationScheduledAt
+            })
+            .IsUnique()
+            .HasFilter("[DelegationId] IS NOT NULL")
+            .HasDatabaseName("IX_ApprovalReconciliationRuns_DelegationTransition");
         entity.HasIndex(record => new { record.OrganizationId, record.Status, record.RequestedAt });
+    }
+
+    private static void ConfigureApprovalDelegation(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalDelegationRecord>();
+        entity.ToTable("ApprovalDelegations", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.DecisionScopeJson).HasMaxLength(4000).IsRequired();
+        entity.Property(record => record.ActorType).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.Reason).HasMaxLength(1000).IsRequired();
+        entity.Property(record => record.DelegationCommandKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Fingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Status).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        // One command key per actor scope (REQ-01): replay resolves on the same key.
+        entity.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.ActorType,
+            record.ActorUserId,
+            record.DelegationCommandKey
+        }).IsUnique();
+        entity.HasIndex(record => new { record.OrganizationId, record.DelegatorUserId, record.Role, record.Status });
+        entity.HasIndex(record => new { record.OrganizationId, record.DelegateeUserId, record.Status });
+    }
+
+    private static void ConfigureApprovalDelegationTransitionJob(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalDelegationTransitionJobRecord>();
+        entity.ToTable("ApprovalDelegationTransitionJobs", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Transition).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.Status).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.LeaseOwner).HasMaxLength(120);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        // Unique per delegation, transition and scheduled instant (SPEC 04 REQ-03).
+        entity.HasIndex(record => new { record.DelegationId, record.Transition, record.ScheduledAt }).IsUnique();
+        entity.HasIndex(record => new { record.OrganizationId, record.Status, record.ScheduledAt });
+    }
+
+    private static void ConfigureCaseSupersession(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<CaseSupersessionRecord>();
+        entity.ToTable("CaseSupersessions", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.SupersessionKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Fingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.WorkloadIssuer).HasMaxLength(320).IsRequired();
+        entity.Property(record => record.WorkloadClientId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.TargetMappingJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        // One supersession key per owning workload scope (REQ-04): replay resolves on the same key.
+        entity.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.WorkloadIssuer,
+            record.WorkloadClientId,
+            record.SupersessionKey
+        }).IsUnique();
+        entity.HasIndex(record => record.PreviousCaseId).IsUnique();
+        entity.HasIndex(record => record.NewCaseId).IsUnique();
+    }
+
+    private static void ConfigureDecisionAuthorityEvidence(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<DecisionAuthorityEvidenceRecord>();
+        entity.ToTable("DecisionAuthorityEvidences", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Digest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.EvidenceJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.Status).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        // One evidence identity per human root decision (REQ-06): derivatives share the same row.
+        entity.HasIndex(record => record.RootHumanDecisionId).IsUnique();
+        entity.HasIndex(record => new { record.OrganizationId, record.Status });
+    }
+
+    private static void ConfigureDecisionCarryForwardEntry(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<DecisionCarryForwardEntryRecord>();
+        entity.ToTable("DecisionCarryForwardRecords", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.NewRequirementKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.SourceRequirementContractDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.NewRequirementContractDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ProofDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.SourceTargetJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.NewTargetJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.TargetMappingJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.HasIndex(record => record.NewDecisionId).IsUnique();
+        entity.HasIndex(record => record.SourceDecisionId);
+        entity.HasIndex(record => record.NewRequirementId).IsUnique();
+        entity.HasIndex(record => record.EvidenceId);
+    }
+
+    private static void ConfigureDecisionEvidenceRevocation(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<DecisionEvidenceRevocationRecord>();
+        entity.ToTable("DecisionEvidenceRevocations", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.RevocationKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Fingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ActorType).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.ActorWorkloadIssuer).HasMaxLength(320);
+        entity.Property(record => record.ActorWorkloadClientId).HasMaxLength(128);
+        entity.Property(record => record.ReasonCode).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.Reason).HasMaxLength(1000).IsRequired();
+        // One revocation key per evidence scope (REQ-06): replay resolves on the same key.
+        entity.HasIndex(record => new { record.OrganizationId, record.EvidenceId, record.RevocationKey }).IsUnique();
+        entity.HasIndex(record => record.EvidenceId);
     }
 }
