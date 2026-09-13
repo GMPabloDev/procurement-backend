@@ -1,9 +1,9 @@
 # SPEC 03 — Núcleo de casos y decisiones de aprobación
 
 > **Formato:** sdd/v3
-> **Estado:** Aprobada
-> **Ejecución:** Lista para integrar
-> **Vigencia:** Pendiente
+> **Estado:** Implementada
+> **Ejecución:** Integrada
+> **Vigencia:** Vigente
 > **Revisión:** 3
 > **Digest contractual:** f0b61a917c4c4b4adcaee598c75352ef93d03c3bf25b76d15f80177ba3446234
 > **Fecha:** 2026-09-10

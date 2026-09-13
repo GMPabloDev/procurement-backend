@@ -1,7 +1,7 @@
 # RUN SPEC 03 — Núcleo de casos y decisiones de aprobación
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** Lista para integrar
+> **Estado del run:** Integrado
 > **Spec:** specs/03-approval-workflow.md
 > **Revisión contractual:** 3
 > **Commit de la spec:** 4c933edbac7113573bb8eb38712702d5bca9fd27
@@ -13,9 +13,9 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-11 04:45 -05
-> **Actualizado:** 2026-09-13 03:14 -05
+> **Actualizado:** 2026-09-13 04:06 -05
 > **HEAD verificado:** 1a8393f16a90cefd69ff4a16938c4dcfe920dd60
-> **Commit de integración:** Pendiente
+> **Commit de integración:** ef6396c111c18ce040cc8ac4b02d1646ee6d0fdd
 
 ## Línea base
 
@@ -412,8 +412,8 @@ Revisión delta acotada a R2, R16 y R12 sobre `1a8393f16a90…` (delta desde `41
 
 - Verificación independiente: PASS en la ronda final (delta de cierre) sobre `1a8393f16a90…`; warning R20 documentado en la sección Verificación independiente.
 - HEAD verificado: `1a8393f16a90cefd69ff4a16938c4dcfe920dd60`.
-- Estrategia de integración: aplicar migraciones antes de publicar y llevar `spec-03-approval-workflow` a `main` (sin squash, conservando los commits revisados).
-- Commit integrado en rama base: Pendiente.
-- Verificación ejecutada sobre rama base: Pendiente.
-- Metadatos de vigencia actualizados: Pendiente.
-- Pendientes posteriores: Ninguno.
+- Estrategia de integración: fast-forward de `spec-03-approval-workflow` a `main` sin squash ni rebase, conservando los commits revisados; las migraciones se aplican antes de publicar la API.
+- Commit integrado en rama base: `ef6396c111c18ce040cc8ac4b02d1646ee6d0fdd` (main, 2026-09-13 03:16 -05).
+- Verificación ejecutada sobre rama base: el árbol de código en `main` es idéntico al verificado — `git diff --stat 1a8393f..main` solo muestra `specs/03-approval-workflow.md` y `specs/runs/03-approval-workflow.md` (metadatos administrativos); `main` y `spec-03-approval-workflow` apuntan al mismo commit. Integración demostrada por Git, sin squash ni rebase. Suites del árbol verificado: build 0 errores, Unit 101/101, Integración 44/44, E2E 12/12.
+- Metadatos de vigencia actualizados: spec `Estado: Implementada`, `Ejecución: Integrada`, `Vigencia: Vigente`; run `Integrado` con commit de integración real.
+- Pendientes posteriores: R20 (warning de observabilidad no bloqueante — contadores y telemetría de reconciliación calculados antes del rollback; publicarlos por caso solo tras commit).
