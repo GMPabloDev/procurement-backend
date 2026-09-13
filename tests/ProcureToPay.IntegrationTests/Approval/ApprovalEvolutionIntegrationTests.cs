@@ -405,6 +405,12 @@ public sealed class ApprovalEvolutionIntegrationTests
         await using var environment = await EvolutionEnvironment.StartAsync(cancellationToken);
         var adapter = new EvolutionAdapter();
 
+        // A real case with a task assigned to the delegator so the transition runs are observable.
+        var submission = await Fresh(environment, adapter).Submission.SubmitAsync(
+            Command("submission-scheduled", 1), Now, cancellationToken);
+        var taskId = (await environment.TaskAsync(submission.CaseId, cancellationToken)).TaskId;
+        Assert.Equal(DelegatorId, await environment.AssigneeAsync(taskId, cancellationToken));
+
         var create = DelegationCommand(
             DelegatorId, DelegateeId, Now.AddHours(1), Now.AddHours(2), "delegation-scheduled");
         var created = await Fresh(environment, adapter).Delegations.CreateAsync(create, Now, cancellationToken);
@@ -468,6 +474,43 @@ public sealed class ApprovalEvolutionIntegrationTests
         Assert.Equal(0, await Fresh(environment, adapter).Transitions.ProcessDueAsync(
             "worker-c", Now.AddHours(1), cancellationToken: cancellationToken));
 
+        // The activation run reconciles the covered task at its own instant: the delegator is
+        // removed and the delegatee receives it, with a persisted cursor (REQ-02, REQ-03).
+        environment.SetClock(Now.AddHours(1));
+        var activationRunId = await environment.PendingDelegationRunAsync(created.DelegationId, cancellationToken);
+        var activated = await Fresh(environment, adapter).Reconciliation.ProcessAsync(
+            activationRunId, "worker-c", "correlation", cancellationToken);
+        Assert.True(activated.Completed);
+        Assert.Equal(1, activated.Reassigned);
+        Assert.Equal(DelegateeId, await environment.AssigneeAsync(taskId, cancellationToken));
+        Assert.Equal(1, await environment.CurrentAssignmentCountAsync(taskId, cancellationToken));
+        Assert.Equal(2, await environment.AssignmentCountAsync(taskId, cancellationToken));
+
+        // A second pass of the same completed run changes nothing and keeps the cursor.
+        var secondPass = await Fresh(environment, adapter).Reconciliation.ProcessAsync(
+            activationRunId, "worker-d", "correlation", cancellationToken);
+        Assert.False(secondPass.Completed);
+        Assert.Equal(DelegateeId, await environment.AssigneeAsync(taskId, cancellationToken));
+        Assert.Equal(1, await environment.CurrentAssignmentCountAsync(taskId, cancellationToken));
+        Assert.Equal(2, await environment.AssignmentCountAsync(taskId, cancellationToken));
+        Assert.Equal(submission.CaseId, await environment.RunCursorAsync(activationRunId, cancellationToken));
+
+        // A terminal decision is taken before the expiry; the expiry run must not touch it.
+        var (currentTaskId, currentTaskVersion) = await environment.TaskAsync(submission.CaseId, cancellationToken);
+        var decision = await Fresh(environment, adapter).Decision.DecideAsync(
+            new ApprovalDecisionCommand(
+                currentTaskId, ApprovalDecisionAction.Approve, "Approved before expiry", "decision-scheduled",
+                currentTaskVersion, DelegateeId, "correlation"),
+            Now.AddHours(1).AddMinutes(5),
+            cancellationToken);
+        Assert.False(decision.Replayed);
+        string decisionDigest;
+        await using (var verification = environment.CreateContext())
+        {
+            decisionDigest = (await verification.ApprovalDecisions.SingleAsync(
+                record => record.Id == decision.DecisionId, cancellationToken)).DecisionDigest;
+        }
+
         // The scheduled expiry confirms exactly one SYSTEM run caused by the delegation.
         Assert.Equal(1, await Fresh(environment, adapter).Transitions.ProcessDueAsync(
             "worker-d", Now.AddHours(2), cancellationToken: cancellationToken));
@@ -494,6 +537,31 @@ public sealed class ApprovalEvolutionIntegrationTests
 
         Assert.Equal(0, await Fresh(environment, adapter).Transitions.ProcessDueAsync(
             "worker-e", Now.AddHours(2), cancellationToken: cancellationToken));
+
+        // The expiry run scans at its own instant and preserves the terminal decision and task.
+        environment.SetClock(Now.AddHours(2));
+        var expiryRunId = await environment.PendingDelegationRunAsync(created.DelegationId, cancellationToken, "DELEGATION_EXPIRY");
+        var expired = await Fresh(environment, adapter).Reconciliation.ProcessAsync(
+            expiryRunId, "worker-e", "correlation", cancellationToken);
+        Assert.True(expired.Completed);
+        await using (var verification = environment.CreateContext())
+        {
+            var task = await verification.ApprovalTasks.SingleAsync(
+                record => record.Id == taskId, cancellationToken);
+            Assert.Equal((int)ApprovalTaskStatus.Approved, task.Status);
+            var decisionRecord = await verification.ApprovalDecisions.SingleAsync(
+                record => record.Id == decision.DecisionId, cancellationToken);
+            Assert.Equal(decisionDigest, decisionRecord.DecisionDigest);
+            var caseRecord = await verification.ApprovalCases.SingleAsync(
+                record => record.Id == submission.CaseId, cancellationToken);
+            Assert.Equal((int)ApprovalCaseStatus.Completed, caseRecord.Status);
+        }
+
+        var expirySecondPass = await Fresh(environment, adapter).Reconciliation.ProcessAsync(
+            expiryRunId, "worker-f", "correlation", cancellationToken);
+        Assert.False(expirySecondPass.Completed);
+        Assert.Equal(2, await environment.AssignmentCountAsync(taskId, cancellationToken));
+        Assert.Equal(0, await environment.CurrentAssignmentCountAsync(taskId, cancellationToken));
     }
 
     [Fact]
@@ -755,10 +823,12 @@ public sealed class ApprovalEvolutionIntegrationTests
             []);
     }
 
-    /// <summary>Deterministic UTC clock for the reconciliation and transition runs.</summary>
+    /// <summary>Deterministic, movable UTC clock for the reconciliation and transition runs.</summary>
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => now;
+        public DateTimeOffset Now { get; set; } = now;
+
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 
     /// <summary>A fresh unit of work per operation, exactly like a scoped request in production.</summary>
@@ -778,7 +848,7 @@ public sealed class ApprovalEvolutionIntegrationTests
     {
         private MsSqlContainer container = null!;
         private string connectionString = null!;
-        private readonly TimeProvider timeProvider = new FixedTimeProvider(Now);
+        private readonly FixedTimeProvider clock = new(Now);
 
         public static async Task<EvolutionEnvironment> StartAsync(CancellationToken cancellationToken)
         {
@@ -825,6 +895,8 @@ public sealed class ApprovalEvolutionIntegrationTests
                 .UseSqlServer(connectionString)
                 .Options);
 
+        public void SetClock(DateTimeOffset at) => clock.Now = at;
+
         public async Task<(Guid TaskId, int TaskVersion)> TaskAsync(
             Guid caseId,
             CancellationToken cancellationToken)
@@ -838,6 +910,43 @@ public sealed class ApprovalEvolutionIntegrationTests
                     select candidate)
                 .SingleAsync(cancellationToken);
             return (task.Id, task.Version);
+        }
+
+        public async Task<Guid> PendingDelegationRunAsync(
+            Guid delegationId,
+            CancellationToken cancellationToken,
+            string trigger = "DELEGATION_CHANGE")
+        {
+            await using var context = CreateContext();
+            return await context.ApprovalReconciliationRuns
+                .Where(record => record.DelegationId == delegationId &&
+                                 record.Trigger == trigger &&
+                                 record.Status != ApprovalReconciliationCodes.StatusCompleted)
+                .OrderBy(record => record.Id)
+                .Select(record => record.Id)
+                .FirstAsync(cancellationToken);
+        }
+
+        public async Task<Guid?> RunCursorAsync(Guid runId, CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            return (await context.ApprovalReconciliationRuns
+                .AsNoTracking()
+                .SingleAsync(record => record.Id == runId, cancellationToken)).CursorCaseId;
+        }
+
+        public async Task<int> AssignmentCountAsync(Guid taskId, CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            return await context.ApprovalAssignments.CountAsync(
+                record => record.TaskId == taskId, cancellationToken);
+        }
+
+        public async Task<int> CurrentAssignmentCountAsync(Guid taskId, CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            return await context.ApprovalAssignments.CountAsync(
+                record => record.TaskId == taskId && record.ReleasedAt == null, cancellationToken);
         }
 
         public async Task<Guid> AssigneeAsync(Guid taskId, CancellationToken cancellationToken)
@@ -930,7 +1039,7 @@ public sealed class ApprovalEvolutionIntegrationTests
                 context, new OrganizationEligibilityService(context), scopeResolver);
             var reconciliation = new ApprovalReconciliationService(
                 context, assignmentEngine, loggerFactory.CreateLogger<ApprovalReconciliationService>(),
-                timeProvider);
+                clock);
             var delegationService = new ApprovalDelegationService(
                 context, scopeResolver, loggerFactory.CreateLogger<ApprovalDelegationService>());
             return new Services(
