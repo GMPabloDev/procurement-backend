@@ -1,7 +1,7 @@
 # RUN SPEC 05 — Integración de Policy con Approval Workflow
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** En implementación
+> **Estado del run:** Lista para integrar
 > **Spec:** specs/05-integracion-policy-approval-workflow.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 18977eecbb26e0a650306c317ac1943e9834349a
@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-13 09:06 -0500
-> **Actualizado:** 2026-09-13 16:45 -0500
-> **HEAD verificado:** Pendiente
+> **Actualizado:** 2026-09-13 16:55 -0500
+> **HEAD verificado:** 4694ffa2cd8f35b87419006637e4d60c46df83ae
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -40,15 +40,32 @@
 
 ## Checkpoints
 
-- **CP-01 — Frontera Policy→Workflow (T-01/T-02/T-03).** `decision-scope/v1` canónico, proyección
-  material `policy-approval-target/v1`, adapter exact-one con tabla cerrada de efectos y owners,
-  DAG por fase/target. Árbol probado: `dotnet build` 0 errores, Unit 142/142.
-- **CP-02 — Extensión, verifier y operación (T-04/T-05).** Persistencia de
-  `policy-exception-request/v1` y `policy-exception-verification`, comando workload-only,
-  endpoint service-JWT con lookup server-side, revocación/vigencia y prohibición de carry-forward.
-  Árbol probado: Integración 50/50, E2E del recorrido real y de owner ausente.
-- **CP-03 — Recorrido real y operación (T-06).** E2E nombrado con tres casos, health y documentación
-  operativa. Árbol probado: build 0 errores, Unit 142/142, Integración 50/50, E2E 17/17.
+### CP-01 — 2026-09-13 11:40 -05 — Bloque 1 (frontera Policy→Workflow)
+
+- Tareas: T-01, T-02, T-03.
+- Cambios: `decision-scope/v1` canónico en Policy; proyección material `policy-approval-target/v1` derivada del snapshot/manifest; wire `workflow-verification-request/v1`/`response/v1` con service JWT y ruta legacy cerrada; adapter `policy-approval-adapter` con exact-one, recálculo de digests y target material, tabla cerrada de efectos, owners versionados y DAG por fase/target.
+- Tests y checks: build 0 errores; unitarias del delta (`PolicyExceptionGoldenTests`, `HttpQuotationWaiverVerifierTests`, `PolicyModelTests`, `PolicyApprovalAdapterTests`); 142/142 unitarias.
+- Resultado: un bundle canónico se mapea de forma determinista y todo control, target u owner desconocido falla cerrado.
+- HEAD: working-tree sobre `spec-05-integracion-policy-approval-workflow` (base `18977ee`).
+- Próximo paso: extensión persistida y verifier.
+
+### CP-02 — 2026-09-13 14:30 -05 — Bloque 2 (extensión, verifier y operación)
+
+- Tareas: T-04, T-05.
+- Cambios: `ApprovalPolicyExceptionRequestRecord` + submission workload-only atómica; endpoint `POST /v1/policy-exceptions/verify` con esquema service JWT dedicado, lookup server-side, SoD, vigencia, revocación y dos constraints de replay; prohibición de carry-forward; health y documentación operativa.
+- Tests y checks: integración 50/50; E2E del recorrido real y de owner ausente; `run-lint` válido.
+- Resultado: una excepción solo se verifica contra la decisión persistida y su replay no duplica evidencia.
+- HEAD: working-tree sobre la rama de implementación.
+- Próximo paso: recorrido real nombrado y revisión independiente.
+
+### CP-03 — 2026-09-13 16:55 -05 — Bloque 3 (recorrido real, correcciones y gate)
+
+- Tareas: T-06 (y correcciones R7–R13 de la ronda 1 de revisión).
+- Cambios: `PolicyApprovalWorkflowContractE2ETests` con tres casos (recorrido real, owner ausente, cobertura adulterada); `PolicyExceptionHealthCheck`; validación de cobertura/parámetros contra el bundle y la proyección material; fase por rol; wire estricto (`material_snapshot_digest`, correlation obligatoria, `canonicalIdentity` excluido); OAuth2 `access_token`/`expires_in`; FK al requirement y `Down` no destructivo; trazas sin nonce ni payload.
+- Tests y checks: build 0 errores; Unit **142/142**; Integración **50/50**; E2E **17/17**; `specctl run-lint 05` válido; `git diff --check` limpio.
+- Resultado: revisión independiente ronda 1 BLOCK (R7–R13) y ronda 2 diferencial **PASS**, cero hallazgos abiertos.
+- HEAD: `4694ffa2cd8f35b87419006637e4d60c46df83ae`.
+- Próximo paso: commitear metadatos finales e integrar.
 
 ## Evidencia de aceptación
 
@@ -69,9 +86,9 @@
 
 ## Verificación independiente
 
-> **Resultado:** Pendiente (ronda 1 BLOCK corregida; pendiente ronda diferencial)
-> **Rondas:** 1/2
-> **Triaje:** R7–R13 aceptados como bugs reales y corregidos con regresiones; R1–R6 permanecen resueltos.
+> **Resultado:** Sin bloqueos
+> **Rondas:** 2/2
+> **Triaje:** ronda 1: R7–R13 bugs reales corregidos con regresiones; ronda 2: los siete `resolved`, sin hallazgos nuevos. R1–R6 (contrato) permanecen resueltos. Cero bloqueos abiertos.
 > **Modelo efectivo:** sdd-implementation-reviewer · openai-codex/gpt-5.6-sol · effort high
 > **Método:** revisión de implementación sobre el commit candidato `d15ecdd` (base `18977ee`), árbol limpio; suites reutilizadas del mismo árbol.
 > **Fecha:** 2026-09-13
@@ -101,3 +118,10 @@
   la actividad usa la correlation real y el verifier registra solo el resultado.
 
 Árbol corregido probado: build 0 errores, Unit **142/142**, Integración **50/50**, E2E **17/17**.
+
+### Ronda 2 — PASS (commit 4694ffa)
+
+Revisión diferencial limitada a R7–R13 y sus efectos próximos: los siete hallazgos quedan `resolved` con
+evidencia en código, migraciones y regresiones. Sin regresiones directas y sin hallazgos nuevos.
+Identidad verificada: base `18977ee`, candidato `4694ffa` (tree `cdeff028…`), working tree limpio;
+el blob aprobado solo cambia por el estado administrativo `Ejecución: Lista para integrar`.
