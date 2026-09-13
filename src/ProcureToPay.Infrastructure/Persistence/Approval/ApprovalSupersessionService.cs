@@ -155,8 +155,9 @@ public sealed class ApprovalSupersessionService(
             .ToArrayAsync(cancellationToken);
         ValidateMapping(
             mapping,
-            PreviousTargets(previousRequirementRecords, previousPrerequisiteRecords),
-            NewTargets(submission));
+            previousRequirementRecords,
+            previousPrerequisiteRecords,
+            submission);
 
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.Serializable, cancellationToken);
@@ -768,9 +769,12 @@ public sealed class ApprovalSupersessionService(
 
     private static void ValidateMapping(
         IReadOnlyList<ApprovalSupersessionMapping> mapping,
-        IReadOnlyCollection<ApprovalTarget> previousTargets,
-        IReadOnlyCollection<ApprovalTarget> newTargets)
+        IReadOnlyCollection<ApprovalRequirementRecord> previousRequirementRecords,
+        IReadOnlyCollection<ApprovalPrerequisiteRecord> previousPrerequisiteRecords,
+        ApprovalSubmission submission)
     {
+        var previousTargets = PreviousTargets(previousRequirementRecords, previousPrerequisiteRecords);
+        var newTargets = NewTargets(submission);
         var previousIdentities = previousTargets.Select(target => target.CanonicalIdentity).ToArray();
         var newIdentities = newTargets.Select(target => target.CanonicalIdentity).ToArray();
         var mappedPrevious = mapping.Select(entry => entry.PreviousIdentity).ToArray();
@@ -796,7 +800,43 @@ public sealed class ApprovalSupersessionService(
             throw new DomainConflictException(
                 "The supersession mapping must declare exactly the targets of the new version.");
         }
+
+        // A grouped requirement is indivisible: its targets are recreated inside exactly one
+        // requirement of the new version and no new requirement merges two previous groups
+        // (REQ-04, CA-04). Splitting or merging would change the approval partition silently.
+        var previousGroups = previousRequirementRecords
+            .Select(record => Identities(ApprovalJsonPersistence.DeserializeTargets(record.TargetsJson)))
+            .ToArray();
+        var newGroups = submission.Requirements
+            .Select(requirement => Identities(requirement.Targets))
+            .ToArray();
+        var byPrevious = mapping.ToDictionary(
+            entry => entry.PreviousIdentity, entry => entry.ReplacementIdentity, StringComparer.Ordinal);
+        var byReplacement = mapping.ToDictionary(
+            entry => entry.ReplacementIdentity, entry => entry.PreviousIdentity, StringComparer.Ordinal);
+        foreach (var group in previousGroups)
+        {
+            var replacements = group.Select(identity => byPrevious[identity]).ToHashSet(StringComparer.Ordinal);
+            if (newGroups.Count(candidate => replacements.IsSubsetOf(candidate)) != 1)
+            {
+                throw new DomainConflictException(
+                    "A grouped previous requirement cannot be split or merged in the new version.");
+            }
+        }
+
+        foreach (var group in newGroups)
+        {
+            var sources = group.Select(identity => byReplacement[identity]).ToHashSet(StringComparer.Ordinal);
+            if (previousGroups.Count(candidate => sources.IsSubsetOf(candidate)) != 1)
+            {
+                throw new DomainConflictException(
+                    "A grouped requirement of the new version cannot be split or merged from the previous one.");
+            }
+        }
     }
+
+    private static HashSet<string> Identities(IEnumerable<ApprovalTarget> targets) =>
+        targets.Select(target => target.CanonicalIdentity).ToHashSet(StringComparer.Ordinal);
 
     private static IReadOnlyList<ApprovalTarget> PreviousTargets(
         IEnumerable<ApprovalRequirementRecord> requirementRecords,

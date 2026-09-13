@@ -37,6 +37,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<ApprovalWorkflowStateRecord> ApprovalWorkflowStates => Set<ApprovalWorkflowStateRecord>();
     public DbSet<ApprovalReconciliationRunRecord> ApprovalReconciliationRuns => Set<ApprovalReconciliationRunRecord>();
     public DbSet<ApprovalDelegationRecord> ApprovalDelegations => Set<ApprovalDelegationRecord>();
+    public DbSet<ApprovalDelegationCommandRecord> ApprovalDelegationCommands => Set<ApprovalDelegationCommandRecord>();
     public DbSet<ApprovalDelegationTransitionJobRecord> ApprovalDelegationTransitionJobs =>
         Set<ApprovalDelegationTransitionJobRecord>();
     public DbSet<CaseSupersessionRecord> CaseSupersessions => Set<CaseSupersessionRecord>();
@@ -77,6 +78,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigureApprovalWorkflowState(modelBuilder);
         ConfigureApprovalReconciliationRun(modelBuilder);
         ConfigureApprovalDelegation(modelBuilder);
+        ConfigureApprovalDelegationCommand(modelBuilder);
         ConfigureApprovalDelegationTransitionJob(modelBuilder);
         ConfigureCaseSupersession(modelBuilder);
         ConfigureDecisionAuthorityEvidence(modelBuilder);
@@ -650,6 +652,27 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         }).IsUnique();
         entity.HasIndex(record => new { record.OrganizationId, record.DelegatorUserId, record.Role, record.Status });
         entity.HasIndex(record => new { record.OrganizationId, record.DelegateeUserId, record.Status });
+    }
+
+    private static void ConfigureApprovalDelegationCommand(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<ApprovalDelegationCommandRecord>();
+        entity.ToTable("ApprovalDelegationCommands", "Approval");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.ActorType).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.DelegationCommandKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Action).HasMaxLength(16).IsRequired();
+        entity.Property(record => record.Fingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        // One command key per actor scope across CREATE and REVOKE (SPEC 04 REQ-01).
+        entity.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.ActorType,
+            record.ActorUserId,
+            record.DelegationCommandKey
+        }).IsUnique();
+        entity.HasIndex(record => record.DelegationId);
     }
 
     private static void ConfigureApprovalDelegationTransitionJob(ModelBuilder modelBuilder)

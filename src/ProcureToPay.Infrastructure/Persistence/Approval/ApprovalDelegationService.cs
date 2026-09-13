@@ -95,11 +95,11 @@ public sealed class ApprovalDelegationService(
             command.ValidFrom,
             command.ValidTo);
 
-        var existing = await FindByCommandKeyAsync(
+        var existing = await FindCommandAsync(
             command.OrganizationId, command.ActorType, command.ActorUserId, key, cancellationToken);
         if (existing is not null)
         {
-            return Replay(existing, fingerprint);
+            return await ReplayAsync(existing, fingerprint, cancellationToken);
         }
 
         await EnsureDelegatorAuthorityAsync(command, cancellationToken);
@@ -134,6 +134,15 @@ public sealed class ApprovalDelegationService(
         try
         {
             dbContext.ApprovalDelegations.Add(Row(delegation));
+            AddCommand(
+                delegation.OrganizationId,
+                delegation.ActorType,
+                delegation.ActorUserId,
+                delegation.DelegationCommandKey,
+                delegation.Id,
+                ApprovalFingerprints.DelegationActionCreate,
+                fingerprint,
+                utcNow);
             AddTransitionJobs(delegation, immediate, utcNow);
             dbContext.ApprovalAuditEntries.Add(ApprovalEvidence.RootForOrganization(
                 delegation.OrganizationId,
@@ -163,14 +172,14 @@ public sealed class ApprovalDelegationService(
         {
             await transaction.RollbackAsync(cancellationToken);
             dbContext.ChangeTracker.Clear();
-            var winner = await FindByCommandKeyAsync(
+            var winner = await FindCommandAsync(
                 command.OrganizationId, command.ActorType, command.ActorUserId, key, cancellationToken);
             if (winner is null)
             {
                 throw;
             }
 
-            return Replay(winner, fingerprint);
+            return await ReplayAsync(winner, fingerprint, cancellationToken);
         }
 
         logger.LogInformation(
@@ -198,12 +207,17 @@ public sealed class ApprovalDelegationService(
         var reason = ApprovalLimits.RequireReason(command.Reason, "Delegation reason");
         var utcNow = occurredAt.ToUniversalTime();
 
-        var existing = await FindByCommandKeyAsync(
+        var existing = await FindCommandAsync(
             command.OrganizationId, command.ActorType, command.ActorUserId, key, cancellationToken);
         if (existing is not null)
         {
-            var replayedFingerprint = RevocationFingerprint(existing, command, reason, key);
-            return Replay(existing, replayedFingerprint);
+            var replayedDelegation = await dbContext.ApprovalDelegations
+                .AsNoTracking()
+                .SingleOrDefaultAsync(
+                    candidate => candidate.Id == existing.DelegationId, cancellationToken)
+                ?? throw new DomainNotFoundException("The approval delegation is not visible.");
+            var replayedFingerprint = RevocationFingerprint(replayedDelegation, command, reason, key);
+            return await ReplayAsync(existing, replayedFingerprint, cancellationToken);
         }
 
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
@@ -250,9 +264,33 @@ public sealed class ApprovalDelegationService(
             utcNow,
             triggerAuditId: rootAuditId,
             rootAuditId);
-        record.Fingerprint = delegation.Fingerprint;
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        AddCommand(
+            command.OrganizationId,
+            command.ActorType,
+            command.ActorUserId,
+            key,
+            delegation.Id,
+            ApprovalFingerprints.DelegationActionRevoke,
+            fingerprint,
+            utcNow);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            dbContext.ChangeTracker.Clear();
+            var winner = await FindCommandAsync(
+                command.OrganizationId, command.ActorType, command.ActorUserId, key, cancellationToken);
+            if (winner is null)
+            {
+                throw;
+            }
+
+            return await ReplayAsync(winner, fingerprint, cancellationToken);
+        }
 
         logger.LogInformation("Approval delegation {DelegationId} was revoked.", delegation.Id);
         ApprovalTelemetry.RecordDelegation("REVOKED");
@@ -287,16 +325,7 @@ public sealed class ApprovalDelegationService(
         var (job, record) = claimed.Value;
         if (record is null)
         {
-            await dbContext.ApprovalDelegationTransitionJobs
-                .Where(candidate => candidate.Id == jobId)
-                .ExecuteUpdateAsync(
-                    setters => setters
-                        .SetProperty(candidate => candidate.Status, ApprovalDelegationCodes.JobCompleted)
-                        .SetProperty(candidate => candidate.CompletedAt, utcNow)
-                        .SetProperty(candidate => candidate.LeaseOwner, (string?)null)
-                        .SetProperty(candidate => candidate.LockedUntil, (DateTimeOffset?)null)
-                        .SetProperty(candidate => candidate.Version, candidate => candidate.Version + 1),
-                    cancellationToken);
+            await CompleteJobAsync(jobId, utcNow, cancellationToken);
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return true;
@@ -304,7 +333,8 @@ public sealed class ApprovalDelegationService(
 
         if (record.Status == ApprovalDelegationCodes.StatusActive)
         {
-            job.Complete(utcNow);
+            _ = job;
+            await CompleteJobAsync(jobId, utcNow, cancellationToken);
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return true;
@@ -312,7 +342,7 @@ public sealed class ApprovalDelegationService(
 
         if (record.Status != ApprovalDelegationCodes.StatusScheduled)
         {
-            job.Cancel(utcNow);
+            await CancelJobAsync(jobId, utcNow, cancellationToken);
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return true;
@@ -338,7 +368,8 @@ public sealed class ApprovalDelegationService(
             delegation.ValidFrom,
             triggerAuditId: delegation.RootAuditId,
             transitionAuditId);
-        job.Complete(utcNow);
+        _ = job;
+        await CompleteJobAsync(jobId, utcNow, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
@@ -371,7 +402,8 @@ public sealed class ApprovalDelegationService(
         var (job, record) = claimed.Value;
         if (record is null || record.Status == ApprovalDelegationCodes.StatusExpired)
         {
-            job.Complete(utcNow);
+            _ = job;
+            await CompleteJobAsync(jobId, utcNow, cancellationToken);
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return true;
@@ -379,7 +411,7 @@ public sealed class ApprovalDelegationService(
 
         if (record.Status != ApprovalDelegationCodes.StatusActive)
         {
-            job.Cancel(utcNow);
+            await CancelJobAsync(jobId, utcNow, cancellationToken);
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return true;
@@ -409,7 +441,8 @@ public sealed class ApprovalDelegationService(
                 delegation.ValidTo,
                 expiryAuditId,
                 requestedAt: delegation.ValidTo)));
-        job.Complete(utcNow);
+        _ = job;
+        await CompleteJobAsync(jobId, utcNow, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
@@ -417,6 +450,36 @@ public sealed class ApprovalDelegationService(
         ApprovalTelemetry.RecordDelegation("EXPIRED");
         return true;
     }
+
+    private async Task CompleteJobAsync(
+        Guid jobId,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken) =>
+        await dbContext.ApprovalDelegationTransitionJobs
+            .Where(record => record.Id == jobId)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(record => record.Status, ApprovalDelegationCodes.JobCompleted)
+                    .SetProperty(record => record.CompletedAt, occurredAt)
+                    .SetProperty(record => record.LeaseOwner, (string?)null)
+                    .SetProperty(record => record.LockedUntil, (DateTimeOffset?)null)
+                    .SetProperty(record => record.Version, record => record.Version + 1),
+                cancellationToken);
+
+    private async Task CancelJobAsync(
+        Guid jobId,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken) =>
+        await dbContext.ApprovalDelegationTransitionJobs
+            .Where(record => record.Id == jobId)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(record => record.Status, ApprovalDelegationCodes.JobCancelled)
+                    .SetProperty(record => record.CancelledAt, occurredAt)
+                    .SetProperty(record => record.LeaseOwner, (string?)null)
+                    .SetProperty(record => record.LockedUntil, (DateTimeOffset?)null)
+                    .SetProperty(record => record.Version, record => record.Version + 1),
+                cancellationToken);
 
     private async Task<(ApprovalDelegationTransitionJob Job, ApprovalDelegationRecord? Record)?> ClaimJobAsync(
         Guid jobId,
@@ -628,13 +691,37 @@ public sealed class ApprovalDelegationService(
                 requestedAt: scheduledAt)));
     }
 
-    private async Task<ApprovalDelegationRecord?> FindByCommandKeyAsync(
+    private void AddCommand(
+        Guid organizationId,
+        ApprovalDelegationActorType actorType,
+        Guid actorUserId,
+        string delegationCommandKey,
+        Guid delegationId,
+        string action,
+        string fingerprint,
+        DateTimeOffset occurredAt)
+    {
+        dbContext.ApprovalDelegationCommands.Add(new ApprovalDelegationCommandRecord
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            ActorType = ApprovalDelegationCodes.Code(actorType),
+            ActorUserId = actorUserId,
+            DelegationCommandKey = delegationCommandKey,
+            Action = action,
+            Fingerprint = fingerprint,
+            DelegationId = delegationId,
+            CreatedAt = occurredAt.ToUniversalTime()
+        });
+    }
+
+    private async Task<ApprovalDelegationCommandRecord?> FindCommandAsync(
         Guid organizationId,
         ApprovalDelegationActorType actorType,
         Guid actorUserId,
         string key,
         CancellationToken cancellationToken) =>
-        await dbContext.ApprovalDelegations
+        await dbContext.ApprovalDelegationCommands
             .AsNoTracking()
             .SingleOrDefaultAsync(
                 record => record.OrganizationId == organizationId &&
@@ -643,14 +730,21 @@ public sealed class ApprovalDelegationService(
                           record.DelegationCommandKey == key,
                 cancellationToken);
 
-    private static ApprovalDelegationOutcome Replay(ApprovalDelegationRecord record, string fingerprint)
+    private async Task<ApprovalDelegationOutcome> ReplayAsync(
+        ApprovalDelegationCommandRecord command,
+        string fingerprint,
+        CancellationToken cancellationToken)
     {
-        if (!string.Equals(record.Fingerprint, fingerprint, StringComparison.Ordinal))
+        if (!string.Equals(command.Fingerprint, fingerprint, StringComparison.Ordinal))
         {
             ApprovalTelemetry.RecordConflict("DELEGATION");
-            throw new DomainConflictException("The delegation command key was already used with different content.");
+            throw new DomainConflictException(
+                "The delegation command key was already used with different content.");
         }
 
+        var record = await dbContext.ApprovalDelegations
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == command.DelegationId, cancellationToken);
         return new ApprovalDelegationOutcome(
             record.Id,
             record.Status,

@@ -26,6 +26,7 @@ public sealed class ApprovalEvolutionIntegrationTests
     private static readonly Guid DelegatorId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     private static readonly Guid DelegateeId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
     private static readonly Guid LineOne = Guid.Parse("44444444-4444-4444-4444-444444444444");
+    private static readonly Guid LineTwo = Guid.Parse("55555555-5555-5555-5555-555555555555");
     private static readonly DateTimeOffset AssignedAt = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset Now = new(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);
     private static readonly ApprovalWorkloadIdentity Workload = new("internal://procure-to-pay", "adapter");
@@ -192,19 +193,34 @@ public sealed class ApprovalEvolutionIntegrationTests
         }
 
         // Revocation cancels pending jobs and creates one DELEGATION_CHANGE run (REQ-03).
+        var revokeCommand = new ApprovalDelegationRevokeCommand(
+            ApprovalDelegationActorType.Delegator,
+            DelegatorId,
+            OrganizationId,
+            created.DelegationId,
+            created.Version,
+            "Back from vacation",
+            "delegation-revoke-1",
+            "correlation");
         var revoked = await Fresh(environment, adapter).Delegations.RevokeAsync(
-            new ApprovalDelegationRevokeCommand(
-                ApprovalDelegationActorType.Delegator,
-                DelegatorId,
-                OrganizationId,
-                created.DelegationId,
-                created.Version,
-                "Back from vacation",
-                "delegation-revoke-1",
-                "correlation"),
-            Now.AddMinutes(10),
-            cancellationToken);
+            revokeCommand, Now.AddMinutes(10), cancellationToken);
         Assert.Equal("REVOKED", revoked.Status);
+
+        // The revoke command replays idempotently and another payload is a conflict; the CREATE
+        // command keeps its own independent replay (REQ-01, CA-01).
+        var revokeReplay = await Fresh(environment, adapter).Delegations.RevokeAsync(
+            revokeCommand, Now.AddMinutes(11), cancellationToken);
+        Assert.True(revokeReplay.Replayed);
+        Assert.Equal(created.DelegationId, revokeReplay.DelegationId);
+        Assert.Equal("REVOKED", revokeReplay.Status);
+        await Assert.ThrowsAsync<DomainConflictException>(() => Fresh(environment, adapter).Delegations.RevokeAsync(
+            revokeCommand with { Reason = "Another reason" },
+            Now.AddMinutes(11),
+            cancellationToken));
+        var createReplay = await Fresh(environment, adapter).Delegations.CreateAsync(
+            create, Now.AddMinutes(12), cancellationToken);
+        Assert.True(createReplay.Replayed);
+        Assert.Equal(created.DelegationId, createReplay.DelegationId);
         await using (var verification = environment.CreateContext())
         {
             var pending = await verification.ApprovalDelegationTransitionJobs
@@ -353,6 +369,131 @@ public sealed class ApprovalEvolutionIntegrationTests
                 incompleteMapping, "correlation"),
             Now.AddMinutes(7),
             cancellationToken));
+
+        // A grouped requirement cannot be split into two requirements of the new version (REQ-04).
+        adapter.MaterialDigest = new string('c', 64);
+        adapter.Layout = EvolutionLayout.Grouped;
+        var grouped = await Fresh(environment, adapter).Submission.SubmitAsync(
+            Command("submission-supersede-grouped", 1), Now.AddMinutes(20), cancellationToken);
+        var groupedVersion = await environment.CaseVersionAsync(grouped.CaseId, cancellationToken);
+        adapter.Layout = EvolutionLayout.Split;
+        var splitMapping = new[]
+        {
+            ApprovalSupersessionMapping.Create(
+                new ApprovalTarget("LINE", LineOne, 1, new string('c', 64)),
+                new ApprovalTarget("LINE", LineOne, 1, new string('c', 64)),
+                "purchase-request-materiality/v1",
+                new string('f', 64)),
+            ApprovalSupersessionMapping.Create(
+                new ApprovalTarget("LINE", LineTwo, 1, new string('c', 64)),
+                new ApprovalTarget("LINE", LineTwo, 1, new string('c', 64)),
+                "purchase-request-materiality/v1",
+                new string('f', 64))
+        };
+        await Assert.ThrowsAsync<DomainConflictException>(() => Fresh(environment, adapter).Supersessions.SupersedeAsync(
+            new ApprovalSupersessionCommand(
+                Workload, grouped.CaseId, groupedVersion, "supersession-split", "submission-supersede-split", "v1",
+                splitMapping, "correlation"),
+            Now.AddMinutes(21),
+            cancellationToken));
+    }
+
+    [Fact]
+    public async Task Scheduled_delegation_transitions_activate_and_expire_once()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await EvolutionEnvironment.StartAsync(cancellationToken);
+        var adapter = new EvolutionAdapter();
+
+        var create = DelegationCommand(
+            DelegatorId, DelegateeId, Now.AddHours(1), Now.AddHours(2), "delegation-scheduled");
+        var created = await Fresh(environment, adapter).Delegations.CreateAsync(create, Now, cancellationToken);
+        Assert.False(created.Replayed);
+        Assert.Equal("SCHEDULED", created.Status);
+
+        await using (var verification = environment.CreateContext())
+        {
+            var jobs = await verification.ApprovalDelegationTransitionJobs
+                .Where(record => record.DelegationId == created.DelegationId)
+                .ToArrayAsync(cancellationToken);
+            Assert.Equal(2, jobs.Length);
+            Assert.All(jobs, record => Assert.Equal("PENDING", record.Status));
+            Assert.Empty(await verification.ApprovalReconciliationRuns
+                .Where(record => record.DelegationId == created.DelegationId)
+                .ToArrayAsync(cancellationToken));
+        }
+
+        // Nothing is due before valid_from.
+        Assert.Equal(0, await Fresh(environment, adapter).Transitions.ProcessDueAsync(
+            "worker-a", Now, cancellationToken: cancellationToken));
+
+        // Two workers race the same due activation: exactly one confirms it (REQ-03, CA-03).
+        var confirmations = await Task.WhenAll(
+            Task.Run(
+                () => Fresh(environment, adapter).Transitions.ProcessDueAsync(
+                    "worker-a", Now.AddHours(1), cancellationToken: cancellationToken),
+                cancellationToken),
+            Task.Run(
+                () => Fresh(environment, adapter).Transitions.ProcessDueAsync(
+                    "worker-b", Now.AddHours(1), cancellationToken: cancellationToken),
+                cancellationToken));
+        Assert.Equal(1, confirmations.Sum());
+
+        await using (var verification = environment.CreateContext())
+        {
+            var delegation = await verification.ApprovalDelegations.SingleAsync(
+                record => record.Id == created.DelegationId, cancellationToken);
+            Assert.Equal("ACTIVE", delegation.Status);
+            var activate = await verification.ApprovalDelegationTransitionJobs.SingleAsync(
+                record => record.DelegationId == created.DelegationId && record.Transition == "ACTIVATE",
+                cancellationToken);
+            Assert.Equal("COMPLETED", activate.Status);
+            var run = await verification.ApprovalReconciliationRuns.SingleAsync(
+                record => record.DelegationId == created.DelegationId, cancellationToken);
+            Assert.Equal("DELEGATION_CHANGE", run.Trigger);
+            Assert.Equal("ACTIVATE", run.DelegationTransition);
+            // The create audit is the immutable trigger; the transition audit is the run root.
+            Assert.Equal(delegation.RootAuditId, run.TriggerAuditId);
+            Assert.NotEqual(delegation.RootAuditId, run.RootAuditId);
+            Assert.Equal(Now.AddHours(1), run.RequestedAt);
+            var transitionAudit = await verification.ApprovalAuditEntries.SingleAsync(
+                record => record.Id == run.RootAuditId, cancellationToken);
+            Assert.Equal("SYSTEM", transitionAudit.ActorType);
+            Assert.Equal("DELEGATION", transitionAudit.CausedByAuditStream);
+            Assert.Equal(delegation.Id, transitionAudit.CausedByAuditId);
+            Assert.Equal("DELEGATION_ACTIVATED", transitionAudit.Action);
+        }
+
+        // A completed run never reopens and the second sweep confirms nothing new.
+        Assert.Equal(0, await Fresh(environment, adapter).Transitions.ProcessDueAsync(
+            "worker-c", Now.AddHours(1), cancellationToken: cancellationToken));
+
+        // The scheduled expiry confirms exactly one SYSTEM run caused by the delegation.
+        Assert.Equal(1, await Fresh(environment, adapter).Transitions.ProcessDueAsync(
+            "worker-d", Now.AddHours(2), cancellationToken: cancellationToken));
+        await using (var verification = environment.CreateContext())
+        {
+            var delegation = await verification.ApprovalDelegations.SingleAsync(
+                record => record.Id == created.DelegationId, cancellationToken);
+            Assert.Equal("EXPIRED", delegation.Status);
+            var expiryRun = await verification.ApprovalReconciliationRuns.SingleAsync(
+                record => record.DelegationId == created.DelegationId && record.Trigger == "DELEGATION_EXPIRY",
+                cancellationToken);
+            Assert.Null(expiryRun.TriggerAuditId);
+            Assert.Equal(Now.AddHours(2), expiryRun.RequestedAt);
+            var rootAudit = await verification.ApprovalAuditEntries.SingleAsync(
+                record => record.Id == expiryRun.RootAuditId, cancellationToken);
+            Assert.Equal("SYSTEM", rootAudit.ActorType);
+            Assert.Equal("DELEGATION", rootAudit.CausedByAuditStream);
+            Assert.Equal(delegation.Id, rootAudit.CausedByAuditId);
+            var expire = await verification.ApprovalDelegationTransitionJobs.SingleAsync(
+                record => record.DelegationId == created.DelegationId && record.Transition == "EXPIRE",
+                cancellationToken);
+            Assert.Equal("COMPLETED", expire.Status);
+        }
+
+        Assert.Equal(0, await Fresh(environment, adapter).Transitions.ProcessDueAsync(
+            "worker-e", Now.AddHours(2), cancellationToken: cancellationToken));
     }
 
     [Fact]
@@ -398,9 +539,11 @@ public sealed class ApprovalEvolutionIntegrationTests
         var revocation = await Fresh(environment, adapter).Revocations.RevokeAsync(command, Now.AddMinutes(2), cancellationToken);
         Assert.False(revocation.Replayed);
         Assert.Equal("REVOKED", revocation.EvidenceStatus);
+        Assert.Equal(1, revocation.EvidenceVersion);
 
         var replay = await Fresh(environment, adapter).Revocations.RevokeAsync(command, Now.AddMinutes(3), cancellationToken);
         Assert.True(replay.Replayed);
+        Assert.Equal(1, replay.EvidenceVersion);
         Assert.Equal(revocation.RevocationId, replay.RevocationId);
         await Assert.ThrowsAsync<DomainConflictException>(() => Fresh(environment, adapter).Revocations.RevokeAsync(
             command with { Reason = "Different reason" },
@@ -419,10 +562,13 @@ public sealed class ApprovalEvolutionIntegrationTests
             var decision = await verification.ApprovalDecisions.SingleAsync(cancellationToken);
             Assert.Equal(decisionId, decision.Id);
             Assert.Equal(ApprovalDecisionOrigin.Human, (ApprovalDecisionOrigin)decision.Origin);
-            Assert.Equal(1, await verification.DecisionEvidenceRevocations.CountAsync(cancellationToken));
-            Assert.Equal(1, await verification.ApprovalOutboxEvents.CountAsync(
+            var revocationRecord = await verification.DecisionEvidenceRevocations.SingleAsync(cancellationToken);
+            Assert.Equal(1, revocationRecord.EvidenceVersion);
+            var revokedEvent = await verification.ApprovalOutboxEvents.SingleAsync(
                 record => record.ContractVersion == ApprovalEvolutionCodes.EvidenceRevokedContractVersion,
-                cancellationToken));
+                cancellationToken);
+            Assert.Contains("\"evidence_version\":1", revokedEvent.PayloadJson);
+            Assert.Equal(2, evidence.Version);
         }
 
         // Revoked evidence never supports a derived decision: the new version needs a human task.
@@ -543,9 +689,18 @@ public sealed class ApprovalEvolutionIntegrationTests
         key,
         "correlation");
 
+    private enum EvolutionLayout
+    {
+        Single,
+        Grouped,
+        Split
+    }
+
     private sealed class EvolutionAdapter : IApprovalSubmissionAdapter
     {
         public string MaterialDigest { get; set; } = new('c', 64);
+
+        public EvolutionLayout Layout { get; set; } = EvolutionLayout.Single;
 
         public ApprovalAdapterDescriptor Descriptor { get; } = new(
             "adapter", "PURCHASE_REQUEST", "SUBMIT", "v1", false);
@@ -554,17 +709,22 @@ public sealed class ApprovalEvolutionIntegrationTests
             ApprovalSubmissionRequest request,
             CancellationToken cancellationToken = default)
         {
-            var requirement = new ApprovalRequirementDefinition(
-                "DEPARTMENT_REQ",
-                "DEPARTMENT",
-                SystemRole.ItReviewer,
-                AuthorityRequirement.None,
-                DecisionScopeDescriptor.Create(
-                    request.OrganizationId, [new DecisionScopeEntry(ScopeDimension.Department, DepartmentId, 1)]),
-                [ApprovalDecisionAction.Approve, ApprovalDecisionAction.Reject, ApprovalDecisionAction.RequestChanges],
-                [OriginatorId],
-                [new ApprovalTarget("LINE", LineOne, 1, MaterialDigest)],
-                []);
+            ApprovalRequirementDefinition[] requirements = Layout switch
+            {
+                EvolutionLayout.Grouped =>
+                [
+                    Requirement(request, "DEPARTMENT_REQ", [LineOne, LineTwo])
+                ],
+                EvolutionLayout.Split =>
+                [
+                    Requirement(request, "DEPARTMENT_REQ_L1", [LineOne]),
+                    Requirement(request, "DEPARTMENT_REQ_L2", [LineTwo])
+                ],
+                _ =>
+                [
+                    Requirement(request, "DEPARTMENT_REQ", [LineOne])
+                ]
+            };
             return Task.FromResult(new ApprovalSubmission(
                 request.SubmissionKey,
                 request.OrganizationId,
@@ -575,9 +735,24 @@ public sealed class ApprovalEvolutionIntegrationTests
                 new string('a', 64),
                 request.RequesterId,
                 request.OriginatorId,
-                [requirement],
+                requirements,
                 []));
         }
+
+        private ApprovalRequirementDefinition Requirement(
+            ApprovalSubmissionRequest request,
+            string sourceKey,
+            IReadOnlyList<Guid> lineIds) => new(
+            sourceKey,
+            "DEPARTMENT",
+            SystemRole.ItReviewer,
+            AuthorityRequirement.None,
+            DecisionScopeDescriptor.Create(
+                request.OrganizationId, [new DecisionScopeEntry(ScopeDimension.Department, DepartmentId, 1)]),
+            [ApprovalDecisionAction.Approve, ApprovalDecisionAction.Reject, ApprovalDecisionAction.RequestChanges],
+            [OriginatorId],
+            lineIds.Select(lineId => new ApprovalTarget("LINE", lineId, 1, MaterialDigest)).ToArray(),
+            []);
     }
 
     /// <summary>Deterministic UTC clock for the reconciliation and transition runs.</summary>
@@ -595,6 +770,7 @@ public sealed class ApprovalEvolutionIntegrationTests
         ApprovalDecisionService Decision,
         ApprovalReconciliationService Reconciliation,
         ApprovalDelegationService Delegations,
+        ApprovalDelegationTransitionProcessor Transitions,
         ApprovalSupersessionService Supersessions,
         ApprovalEvidenceRevocationService Revocations);
 
@@ -755,6 +931,8 @@ public sealed class ApprovalEvolutionIntegrationTests
             var reconciliation = new ApprovalReconciliationService(
                 context, assignmentEngine, loggerFactory.CreateLogger<ApprovalReconciliationService>(),
                 timeProvider);
+            var delegationService = new ApprovalDelegationService(
+                context, scopeResolver, loggerFactory.CreateLogger<ApprovalDelegationService>());
             return new Services(
                 new ApprovalSubmissionService(
                     context, registry, new ApprovalOwnerWorkloadRegistry(configuration, allowlist), allowlist,
@@ -762,8 +940,10 @@ public sealed class ApprovalEvolutionIntegrationTests
                 new ApprovalDecisionService(
                     context, assignmentEngine, loggerFactory.CreateLogger<ApprovalDecisionService>()),
                 reconciliation,
-                new ApprovalDelegationService(
-                    context, scopeResolver, loggerFactory.CreateLogger<ApprovalDelegationService>()),
+                delegationService,
+                new ApprovalDelegationTransitionProcessor(
+                    context, delegationService,
+                    loggerFactory.CreateLogger<ApprovalDelegationTransitionProcessor>()),
                 new ApprovalSupersessionService(
                     context, allowlist, registry, new ApprovalOwnerWorkloadRegistry(configuration, allowlist),
                     assignmentEngine, loggerFactory.CreateLogger<ApprovalSupersessionService>()),

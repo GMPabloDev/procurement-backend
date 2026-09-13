@@ -160,7 +160,9 @@ public sealed class ApprovalEvidenceRevocationService(
                 OrganizationId = tracked.OrganizationId,
                 CaseId = decisionRecord.CaseId,
                 EvidenceId = tracked.Id,
-                EvidenceVersion = tracked.Version,
+                // The append-only record keeps the version the command confirmed (REQ-06); the
+                // evidence row itself advances to its revoked state.
+                EvidenceVersion = command.ExpectedEvidenceVersion,
                 DecisionId = tracked.RootHumanDecisionId,
                 RevocationKey = key,
                 Fingerprint = fingerprint,
@@ -200,7 +202,7 @@ public sealed class ApprovalEvidenceRevocationService(
                 decisionRecord.CaseId,
                 tracked.Id,
                 tracked.Digest,
-                tracked.Version,
+                command.ExpectedEvidenceVersion,
                 tracked.RootHumanDecisionId,
                 revocationId,
                 ApprovalEvolutionCodes.Code(command.ActorType),
@@ -221,7 +223,7 @@ public sealed class ApprovalEvidenceRevocationService(
                 revocationId,
                 tracked.Id,
                 ApprovalEvolutionCodes.EvidenceRevoked,
-                tracked.Version,
+                command.ExpectedEvidenceVersion,
                 Replayed: false);
         }
         catch (DbUpdateException)

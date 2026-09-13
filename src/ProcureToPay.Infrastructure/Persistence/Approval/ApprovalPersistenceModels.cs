@@ -303,6 +303,25 @@ public sealed class ApprovalDelegationRecord
     public byte[] RowVersion { get; set; } = [];
 }
 
+/// <summary>
+/// Idempotency ledger of every delegation command (SPEC 04 REQ-01): the key is unique per
+/// organization and actor, and its stored fingerprint resolves a replay of CREATE or REVOKE
+/// without overwriting the creation identity of the delegation row.
+/// </summary>
+public sealed class ApprovalDelegationCommandRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public string ActorType { get; set; } = string.Empty;
+    public Guid ActorUserId { get; set; }
+    public string DelegationCommandKey { get; set; } = string.Empty;
+    public string Action { get; set; } = string.Empty;
+    public string Fingerprint { get; set; } = string.Empty;
+    public Guid DelegationId { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+}
+
 /// <summary>Durable ACTIVATE/EXPIRE job of one delegation version (SPEC 04 REQ-03).</summary>
 public sealed class ApprovalDelegationTransitionJobRecord
 {
