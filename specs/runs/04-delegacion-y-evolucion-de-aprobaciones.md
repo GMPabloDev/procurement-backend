@@ -1,7 +1,7 @@
 # RUN SPEC 04 — Delegación y evolución de aprobaciones
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** Lista para integrar
+> **Estado del run:** Integrado
 > **Spec:** specs/04-delegacion-y-evolucion-de-aprobaciones.md
 > **Revisión contractual:** 2
 > **Commit de la spec:** 758b9c90a0cd0174bb75bee39d56fd1ddc6f5de9
@@ -13,9 +13,9 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-13 05:25 -0500
-> **Actualizado:** 2026-09-13 08:05 -0500
+> **Actualizado:** 2026-09-13 08:13 -0500
 > **HEAD verificado:** 2bb6db3b426228ad50201ff745edaaacce0fd96a
-> **Commit de integración:** Pendiente
+> **Commit de integración:** 66f34394c0583295d97c706b038eb2f516467a99
 
 ## Línea base
 
@@ -138,3 +138,12 @@ Hallazgos de la ronda 1 y su resolución:
 - **R13** faltaba evidencia de activación/expiración programadas y carreras; corregido con la nueva integración de transiciones programadas y dos workers.
 - **R14** el registro de revocación guardaba la versión post-revocación; corregido para conservar la versión esperada/confirmada en el registro, el evento y el replay.
 - **R13 (ronda 2)** la prueba de transiciones programadas no procesaba las corridas sobre un caso real; corregido en CP-06 con reasignación, cursor, segunda pasada y decisión terminal preservada.
+
+## Cierre
+
+- **Integración:** fast-forward de `spec-04-delegacion-y-evolucion-de-aprobaciones` a `main`; sin commits nuevos en `main` desde la base `758b9c9`, por lo que la historia de la rama es ancestro directo de la base.
+- **Commit de integración:** `66f34394c0583295d97c706b038eb2f516467a99` en `main`; el árbol de `src/` y `tests/` es idéntico al `HEAD verificado` `2bb6db3b426228ad50201ff745edaaacce0fd96a` (`git diff --stat` vacío), por lo que la equivalencia está demostrada por Git sin otra revisión.
+- **Fecha:** 2026-09-13 08:13 -0500.
+- **Evidencia sobre el árbol verificado:** build 0 errores/0 advertencias; Unit 119/119; Integración 50/50; E2E 14/14 (Docker/Testcontainers). Revisión independiente: PASS en ronda 3 con R1–R14 cerrados.
+- **Estado final:** spec `Implementada` / `Integrada` / `Vigente`; SPEC 03 `Sustituida parcialmente por SPEC 04`; run `Integrado`.
+- **Pendiente del usuario:** commitear este cierre administrativo (no se hace commit/merge/push desde este flujo).

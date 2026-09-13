@@ -1,9 +1,9 @@
 # SPEC 04 — Delegación y evolución de aprobaciones
 
 > **Formato:** sdd/v3
-> **Estado:** Aprobada
-> **Ejecución:** Lista para integrar
-> **Vigencia:** Pendiente
+> **Estado:** Implementada
+> **Ejecución:** Integrada
+> **Vigencia:** Vigente
 > **Revisión:** 2
 > **Digest contractual:** 0ffbc76e8ef5a1c88d251ebad74a99d6cb45cebffd0b6f553fddc5210049933f
 > **Fecha:** 2026-09-11
