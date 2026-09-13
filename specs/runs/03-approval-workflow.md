@@ -1,7 +1,7 @@
 # RUN SPEC 03 — Núcleo de casos y decisiones de aprobación
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** En implementación
+> **Estado del run:** Lista para integrar
 > **Spec:** specs/03-approval-workflow.md
 > **Revisión contractual:** 3
 > **Commit de la spec:** 4c933edbac7113573bb8eb38712702d5bca9fd27
@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** balanced
 > **Iniciado:** 2026-09-11 04:45 -05
-> **Actualizado:** 2026-09-13 01:21 -05
-> **HEAD verificado:** Pendiente
+> **Actualizado:** 2026-09-13 03:14 -05
+> **HEAD verificado:** 1a8393f16a90cefd69ff4a16938c4dcfe920dd60
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -196,6 +196,13 @@
 - HEAD: working-tree sobre `spec-03-approval-workflow` (commit `41d47f8…` + residuos sin commitear).
 - Próximo paso: commit del usuario con este árbol exacto y ronda delta de cierre (autorización solicitada).
 
+### CP-09 — 2026-09-13 — Cierre del gate (Lista para integrar)
+
+- Tareas: T-01–T-06 (`Verificada`); CA-01–CA-08 `Cumplido`; conformidad 18/18.
+- Ronda final (delta de cierre): **PASS** sobre `1a8393f16a90…` — R2, R16 y R12 `resolved`; warning R20 registrado como pendiente posterior de observabilidad (no bloquea el gate).
+- HEAD verificado: `1a8393f16a90cefd69ff4a16938c4dcfe920dd60` (árbol probado: build 0 errores, Unit 101/101, Integración 44/44, E2E 12/12).
+- Estado: spec y run `Lista para integrar`. Pendiente: commit de metadatos finales por el usuario, integración a `main` y `/spec-impl 03 --close` desde la rama base.
+
 ## Evidencia de aceptación
 
 | Criterio | Estado | Evidencia | Verificador |
@@ -226,6 +233,8 @@
   - Consecuencia: para el área de Approval, la señal del LSP no es utilizable y la evidencia de compilación se toma del compilador y de las suites de prueba. No se alteró código para satisfacer los falsos positivos.
 
 - **Modo de revisión conservado del run.** El run se reanudó en `balanced` tal como estaba registrado; no se cambió de modo. Solo se aplicó la autorización de alcance del usuario (Bloques 1 y 2 antes de la siguiente parada).
+
+- **Rondas adicionales autorizadas.** Tras consumir el presupuesto automático de dos rondas (2/2), el usuario autorizó expresamente la **ronda 3 autorizada** (delta sobre `41d47f8`) y la **ronda 4 autorizada** (delta de cierre sobre `1a8393f`), ambas con causa acotada al triaje del gate. No se delegaron más llamadas que las autorizadas.
 
 - **Entorno: nodos MSBuild persistentes bloqueaban los binarios (no es un fallo de código).** Durante el Bloque 2, `dotnet build` falló de forma intermitente con `MSB4018` en tareas del SDK (`Microsoft.NET.Sdk.StaticWebAssets.JSModules.targets`, `Microsoft.NET.Sdk.targets`, `Microsoft.AspNetCore.Mvc.Testing.targets`). La causa real apareció como `MSB3026`: `The process cannot access the file '…/tests/ProcureToPay.IntegrationTests/bin/Debug/net10.0/Docker.DotNet.Unix.dll' because it is being used by another process`. Había más de 20 nodos MSBuild con `/nodeReuse:true` acumulados (hasta ~13 minutos de antigüedad) reteniendo handles de los ensamblados de prueba. Mitigación aplicada: `dotnet build-server shutdown` y compilar con `-nodeReuse:false`; con eso la solución compila de forma reproducible con **0 avisos / 0 errores**. Los `MSB4018` eran un efecto derivado del bloqueo de archivos, no del código.
 
@@ -264,12 +273,12 @@
 
 ## Verificación independiente
 
-> **Resultado:** Con bloqueos (ronda 3 delta = BLOCK con 2 residuos ya corregidos) — el run no queda listo para integrar todavía
-> **Rondas:** 3 (presupuesto automático 2/2 consumido + ronda 3 delta autorizada por el usuario)
+> **Resultado:** Sin bloqueos
+> **Rondas:** 4/4
 > **Triaje (ronda 2):** 8 detalle-contrato / 1 prueba-faltante / 1 error-del-revisor descartado / 1 hueco de proceso resuelto
 > **Modelo efectivo:** `openai-codex/gpt-5.6-sol` (effort high) — coincide con el configurado en `subagents.json` y es distinto del orquestador (`deepseek-v4-pro`); sin degradación
-> **Método:** Subagente `sdd-implementation-reviewer`; ronda 1 sobre `0e25ab77…fd80f4f` (histórica, abajo), ronda 2 sobre `5513497fad…` y ronda 3 (delta) sobre `41d47f8e3297…`
-> **Fecha:** ronda 1: 2026-09-11 13:30 UTC · ronda 2: 2026-09-13 06:21 UTC · ronda 3: 2026-09-13 07:45 UTC
+> **Método:** Subagente `sdd-implementation-reviewer`; ronda 1 sobre `0e25ab77…fd80f4f` (histórica, abajo), ronda 2 sobre `5513497fad…`, ronda 3 (delta) sobre `41d47f8e3297…` y ronda final (delta de cierre) sobre `1a8393f16a90…`
+> **Fecha:** ronda 1: 2026-09-11 13:30 UTC · ronda 2: 2026-09-13 06:21 UTC · ronda 3: 2026-09-13 07:45 UTC · ronda final: 2026-09-13 08:13 UTC
 
 El revisor leyó archivos y ejecutó comprobaciones propias (build, `specctl`, `git`, `hashlib` sobre el vector de submission — coincidió en `de1d2652…`). Veredicto: **BLOCK**, con 12 hallazgos bloqueantes. Triaje verificado contra el contrato por el orquestador:
 
@@ -348,6 +357,14 @@ Revisión delta sobre `41d47f8e3297…` (delta desde `5513497fad…`), autorizad
 - **R16 (residuo)**: `ApprovalDependencyRef` aún colapsaba targets duplicados en `ImmutableHashSet`; corregido rechazando duplicados sobre la secuencia original.
 - **R12**: dependiente de R2/R16; se cierra con ellos. El seguimiento de cierre es la ronda delta final (autorización solicitada).
 
+#### Ronda final (delta de cierre, autorizada) — 2026-09-13 08:13 UTC (PASS)
+
+Revisión delta acotada a R2, R16 y R12 sobre `1a8393f16a90…` (delta desde `41d47f8e3297…`), autorizada expresamente por el usuario. El revisor confirmó identidad del árbol (limpio, base es ancestro), digest contractual concordante y ausencia de cambios de spec/constancia en el delta; no repitió suites ni usó LSP.
+
+- **VERDICT: PASS.** R2 `resolved` (revalidación fenced con reloj actual antes de persistir, rollback con limpieza del tracker y prueba SQL que comprueba ausencia de cursor, cambio de assignee y audit), R16 `resolved` (duplicados del edge rechazados antes de `ImmutableHashSet` con negativo específico) y R12 `resolved` (conformidad sustentada en el SHA candidato).
+- **R20 — warning abierto (no bloquea):** `ApprovalReconciliationService.cs:328-364` y `ApprovalAssignmentEngine.cs:170,182` devuelven contadores y emiten métricas calculados antes del rollback; un efecto revertido puede reflejarse como `Unassigned=1` en la respuesta/telemetría del caso. Corrección mínima sugerida: publicar contadores y telemetría por caso solo tras commit y probar su ausencia en rollback. Queda registrado como pendiente posterior de observabilidad (NFR-05); no afecta CA demostrados ni el contrato.
+- Consecuencia: el run alcanza «Lista para integrar» con `HEAD verificado` = `1a8393f16a90cefd69ff4a16938c4dcfe920dd60`.
+
 ## Resumen de cambios
 
 | Archivo | Motivo | Spec/tarea |
@@ -393,9 +410,9 @@ Revisión delta sobre `41d47f8e3297…` (delta desde `5513497fad…`), autorizad
 
 ## Cierre
 
-- Verificación independiente: BLOCK ronda 2/2 sobre `5513497fad…` (detalle en la sección Verificación independiente).
-- HEAD verificado: Pendiente.
-- Estrategia de integración: Pendiente.
+- Verificación independiente: PASS en la ronda final (delta de cierre) sobre `1a8393f16a90…`; warning R20 documentado en la sección Verificación independiente.
+- HEAD verificado: `1a8393f16a90cefd69ff4a16938c4dcfe920dd60`.
+- Estrategia de integración: aplicar migraciones antes de publicar y llevar `spec-03-approval-workflow` a `main` (sin squash, conservando los commits revisados).
 - Commit integrado en rama base: Pendiente.
 - Verificación ejecutada sobre rama base: Pendiente.
 - Metadatos de vigencia actualizados: Pendiente.
