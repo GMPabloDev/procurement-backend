@@ -1,0 +1,95 @@
+{
+  "format": "sdd-review/v1",
+  "spec": "04-delegacion-y-evolucion-de-aprobaciones.md",
+  "revision": 2,
+  "digest": "0ffbc76e8ef5a1c88d251ebad74a99d6cb45cebffd0b6f553fddc5210049933f",
+  "dependencies": {
+    "01-organizacion-identidad-roles-autoridades-aprobacion.md": "c5f194a4dca2597aff6cbbace581b1f9212197416c2918559e1a124484de458e",
+    "03-approval-workflow.md": "f0b61a917c4c4b4adcaee598c75352ef93d03c3bf25b76d15f80177ba3446234"
+  },
+  "verdict": "PASS",
+  "mode": "delta",
+  "baseline_digest": "14cefa415be7ea78f96e71d392aa311d9e316368688057d1e65a08f8dc8091b5",
+  "review_count": 5,
+  "reviewer": "sdd-contract-reviewer · openai-codex/gpt-5.6-luna · effort high",
+  "reviewed_at": "2026-09-13",
+  "coverage": {
+    "behavior": "REQ-01..REQ-07 y CA-01..CA-07 cubiertos; activación inmediata, supersesión total, carry-forward SYSTEM y revocación son observables y atómicos. Delta rev2 (líneas 80-81): solo representación Markdown; los tokens `ACTIVATE|EXPIRE` y `DELEGATION_CHANGE|DELEGATION_EXPIRY` renderizados permanecen intactos.",
+    "boundaries": "SPEC 03, jobs/run, evidencia compartida y contratos approval-result/v2/v3, lifecycle y revocación contrastados sin incompatibilidades abiertas; filas con 3 celdas y sin cambios de productor, dato, consumidor o compatibilidad.",
+    "failure_modes": "Replay, concurrencia, create inmediato, expiración, revocación, reclaim y fallos transaccionales tienen identidad y recuperación definidas.",
+    "acceptance": "Preimages y payload v3 tienen bytes completos; el revisor recalculó los seis SHA-256 publicados y confirmó los valores. Delta rev2: markdownlint 0 issues, render GFM con 3 celdas y `specctl digest 04` = 0ffbc76e…49933f verificado por el revisor.",
+    "implementation_readiness": "Recorrido ApprovalSubmissionService → ApprovalCase → ApprovalAssignmentEngine/ReconciliationService → ApprovalDecisionService/BuildPayload → outbox contrastado con tests Approval existentes."
+  },
+  "findings": [
+    {
+      "id": "R1",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Referencia v1 incompatible con SPEC 03.",
+      "resolution": "Usa approval-canonical-json/v2 y declara que modifica SPEC 03."
+    },
+    {
+      "id": "R2",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "SUPERSEDED no pertenece a approval-result/v2.",
+      "resolution": "approval-case-lifecycle/v1 separado."
+    },
+    {
+      "id": "R3",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Revocación sin identidad/evento/verificación.",
+      "resolution": "DecisionAuthorityEvidence y approval-evidence-revoked/v1 fail-closed."
+    },
+    {
+      "id": "R4",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Carry-forward sin actor/causa/preimage taskless.",
+      "resolution": "Actor SYSTEM, raíz/fuente, evidencia y digest derivados."
+    },
+    {
+      "id": "R5",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Golden vectors antes incompletos.",
+      "resolution": "Bytes completos y cuatro SHA-256 recalculados por el revisor."
+    },
+    {
+      "id": "R6",
+      "severity": "question",
+      "status": "resolved",
+      "evidence": "Mapping permitía many-to-one.",
+      "resolution": "Mapping biyectivo, cardinalidad idéntica y unicidad en ambos lados."
+    },
+    {
+      "id": "R7",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Activación inmediata no fijaba job ni root/run.",
+      "resolution": "ACTIVATE=COMPLETED, ACTIVE, audit y DELEGATION_CHANGE/ACTIVATED se confirman atómicamente; EXPIRE queda pendiente."
+    },
+    {
+      "id": "R8",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Evidence 1:1 contradecía referencia compartida.",
+      "resolution": "Una evidencia por raíz humana, compartida por derivados y revocable para toda la cadena."
+    },
+    {
+      "id": "R9",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Faltaban golden del digest derivado y payload v3.",
+      "resolution": "Bytes completos producen b0e6b1f0…18445a4 y a345faae…f03e10, recalculados por el revisor."
+    },
+    {
+      "id": "R10",
+      "severity": "blocker",
+      "status": "dismissed",
+      "evidence": "SPEC 05 es borrador dependiente; SPEC 04 no consume v1 y rechaza POLICY_EXCEPTION por type.",
+      "resolution": "Fuera del gate de SPEC 04; revisar SPEC 05 antes de su propia aprobación."
+    }
+  ]
+}
