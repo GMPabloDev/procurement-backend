@@ -2,7 +2,7 @@
 
 > **Formato:** sdd/v3
 > **Estado:** Aprobada
-> **Ejecución:** No iniciada
+> **Ejecución:** Lista para integrar
 > **Vigencia:** Pendiente
 > **Revisión:** 2
 > **Digest contractual:** 0ffbc76e8ef5a1c88d251ebad74a99d6cb45cebffd0b6f553fddc5210049933f
