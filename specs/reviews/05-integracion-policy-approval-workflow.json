@@ -1,0 +1,68 @@
+{
+  "format": "sdd-review/v1",
+  "spec": "05-integracion-policy-approval-workflow.md",
+  "revision": 1,
+  "digest": "001c559d72845b0f77919df50bad5e7b74eeecb5e6dc8921d52bba932cb20f70",
+  "dependencies": {
+    "02-motor-de-politicas.md": "63fec425400bc197524e23cb3a130ab2d7d64f6eba823944b3ebee8923e6d688",
+    "03-approval-workflow.md": "f0b61a917c4c4b4adcaee598c75352ef93d03c3bf25b76d15f80177ba3446234",
+    "04-delegacion-y-evolucion-de-aprobaciones.md": "0ffbc76e8ef5a1c88d251ebad74a99d6cb45cebffd0b6f553fddc5210049933f"
+  },
+  "verdict": "PASS",
+  "mode": "delta",
+  "baseline_digest": "35b041c2726c2f35740e12395cf2b6ce612878e451d63b942d7e9096a84fe405",
+  "review_count": 4,
+  "reviewer": "sdd-contract-reviewer · openai-codex/gpt-5.6-luna · effort high",
+  "reviewed_at": "2026-09-13",
+  "coverage": {
+    "behavior": "REQ-01..REQ-08 y CA-01..CA-08 recibieron cobertura full y deltas limitados; R1..R6 quedaron cerrados sin reabrir áreas no afectadas.",
+    "boundaries": "SPEC 02/03/04, PolicyInputSnapshot, CompletenessManifest, ApprovalRequirement, owners exact-one, extensión persistida y wire se contrastaron; reference_id/requested_at están ligados y correlation_reference queda fuera de identidad/digest.",
+    "failure_modes": "Atomicidad, owner ausente, replay/concurrencia, timeout, expiración, revocación, default-deny y prohibición de ADMIN quedaron cubiertos sin hallazgo abierto.",
+    "acceptance": "CA-07 publica bytes completos de target, binding y evidence. El revisor recalculó los tres SHA-256; para target confirmó 708 bytes, orden lexicográfico, canonicalization_version primero y digest 7ff665ca…477de.",
+    "implementation_readiness": "Se trazó bundle persistido → adapter → caso/DAG → decisión → endpoint → reevaluación y se exigió PolicyApprovalWorkflowContractE2ETests sin ControlledWaiverVerifier; la ausencia actual de ese código es trabajo de implementación, no defecto contractual."
+  },
+  "findings": [
+    {
+      "id": "R1",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "La excepción no tenía proyección persistible al modelo de SPEC 03.",
+      "resolution": "PolicyExceptionRequest enlaza uno-a-uno un requirement ordinario y PolicyExceptionVerification conserva lookup y replay; el revisor delta aceptó el cierre."
+    },
+    {
+      "id": "R2",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "GeneratedControl solo exponía UUIDs y no permitía construir ApprovalTarget completo.",
+      "resolution": "Targets PURCHASE_REQUEST_LINE derivan id/versión del manifest y digest material del snapshot persistido con preimage propio; el revisor delta aceptó el cierre."
+    },
+    {
+      "id": "R3",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "WAITING por owner ausente contradecía el fail-closed de SPEC 03.",
+      "resolution": "La tabla fija adapter/version y exige resolución exact-one a workload antes del caso; ausencia o ambigüedad devuelve 503. El revisor delta aceptó el cierre."
+    },
+    {
+      "id": "R4",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Los hashes abreviados y el orden raíz inicial del target no permitían demostrar simultáneamente precedencia y orden canónico.",
+      "resolution": "La spec publica bytes JSON completos; el target usa raíz {canonicalization_version,target_contract_version,target_snapshot}. El revisor calculó 708 bytes y SHA-256 7ff665ca…477de, coincidente."
+    },
+    {
+      "id": "R5",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "El cliente/ruta existentes no exigían service JWT y permitían iniciar waiver con ADMIN.",
+      "resolution": "REQ-05/07, rollout y CA-05 eliminan o rechazan la ruta de usuario, exigen workload/service JWT y declaran inválida la evidencia legacy; el revisor delta aceptó el cierre."
+    },
+    {
+      "id": "R6",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "workflow-verification-request/v1 omitía reference_id, requested_at y correlation exigidos por SPEC 02 REQ-14.",
+      "resolution": "Wire y extensión incluyen reference_id/requested_at/correlation_reference; reference/time participan en binding/evidence y correlation queda fuera de identidad/digest. El revisor delta aceptó el cierre."
+    }
+  ]
+}
