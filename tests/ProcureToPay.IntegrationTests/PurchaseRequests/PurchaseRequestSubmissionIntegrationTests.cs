@@ -96,6 +96,26 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
             }
         }
 
+        // The persisted attestation and its minimized references are readable for the owner and an
+        // AUDITOR (REQ-10): every assertion carries its owner identity and valid status.
+        await using (var verification = harness.CreateContext())
+        {
+            var attestations = await new PurchaseRequestPersistenceService(
+                    verification, NullLogger<PurchaseRequestPersistenceService>.Instance)
+                .ReadAttestationsAsync(requestId, harness.OrganizationId, cancellationToken);
+            var attestation = Assert.Single(attestations);
+            Assert.Equal(version, attestation.Version);
+            Assert.True(attestation.Assertions.Count >= 6);
+            Assert.All(
+                attestation.Assertions,
+                assertion =>
+                {
+                    Assert.False(string.IsNullOrWhiteSpace(assertion.OwnerId));
+                    Assert.False(string.IsNullOrWhiteSpace(assertion.OwnerContractVersion));
+                    Assert.Equal("ACTIVE", assertion.Status);
+                });
+        }
+
         // Identical retry replays the confirmed case without writing a second attempt or case.
         var replay = await harness.SubmitAsync(requestId, version, "submit-1", cancellationToken);
         Assert.True(replay.Replayed);
@@ -296,6 +316,50 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task Cancellation_closes_an_open_case_and_keeps_a_completed_case_terminal()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken);
+
+        // An open case cannot survive a confirmed cancellation (REQ-10).
+        var (openRequest, openVersion) = await harness.CreateAsync(lineCount: 2, cancellationToken);
+        var openSubmission = await harness.SubmitAsync(openRequest, openVersion, "cancel-open-1", cancellationToken);
+        var cancellation = await harness.CancelAsync(openRequest, openVersion, "cancel-open-1", cancellationToken);
+        Assert.False(cancellation.Replayed);
+        await using (var verification = harness.CreateContext())
+        {
+            var request = await verification.PurchaseRequests.SingleAsync(
+                record => record.Id == openRequest, cancellationToken);
+            Assert.Equal((int)PurchaseRequestStatus.Cancelled, request.Status);
+            var approvalCase = await verification.ApprovalCases.SingleAsync(
+                record => record.Id == openSubmission.ApprovalCaseId, cancellationToken);
+            Assert.Equal((int)ApprovalCaseStatus.Cancelled, approvalCase.Status);
+            Assert.Equal(0, await verification.ApprovalTasks.CountAsync(
+                record => record.CaseId == approvalCase.Id &&
+                          record.Status != (int)ApprovalTaskStatus.Cancelled,
+                cancellationToken));
+        }
+
+        // A case completed by a decision is terminal and does not block cancelling APPROVED.
+        var (approvedRequest, approvedVersion) = await harness.CreateAsync(lineCount: 1, cancellationToken);
+        var approvedSubmission = await harness.SubmitAsync(
+            approvedRequest, approvedVersion, "cancel-approved-1", cancellationToken);
+        await harness.ApproveAllAsync(approvedSubmission.ApprovalCaseId!.Value, cancellationToken);
+        var approvedCancellation = await harness.CancelAsync(
+            approvedRequest, approvedVersion, "cancel-approved-1", cancellationToken);
+        Assert.False(approvedCancellation.Replayed);
+        await using (var verification = harness.CreateContext())
+        {
+            var request = await verification.PurchaseRequests.SingleAsync(
+                record => record.Id == approvedRequest, cancellationToken);
+            Assert.Equal((int)PurchaseRequestStatus.Cancelled, request.Status);
+            var approvalCase = await verification.ApprovalCases.SingleAsync(
+                record => record.Id == approvedSubmission.ApprovalCaseId, cancellationToken);
+            Assert.Equal((int)ApprovalCaseStatus.Completed, approvalCase.Status);
+        }
+    }
+
     private static async Task<(T? Value, Exception? Error)> CaptureAsync<T>(Task<T> task)
     {
         try
@@ -487,6 +551,22 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                 cancellationToken);
         }
 
+        public async Task<PurchaseRequestCancellation> CancelAsync(
+            Guid requestId,
+            int version,
+            string cancelKey,
+            CancellationToken cancellationToken) =>
+            await CreateServices().Submission.CancelAsync(
+                requestId,
+                version,
+                cancelKey,
+                "No longer needed",
+                OrganizationId,
+                RequesterId,
+                "corr-cancel",
+                DateTimeOffset.UtcNow,
+                cancellationToken);
+
         public async Task<ApprovalDispatchOutcome> DispatchAsync(CancellationToken cancellationToken)
         {
             await using var context = CreateContext();
@@ -591,6 +671,8 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
             var supersessions = new ApprovalSupersessionService(
                 context, allowlist, registry, ownerWorkloads, assignmentEngine,
                 loggerFactory.CreateLogger<ApprovalSupersessionService>());
+            var workflow = new ApprovalWorkflowService(
+                context, allowlist, assignmentEngine, loggerFactory.CreateLogger<ApprovalWorkflowService>());
             return new Services(
                 new PurchaseRequestSubmissionService(
                     context,
@@ -599,6 +681,7 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                     policyEvaluations,
                     submissions,
                     supersessions,
+                    workflow,
                     NullLogger<PurchaseRequestSubmissionService>.Instance),
                 new ApprovalDecisionService(
                     context, assignmentEngine, loggerFactory.CreateLogger<ApprovalDecisionService>()));

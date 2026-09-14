@@ -15,6 +15,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using ProcureToPay.Domain.Modules.Organization;
+using ProcureToPay.Domain.Modules.PurchaseRequests;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using Testcontainers.MsSql;
@@ -77,6 +78,9 @@ public sealed class PurchaseRequestE2ETests
             auditedVersion.GetProperty("lines")[0].GetProperty("content").ValueKind);
         Assert.Equal(JsonValueKind.Null, auditedVersion.GetProperty("businessJustification").ValueKind);
         Assert.Equal(JsonValueKind.Null, auditedVersion.GetProperty("reason").ValueKind);
+        // The attestation surface is present and empty until the version is presented (REQ-10).
+        Assert.Equal(JsonValueKind.Array, auditBody.GetProperty("attestations").ValueKind);
+        Assert.Empty(auditBody.GetProperty("attestations").EnumerateArray());
 
         // Only the requester may mutate the request.
         using var foreignRevision = await other.PostAsJsonAsync(
@@ -86,7 +90,7 @@ public sealed class PurchaseRequestE2ETests
         Assert.Equal(HttpStatusCode.Forbidden, foreignRevision.StatusCode);
         using var foreignCancel = await other.PostAsJsonAsync(
             $"/v1/purchase-requests/{requestId}/cancellation",
-            new { expectedVersion = creation.GetProperty("version").GetInt32(), cancelKey = "cancel-foreign", reason = "Foreign" },
+            new { expected_version = creation.GetProperty("version").GetInt32(), cancel_key = "cancel-foreign", reason = "Foreign" },
             cancellationToken);
         Assert.Equal(HttpStatusCode.Forbidden, foreignCancel.StatusCode);
     }
@@ -126,25 +130,58 @@ public sealed class PurchaseRequestE2ETests
             "/v1/purchase-requests", environment.CreateBody("limits-summary", 1, needSummary: string.Empty), cancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, emptySummary.StatusCode);
 
+        // Unknown members, a wrong command version and a chunked oversized snapshot are rejected
+        // before anything is persisted (REQ-11).
+        var unknownBody = new Dictionary<string, object?>
+        {
+            ["business_justification"] = "Justification",
+            ["command_version"] = PurchaseRequestCodes.CreateCommandVersion,
+            ["legal_entity_ref"] = new { entity_type = "LEGAL_ENTITY", id = environment.LegalEntityId, version = 1 },
+            ["line_drafts"] = Array.Empty<object>(),
+            ["reason"] = "Initial request",
+            ["revision_key"] = "limits-unknown",
+            ["unexpected_member"] = true
+        };
+        using var unknown = await requester.PostAsJsonAsync("/v1/purchase-requests", unknownBody, cancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, unknown.StatusCode);
+        Assert.Equal("/problems/validation", await Environment.ProblemTypeAsync(unknown, cancellationToken));
+        using var wrongVersion = await requester.PostAsJsonAsync(
+            "/v1/purchase-requests",
+            environment.CreateBody("limits-version", 1, commandVersion: "purchase-request-create-command/v0"),
+            cancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, wrongVersion.StatusCode);
+
+        using var chunked = new HttpRequestMessage(HttpMethod.Post, "/v1/purchase-requests");
+        var oversizedBody = new StringContent(
+            new string(' ', PurchaseRequestLimits.MaxSnapshotBytes + 4096),
+            Encoding.UTF8,
+            "application/json");
+        oversizedBody.Headers.ContentLength = null;
+        chunked.Content = oversizedBody;
+        chunked.Headers.TransferEncodingChunked = true;
+        chunked.Headers.Authorization = requester.DefaultRequestHeaders.Authorization;
+        using var oversized = await requester.SendAsync(chunked, cancellationToken);
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, oversized.StatusCode);
+
         // A terminal request keeps its history: revision is a conflict, cancellation replays exactly once.
         var created = await maximum.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
         var requestId = created.GetProperty("requestId").GetGuid();
         var version = created.GetProperty("version").GetInt32();
         using var cancel = await requester.PostAsJsonAsync(
             $"/v1/purchase-requests/{requestId}/cancellation",
-            new { expectedVersion = version, cancelKey = "cancel-1", reason = "No longer needed" },
+            new { expected_version = version, cancel_key = "cancel-1", reason = "No longer needed" },
             cancellationToken);
         Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
         using var cancelReplay = await requester.PostAsJsonAsync(
             $"/v1/purchase-requests/{requestId}/cancellation",
-            new { expectedVersion = version, cancelKey = "cancel-1", reason = "No longer needed" },
+            new { expected_version = version, cancel_key = "cancel-1", reason = "No longer needed" },
             cancellationToken);
         Assert.Equal(HttpStatusCode.OK, cancelReplay.StatusCode);
         var replay = await cancelReplay.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
         Assert.True(replay.GetProperty("replayed").GetBoolean());
         using var cancelConflict = await requester.PostAsJsonAsync(
             $"/v1/purchase-requests/{requestId}/cancellation",
-            new { expectedVersion = version, cancelKey = "cancel-2", reason = "Other reason" },
+            new { expected_version = version, cancel_key = "cancel-2", reason = "Other reason" },
             cancellationToken);
         Assert.Equal(HttpStatusCode.Conflict, cancelConflict.StatusCode);
         using var reviseTerminal = await requester.PostAsJsonAsync(
@@ -327,6 +364,8 @@ public sealed class PurchaseRequestE2ETests
             });
         }
 
+        public Guid LegalEntityId => legalEntityId;
+
         public HttpClient Client(string subject)
         {
             var client = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -343,31 +382,34 @@ public sealed class PurchaseRequestE2ETests
             string revisionKey,
             int lineCount,
             int riskAnswers = 0,
-            string needSummary = "Need for the API E2E test") => new
+            string needSummary = "Need for the API E2E test",
+            string? commandVersion = null) => new
         {
-            legalEntityRef = new { entityType = "LEGAL_ENTITY", id = legalEntityId, version = 1 },
-            businessJustification = "Justification",
-            reason = "Initial request",
-            revisionKey,
-            lines = Enumerable.Range(0, lineCount)
+            business_justification = "Justification",
+            command_version = commandVersion ?? PurchaseRequestCodes.CreateCommandVersion,
+            legal_entity_ref = new { entity_type = "LEGAL_ENTITY", id = legalEntityId, version = 1 },
+            line_drafts = Enumerable.Range(0, lineCount)
                 .Select(index => new
                 {
-                    clientLineKey = $"line-{index}",
+                    client_line_key = $"line-{index}",
                     content = LineContent(needSummary, riskAnswers)
                 })
-                .ToArray()
+                .ToArray(),
+            reason = "Initial request",
+            revision_key = revisionKey
         };
 
         public object RevisionBody(int expectedVersion, string revisionKey) => new
         {
-            expectedRequestVersion = expectedVersion,
-            businessJustification = "Justification v2",
-            reason = "Scope change",
-            revisionKey,
-            retained = Array.Empty<object>(),
-            changed = Array.Empty<object>(),
             added = Array.Empty<object>(),
-            removed = Array.Empty<object>()
+            business_justification = "Justification v2",
+            changed = Array.Empty<object>(),
+            command_version = PurchaseRequestCodes.RevisionCommandVersion,
+            expected_request_version = expectedVersion,
+            reason = "Scope change",
+            removed = Array.Empty<object>(),
+            retained = Array.Empty<object>(),
+            revision_key = revisionKey
         };
 
         /// <summary>A valid revision that reuses the exact current line reference (REQ-02).</summary>
@@ -386,9 +428,9 @@ public sealed class PurchaseRequestE2ETests
             var line = versionBody.GetProperty("lines")[0];
             var retained = new
             {
+                content_digest = line.GetProperty("contentDigest").GetString(),
                 id = line.GetProperty("lineId").GetGuid(),
-                version = line.GetProperty("lineVersion").GetInt32(),
-                contentDigest = line.GetProperty("contentDigest").GetString()
+                version = line.GetProperty("lineVersion").GetInt32()
             };
             return (RetainedRevisionBody(version, revisionKey, retained, "Justification v2"), (object)retained);
         }
@@ -399,46 +441,46 @@ public sealed class PurchaseRequestE2ETests
             object retained,
             string justification) => new
         {
-            expectedRequestVersion = expectedVersion,
-            businessJustification = justification,
-            reason = "Scope change",
-            revisionKey,
-            retained = new[] { retained },
-            changed = Array.Empty<object>(),
             added = Array.Empty<object>(),
-            removed = Array.Empty<object>()
+            business_justification = justification,
+            changed = Array.Empty<object>(),
+            command_version = PurchaseRequestCodes.RevisionCommandVersion,
+            expected_request_version = expectedVersion,
+            reason = "Scope change",
+            removed = Array.Empty<object>(),
+            retained = new[] { retained },
+            revision_key = revisionKey
         };
 
         private object LineContent(string needSummary, int riskAnswers = 0) => new
         {
-            estimatedGrossAmount = 100m,
-            transactionCurrency = "PEN",
-            baseAmount = 100m,
-            baseCurrency = "PEN",
-            fiscalYear = 2026,
-            purchaseType = "GOOD",
-            spendCategoryRef = new { catalog = "SPEND_CATEGORY", code = "HARDWARE", version = 1, digest = new string('d', 64) },
-            costCenterRef = new { entityType = "COST_CENTER", id = Guid.NewGuid(), version = 1 },
-            costCenterDepartmentRef = new { entityType = "DEPARTMENT", id = departmentId, version = 1 },
-            beneficiaryDepartmentRef = new { entityType = "DEPARTMENT", id = departmentId, version = 1 },
-            requestedForUserRef = new { entityType = "USER", id = Guid.NewGuid(), version = 1 },
-            supplierRef = (object?)null,
-            preferredProductRef = (object?)null,
-            requiredProductRef = (object?)null,
-            contractRequired = false,
-            nonStandardTerms = false,
-            agreementStatus = "NONE",
-            needSummary,
-            riskAnswers = Enumerable.Range(0, riskAnswers)
+            base_amount = "100",
+            base_currency = "PEN",
+            beneficiary_department_ref = new { entity_type = "DEPARTMENT", id = departmentId, version = 1 },
+            contract_required = false,
+            cost_center_department_ref = new { entity_type = "DEPARTMENT", id = departmentId, version = 1 },
+            cost_center_ref = new { entity_type = "COST_CENTER", id = Guid.NewGuid(), version = 1 },
+            estimated_gross_amount = "100",
+            fiscal_year = 2026,
+            fx_attestation_ref = (object?)null,
+            need_summary = needSummary,
+            non_standard_terms = false,
+            preferred_product_ref = (object?)null,
+            purchase_type = "GOOD",
+            requested_for_user_ref = new { entity_type = "USER", id = Guid.NewGuid(), version = 1 },
+            required_product_ref = (object?)null,
+            risk_answers = Enumerable.Range(0, riskAnswers)
                 .Select(index => new
                 {
-                    questionCode = $"Q{index}",
-                    schemaVersion = 1,
+                    question_code = $"Q{index}",
+                    schema_version = 1,
                     value = "true",
-                    valueKind = "BOOLEAN"
+                    value_kind = "BOOLEAN"
                 })
                 .ToArray(),
-            fxAttestationRef = (object?)null
+            spend_category_ref = new { catalog = "SPEND_CATEGORY", code = "HARDWARE", version = 1, digest = new string('d', 64) },
+            supplier_ref = (object?)null,
+            transaction_currency = "PEN"
         };
 
         public static async Task<string?> ProblemTypeAsync(

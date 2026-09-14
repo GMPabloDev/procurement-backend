@@ -55,6 +55,7 @@ public sealed class PurchaseRequestSubmissionService(
     PolicyEvaluationService policyEvaluations,
     ApprovalSubmissionService approvalSubmissions,
     ApprovalSupersessionService approvalSupersessions,
+    ApprovalWorkflowService approvalWorkflow,
     ILogger<PurchaseRequestSubmissionService> logger)
 {
     /// <summary>Trusted in-process workload of the purchase request domain (REQ-05, REQ-06).</summary>
@@ -322,6 +323,137 @@ public sealed class PurchaseRequestSubmissionService(
     }
 
     /// <summary>
+    /// Requester cancellation (REQ-10): an open Approval case is cancelled first by its owning
+    /// workload, under its expected version and with a race re-read, so a request never projects
+    /// CANCELLED over a case that could still decide. A terminal case (decision or supersession won
+    /// the race) does not block cancelling the request.
+    /// </summary>
+    public async Task<PurchaseRequestCancellation> CancelAsync(
+        Guid requestId,
+        int expectedVersion,
+        string cancelKey,
+        string reason,
+        Guid organizationId,
+        Guid requesterId,
+        string correlation,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(cancelKey);
+        var request = await dbContext.PurchaseRequests
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                record => record.Id == requestId && record.OrganizationId == organizationId,
+                cancellationToken)
+            ?? throw new DomainNotFoundException("The purchase request is not visible.");
+        if (request.RequesterId != requesterId)
+        {
+            throw new DomainForbiddenException("Only the requester may cancel this purchase request.");
+        }
+
+        // A replay of an accepted cancellation resolves against its ledger before the terminal
+        // status is inspected, and never touches an approval case twice.
+        var replayed = await dbContext.PurchaseRequestCommands
+            .AsNoTracking()
+            .AnyAsync(
+                record => record.OrganizationId == organizationId &&
+                          record.ActorUserId == requesterId &&
+                          record.CommandType == PurchaseRequestPersistenceService.CommandCancel &&
+                          record.CommandKey == cancelKey,
+                cancellationToken);
+        if (replayed)
+        {
+            return await persistence.CancelAsync(
+                requestId,
+                expectedVersion,
+                cancelKey,
+                reason,
+                organizationId,
+                requesterId,
+                correlation,
+                occurredAt,
+                cancellationToken);
+        }
+
+        if (request.CurrentVersion != expectedVersion)
+        {
+            throw new DomainConflictException(
+                "The purchase request changed under the command; reload and retry.");
+        }
+
+        var status = (PurchaseRequestStatus)request.Status;
+        if (status is PurchaseRequestStatus.Rejected or PurchaseRequestStatus.Cancelled)
+        {
+            throw new DomainConflictException("A terminal purchase request cannot be cancelled.");
+        }
+
+        var attempt = await dbContext.PurchaseRequestSubmissionAttempts
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                record => record.RequestId == requestId && record.RequestVersion == expectedVersion,
+                cancellationToken);
+        if (!replayed && attempt?.ApprovalCaseId is Guid caseId)
+        {
+            await CancelOpenCaseAsync(caseId, reason, correlation, occurredAt, cancellationToken);
+        }
+
+        return await persistence.CancelAsync(
+            requestId,
+            expectedVersion,
+            cancelKey,
+            reason,
+            organizationId,
+            requesterId,
+            correlation,
+            occurredAt,
+            cancellationToken);
+    }
+
+    private async Task CancelOpenCaseAsync(
+        Guid caseId,
+        string reason,
+        string correlation,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken)
+    {
+        for (var round = 0; round < 2; round++)
+        {
+            dbContext.ChangeTracker.Clear();
+            var record = await dbContext.ApprovalCases
+                .AsNoTracking()
+                .SingleOrDefaultAsync(candidate => candidate.Id == caseId, cancellationToken);
+            if (record is null)
+            {
+                return;
+            }
+
+            var status = (ApprovalCaseStatus)record.Status;
+            if (status is ApprovalCaseStatus.Cancelled or ApprovalCaseStatus.Completed or
+                ApprovalCaseStatus.Superseded)
+            {
+                // A decision or supersession won the race: the case is terminal and the request can
+                // still be cancelled, because this spec has not transferred downstream ownership.
+                return;
+            }
+
+            try
+            {
+                await approvalWorkflow.CancelAsync(
+                    caseId, Workload, reason, record.Version, correlation, occurredAt, cancellationToken);
+                return;
+            }
+            catch (DomainConflictException) when (round == 0)
+            {
+                // Another writer advanced the case: re-read and retry once.
+            }
+        }
+
+        // The case is still open: cancelling the request would leave a case able to decide (REQ-10).
+        throw new DomainConflictException(
+            "The approval case is still open; reload and retry the cancellation.");
+    }
+
+    /// <summary>
     /// Delta covering the previous and the new manifest by stable line id (REQ-08): retained pairs
     /// carry the replacement materiality proof, and only pairs whose previous proof the owner
     /// verified equal enter the carry-forward set. Anything else keeps a new task.
@@ -377,19 +509,22 @@ public sealed class PurchaseRequestSubmissionService(
             if (previousById.TryGetValue(target.Id, out var prior))
             {
                 var previousTarget = ApprovalTarget(prior);
-                // The published preimage keeps its exact provenance, but the carry-forward proof
-                // compares material facts across immutable versions: request/line version segments
-                // are not material and are normalized before the comparison (REQ-08, DEC-07).
-                var previousDigest = MaterialityProof(prior.Id, previous.RequestSnapshotJson,
-                    previousProjection, versionless: true);
-                var replacementDigest = MaterialityProof(target.Id, replacement.RequestSnapshotJson,
-                    replacementProjection, versionless: true);
+                // The digest carried by the delta is the published purchase-request-materiality/v1
+                // preimage of the replacement; the carry-forward assertion is the owner's verified
+                // comparison of material facts, which ignores snapshot/attestation references that
+                // change with every immutable version (REQ-08, DEC-07).
+                var replacementDigest = MaterialityProof(
+                    target.Id, replacement.RequestSnapshotJson, replacementProjection, versionless: false);
                 entries.Add(ApprovalSupersessionDeltaEntry.CreateRetained(
                     previousTarget,
                     replacementTarget,
                     PurchaseRequestCodes.MaterialityVersion,
                     replacementDigest));
-                if (string.Equals(previousDigest, replacementDigest, StringComparison.Ordinal))
+                var previousFacts = MaterialityProof(
+                    prior.Id, previous.RequestSnapshotJson, previousProjection, versionless: true);
+                var replacementFacts = MaterialityProof(
+                    target.Id, replacement.RequestSnapshotJson, replacementProjection, versionless: true);
+                if (string.Equals(previousFacts, replacementFacts, StringComparison.Ordinal))
                 {
                     verified.Add(previousTarget.CanonicalIdentity);
                 }
@@ -399,7 +534,8 @@ public sealed class PurchaseRequestSubmissionService(
                 entries.Add(ApprovalSupersessionDeltaEntry.CreateAdded(
                     replacementTarget,
                     PurchaseRequestCodes.MaterialityVersion,
-                    MaterialityProof(target.Id, replacement.RequestSnapshotJson, replacementProjection, versionless: true)));
+                    MaterialityProof(
+                        target.Id, replacement.RequestSnapshotJson, replacementProjection, versionless: false)));
             }
         }
 
@@ -410,7 +546,7 @@ public sealed class PurchaseRequestSubmissionService(
             entries.Add(ApprovalSupersessionDeltaEntry.CreateRemoved(
                 ApprovalTarget(prior),
                 PurchaseRequestCodes.MaterialityVersion,
-                MaterialityProof(prior.Id, previous.RequestSnapshotJson, previousProjection, versionless: true)));
+                MaterialityProof(prior.Id, previous.RequestSnapshotJson, previousProjection, versionless: false)));
         }
 
         ApprovalSupersessionDeltaRules.Validate(entries);
@@ -419,9 +555,9 @@ public sealed class PurchaseRequestSubmissionService(
 
     /// <summary>
     /// The bundle provenance keeps the line identity in the key and the snapshot versions in the
-    /// value; the published materiality preimage uses the flat fact key of each line, and the
-    /// carry-forward comparison drops the immutable version segments of the provenance reference
-    /// (REQ-08, DEC-07).
+    /// value; the published materiality preimage uses the flat fact key of each line and the exact
+    /// reference. The owner's carry-forward comparison drops the immutable snapshot/attestation
+    /// references of that reference because they are not material facts (REQ-08, DEC-07).
     /// </summary>
     private static string MaterialityProof(
         Guid lineId,

@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -11,85 +13,107 @@ using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 
 namespace ProcureToPay.Api.Controllers;
 
-public sealed record PurchaseRequestEntityRefBody(string EntityType, Guid Id, int Version);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record PurchaseRequestEntityRefBody(
+    [property: JsonPropertyName("entity_type")] string EntityType,
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("version")] int Version);
 
-public sealed record PurchaseRequestCodeRefBody(string Catalog, string Code, int Version, string Digest);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record PurchaseRequestCodeRefBody(
+    [property: JsonPropertyName("catalog")] string Catalog,
+    [property: JsonPropertyName("code")] string Code,
+    [property: JsonPropertyName("version")] int Version,
+    [property: JsonPropertyName("digest")] string Digest);
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestAnswerBody(
-    string QuestionCode,
-    int SchemaVersion,
-    string Value,
-    string ValueKind);
+    [property: JsonPropertyName("question_code")] string QuestionCode,
+    [property: JsonPropertyName("schema_version")] int SchemaVersion,
+    [property: JsonPropertyName("value")] string Value,
+    [property: JsonPropertyName("value_kind")] string ValueKind);
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestFxBody(
-    Guid AttestationId,
-    int AttestationVersion,
-    string BaseCurrency,
-    string TransactionCurrency,
-    decimal EffectiveRate,
-    DateOnly RateDate);
+    [property: JsonPropertyName("attestation_id")] Guid AttestationId,
+    [property: JsonPropertyName("attestation_version")] int AttestationVersion,
+    [property: JsonPropertyName("base_currency")] string BaseCurrency,
+    [property: JsonPropertyName("transaction_currency")] string TransactionCurrency,
+    [property: JsonPropertyName("effective_rate")] string EffectiveRate,
+    [property: JsonPropertyName("rate_date")] string RateDate);
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestLineContentBody(
-    decimal EstimatedGrossAmount,
-    string TransactionCurrency,
-    decimal BaseAmount,
-    string BaseCurrency,
-    int FiscalYear,
-    string PurchaseType,
-    PurchaseRequestCodeRefBody SpendCategoryRef,
-    PurchaseRequestEntityRefBody CostCenterRef,
-    PurchaseRequestEntityRefBody CostCenterDepartmentRef,
-    PurchaseRequestEntityRefBody BeneficiaryDepartmentRef,
-    PurchaseRequestEntityRefBody RequestedForUserRef,
-    PurchaseRequestEntityRefBody? SupplierRef,
-    PurchaseRequestEntityRefBody? PreferredProductRef,
-    PurchaseRequestEntityRefBody? RequiredProductRef,
-    bool ContractRequired,
-    bool NonStandardTerms,
-    string AgreementStatus,
-    string NeedSummary,
-    PurchaseRequestAnswerBody[]? RiskAnswers,
-    PurchaseRequestFxBody? FxAttestationRef);
+    [property: JsonPropertyName("base_amount")] string BaseAmount,
+    [property: JsonPropertyName("base_currency")] string BaseCurrency,
+    [property: JsonPropertyName("beneficiary_department_ref")] PurchaseRequestEntityRefBody BeneficiaryDepartmentRef,
+    [property: JsonPropertyName("contract_required")] bool ContractRequired,
+    [property: JsonPropertyName("cost_center_department_ref")] PurchaseRequestEntityRefBody CostCenterDepartmentRef,
+    [property: JsonPropertyName("cost_center_ref")] PurchaseRequestEntityRefBody CostCenterRef,
+    [property: JsonPropertyName("estimated_gross_amount")] string EstimatedGrossAmount,
+    [property: JsonPropertyName("fiscal_year")] int FiscalYear,
+    [property: JsonPropertyName("fx_attestation_ref")] PurchaseRequestFxBody? FxAttestationRef,
+    [property: JsonPropertyName("need_summary")] string NeedSummary,
+    [property: JsonPropertyName("non_standard_terms")] bool NonStandardTerms,
+    [property: JsonPropertyName("preferred_product_ref")] PurchaseRequestEntityRefBody? PreferredProductRef,
+    [property: JsonPropertyName("purchase_type")] string PurchaseType,
+    [property: JsonPropertyName("requested_for_user_ref")] PurchaseRequestEntityRefBody RequestedForUserRef,
+    [property: JsonPropertyName("required_product_ref")] PurchaseRequestEntityRefBody? RequiredProductRef,
+    [property: JsonPropertyName("risk_answers")] PurchaseRequestAnswerBody[]? RiskAnswers,
+    [property: JsonPropertyName("spend_category_ref")] PurchaseRequestCodeRefBody SpendCategoryRef,
+    [property: JsonPropertyName("supplier_ref")] PurchaseRequestEntityRefBody? SupplierRef,
+    [property: JsonPropertyName("transaction_currency")] string TransactionCurrency);
 
-public sealed record PurchaseRequestLineDraftBody(string ClientLineKey, PurchaseRequestLineContentBody Content);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record PurchaseRequestLineDraftBody(
+    [property: JsonPropertyName("client_line_key")] string ClientLineKey,
+    [property: JsonPropertyName("content")] PurchaseRequestLineContentBody Content);
 
-public sealed record PurchaseRequestLineRefBody(Guid Id, int Version, string ContentDigest);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record PurchaseRequestLineRefBody(
+    [property: JsonPropertyName("content_digest")] string ContentDigest,
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("version")] int Version);
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestLineChangeBody(
-    Guid Id,
-    int ExpectedVersion,
-    string ExpectedContentDigest,
-    PurchaseRequestLineContentBody Content);
+    [property: JsonPropertyName("content")] PurchaseRequestLineContentBody Content,
+    [property: JsonPropertyName("expected_content_digest")] string ExpectedContentDigest,
+    [property: JsonPropertyName("expected_version")] int ExpectedVersion,
+    [property: JsonPropertyName("id")] Guid Id);
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestCreateBody(
-    PurchaseRequestEntityRefBody LegalEntityRef,
-    string BusinessJustification,
-    string Reason,
-    string RevisionKey,
-    PurchaseRequestLineDraftBody[] Lines);
+    [property: JsonPropertyName("business_justification")] string BusinessJustification,
+    [property: JsonPropertyName("command_version")] string CommandVersion,
+    [property: JsonPropertyName("legal_entity_ref")] PurchaseRequestEntityRefBody LegalEntityRef,
+    [property: JsonPropertyName("line_drafts")] PurchaseRequestLineDraftBody[]? LineDrafts,
+    [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonPropertyName("revision_key")] string RevisionKey);
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestRevisionBody(
-    int ExpectedRequestVersion,
-    string BusinessJustification,
-    string Reason,
-    string RevisionKey,
-    PurchaseRequestLineRefBody[]? Retained,
-    PurchaseRequestLineChangeBody[]? Changed,
-    PurchaseRequestLineDraftBody[]? Added,
-    PurchaseRequestLineRefBody[]? Removed);
+    [property: JsonPropertyName("added")] PurchaseRequestLineDraftBody[]? Added,
+    [property: JsonPropertyName("business_justification")] string BusinessJustification,
+    [property: JsonPropertyName("changed")] PurchaseRequestLineChangeBody[]? Changed,
+    [property: JsonPropertyName("command_version")] string CommandVersion,
+    [property: JsonPropertyName("expected_request_version")] int ExpectedRequestVersion,
+    [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonPropertyName("removed")] PurchaseRequestLineRefBody[]? Removed,
+    [property: JsonPropertyName("retained")] PurchaseRequestLineRefBody[]? Retained,
+    [property: JsonPropertyName("revision_key")] string RevisionKey);
 
-public sealed record PurchaseRequestCancellationBody(int ExpectedVersion, string CancelKey, string Reason);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record PurchaseRequestCancellationBody(
+    [property: JsonPropertyName("cancel_key")] string CancelKey,
+    [property: JsonPropertyName("expected_version")] int ExpectedVersion,
+    [property: JsonPropertyName("reason")] string Reason);
 
-public sealed record PurchaseRequestSubmissionBody(int ExpectedVersion, string SubmissionKey, string Reason);
-
-public sealed record PurchaseRequestSubmissionResponse(
-    Guid RequestId,
-    int Version,
-    PurchaseRequestStatus Status,
-    PurchaseRequestSubmissionStatus AttemptStatus,
-    Guid? PolicyEvaluationBundleId,
-    Guid? ApprovalCaseId,
-    bool Replayed);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record PurchaseRequestSubmissionBody(
+    [property: JsonPropertyName("expected_version")] int ExpectedVersion,
+    [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonPropertyName("submission_key")] string SubmissionKey);
 
 public sealed record PurchaseRequestCreatedResponse(
     Guid RequestId,
@@ -105,6 +129,15 @@ public sealed record PurchaseRequestRevisionResponse(
     int Added,
     int Changed,
     int Removed,
+    bool Replayed);
+
+public sealed record PurchaseRequestSubmissionResponse(
+    Guid RequestId,
+    int Version,
+    PurchaseRequestStatus Status,
+    PurchaseRequestSubmissionStatus AttemptStatus,
+    Guid? PolicyEvaluationBundleId,
+    Guid? ApprovalCaseId,
     bool Replayed);
 
 public sealed record PurchaseRequestLineResponse(
@@ -124,13 +157,36 @@ public sealed record PurchaseRequestVersionResponse(
     string? RevisionKey,
     string? Reason);
 
+/// <summary>Minimized owner reference of one persisted assertion (REQ-10).</summary>
+public sealed record PurchaseRequestAssertionRefResponse(
+    string? Code,
+    string? Digest,
+    Guid? Id,
+    string Kind,
+    string Type,
+    int? Version);
+
+public sealed record PurchaseRequestAssertionResponse(
+    string AssertionType,
+    string OwnerId,
+    string OwnerContractVersion,
+    PurchaseRequestAssertionRefResponse SourceRef,
+    PurchaseRequestAssertionRefResponse? TargetRef,
+    string Status);
+
+public sealed record PurchaseRequestAttestationResponse(
+    int Version,
+    DateTimeOffset AttestedAt,
+    IReadOnlyList<PurchaseRequestAssertionResponse> Assertions);
+
 public sealed record PurchaseRequestResponse(
     Guid RequestId,
     Guid OrganizationId,
     Guid RequesterId,
     PurchaseRequestStatus Status,
     int CurrentVersion,
-    IReadOnlyList<PurchaseRequestVersionResponse> Versions);
+    IReadOnlyList<PurchaseRequestVersionResponse> Versions,
+    IReadOnlyList<PurchaseRequestAttestationResponse> Attestations);
 
 /// <summary>
 /// Immutable Purchase Requests surface (REQ-11): create, revise, cancel and read. The caller never
@@ -153,6 +209,7 @@ public sealed class PurchaseRequestController(
         CancellationToken cancellationToken)
     {
         RequireSnapshotSize();
+        RequireCommandVersion(request.CommandVersion, PurchaseRequestCodes.CreateCommandVersion);
         var profile = await RequireActiveProfileAsync(cancellationToken);
         var creation = await service.CreateAsync(
             new PurchaseRequestCreateCommand(
@@ -162,7 +219,7 @@ public sealed class PurchaseRequestController(
                 request.BusinessJustification,
                 request.RevisionKey,
                 request.Reason,
-                (request.Lines ?? []).Select(line => new PurchaseRequestLineDraft(
+                (request.LineDrafts ?? []).Select(line => new PurchaseRequestLineDraft(
                     line.ClientLineKey, ToContent(line.Content)))),
             profile.Id,
             Correlation(),
@@ -185,6 +242,7 @@ public sealed class PurchaseRequestController(
         CancellationToken cancellationToken)
     {
         RequireSnapshotSize();
+        RequireCommandVersion(request.CommandVersion, PurchaseRequestCodes.RevisionCommandVersion);
         var profile = await RequireActiveProfileAsync(cancellationToken);
         var request_ = await RequireOwnedRequestAsync(requestId, profile, cancellationToken);
         var revision = await service.ReviseAsync(
@@ -226,7 +284,7 @@ public sealed class PurchaseRequestController(
     {
         var profile = await RequireActiveProfileAsync(cancellationToken);
         var request_ = await RequireOwnedRequestAsync(requestId, profile, cancellationToken);
-        var cancellation = await service.CancelAsync(
+        var cancellation = await submissionService.CancelAsync(
             requestId,
             request.ExpectedVersion,
             request.CancelKey,
@@ -288,7 +346,11 @@ public sealed class PurchaseRequestController(
             throw new DomainNotFoundException("The purchase request is not visible.");
         }
 
-        // An AUDITOR reads a minimized projection: no summaries, no personal references (REQ-10).
+        // The requester reads the full snapshot; an organizational AUDITOR reads the same history
+        // without content or summaries plus the owner attestations and their minimized references
+        // (REQ-10). Neither reads another organization's request.
+        var attestations = await service.ReadAttestationsAsync(
+            requestId, profile.OrganizationId, cancellationToken);
         return Ok(new PurchaseRequestResponse(
             view.RequestId,
             view.OrganizationId,
@@ -308,7 +370,56 @@ public sealed class PurchaseRequestController(
                     isRequester ? ToBody(line.Content) : null)).ToArray(),
                 isRequester ? version.BusinessJustification : null,
                 isRequester ? version.RevisionKey : null,
-                isRequester ? version.Reason : null)).ToArray()));
+                isRequester ? version.Reason : null)).ToArray(),
+            attestations.Select(ToAttestation).ToArray()));
+    }
+
+    /// <summary>The payload declares its exact contract version (REQ-11, Datos y contratos).</summary>
+    private static void RequireCommandVersion(string? declared, string expected)
+    {
+        if (!string.Equals(declared, expected, StringComparison.Ordinal))
+        {
+            throw new DomainValidationException($"The payload must declare command_version '{expected}'.");
+        }
+    }
+
+    private static string FormatAmount(decimal value) =>
+        value.ToString("0.############################", CultureInfo.InvariantCulture);
+
+    private static PurchaseRequestAttestationResponse ToAttestation(PurchaseRequestAttestationView view) =>
+        new(
+            view.Version,
+            view.AttestedAt,
+            view.Assertions.Select(assertion => new PurchaseRequestAssertionResponse(
+                PurchaseRequestCodes.Code(assertion.AssertionType),
+                assertion.OwnerId,
+                assertion.OwnerContractVersion,
+                ToAssertionRef(assertion.SourceRef),
+                assertion.TargetRef is null ? null : ToAssertionRef(assertion.TargetRef),
+                assertion.Status)).ToArray());
+
+    private static PurchaseRequestAssertionRefResponse ToAssertionRef(PurchaseRequestAttestedRef reference) =>
+        new(
+            reference.Code,
+            reference.Digest,
+            reference.Id,
+            reference.KindCode,
+            PurchaseRequestCodes.Code(reference.Type),
+            reference.Version);
+
+    private static decimal Amount(string? value, string field)
+    {
+        if (string.IsNullOrWhiteSpace(value) ||
+            !decimal.TryParse(
+                value,
+                NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingSign,
+                CultureInfo.InvariantCulture,
+                out var amount))
+        {
+            throw new DomainValidationException($"'{field}' must be a decimal string.");
+        }
+
+        return amount;
     }
 
     /// <summary>The incoming snapshot cannot exceed 5 MiB (REQ-11).</summary>
@@ -373,9 +484,9 @@ public sealed class PurchaseRequestController(
 
     private static PurchaseRequestLineContent ToContent(PurchaseRequestLineContentBody body) =>
         new(
-            body.EstimatedGrossAmount,
+            Amount(body.EstimatedGrossAmount, "estimated_gross_amount"),
             body.TransactionCurrency,
-            body.BaseAmount,
+            Amount(body.BaseAmount, "base_amount"),
             body.BaseCurrency,
             body.FiscalYear,
             body.PurchaseType,
@@ -393,7 +504,9 @@ public sealed class PurchaseRequestController(
             ToOptionalEntityRef(body.RequiredProductRef),
             body.ContractRequired,
             body.NonStandardTerms,
-            body.AgreementStatus,
+            // purchase-request-line-content/v1 carries no agreement status; the closed catalog
+            // projects its non-informative value instead of accepting caller input.
+            "NONE",
             body.NeedSummary,
             (body.RiskAnswers ?? []).Select(answer => new TypedAnswerRef(
                 answer.QuestionCode,
@@ -412,63 +525,19 @@ public sealed class PurchaseRequestController(
                     body.FxAttestationRef.AttestationVersion,
                     body.FxAttestationRef.BaseCurrency,
                     body.FxAttestationRef.TransactionCurrency,
-                    body.FxAttestationRef.EffectiveRate,
-                    body.FxAttestationRef.RateDate));
+                    Amount(body.FxAttestationRef.EffectiveRate, "effective_rate"),
+                    DateOnly.Parse(body.FxAttestationRef.RateDate, CultureInfo.InvariantCulture)));
 
     private static PurchaseRequestLineContentBody ToBody(PurchaseRequestLineContent content) =>
         new(
-            content.EstimatedGrossAmount,
-            content.TransactionCurrency,
-            content.BaseAmount,
+            FormatAmount(content.BaseAmount),
             content.BaseCurrency,
-            content.FiscalYear,
-            content.PurchaseType,
-            new PurchaseRequestCodeRefBody(
-                content.SpendCategoryRef.Catalog,
-                content.SpendCategoryRef.Code,
-                content.SpendCategoryRef.Version,
-                content.SpendCategoryRef.Digest),
-            new PurchaseRequestEntityRefBody(
-                content.CostCenterRef.EntityType, content.CostCenterRef.Id, content.CostCenterRef.Version),
-            new PurchaseRequestEntityRefBody(
-                content.CostCenterDepartmentRef.EntityType,
-                content.CostCenterDepartmentRef.Id,
-                content.CostCenterDepartmentRef.Version),
-            new PurchaseRequestEntityRefBody(
-                content.BeneficiaryDepartmentRef.EntityType,
-                content.BeneficiaryDepartmentRef.Id,
-                content.BeneficiaryDepartmentRef.Version),
-            new PurchaseRequestEntityRefBody(
-                content.RequestedForUserRef.EntityType,
-                content.RequestedForUserRef.Id,
-                content.RequestedForUserRef.Version),
-            content.SupplierRef is null
-                ? null
-                : new PurchaseRequestEntityRefBody(
-                    content.SupplierRef.EntityType, content.SupplierRef.Id, content.SupplierRef.Version),
-            content.PreferredProductRef is null
-                ? null
-                : new PurchaseRequestEntityRefBody(
-                    content.PreferredProductRef.EntityType,
-                    content.PreferredProductRef.Id,
-                    content.PreferredProductRef.Version),
-            content.RequiredProductRef is null
-                ? null
-                : new PurchaseRequestEntityRefBody(
-                    content.RequiredProductRef.EntityType,
-                    content.RequiredProductRef.Id,
-                    content.RequiredProductRef.Version),
+            ToEntityRefBody(content.BeneficiaryDepartmentRef),
             content.ContractRequired,
-            content.NonStandardTerms,
-            content.AgreementStatus,
-            content.NeedSummary,
-            content.RiskAnswers
-                .Select(answer => new PurchaseRequestAnswerBody(
-                    answer.QuestionCode,
-                    answer.SchemaVersion,
-                    answer.Value,
-                    answer.ValueKind == TypedAnswerValueKind.Boolean ? "BOOLEAN" : "ENUM_CODE"))
-                .ToArray(),
+            ToEntityRefBody(content.CostCenterDepartmentRef),
+            ToEntityRefBody(content.CostCenterRef),
+            FormatAmount(content.EstimatedGrossAmount),
+            content.FiscalYear,
             content.FxAttestationRef is null
                 ? null
                 : new PurchaseRequestFxBody(
@@ -476,6 +545,30 @@ public sealed class PurchaseRequestController(
                     content.FxAttestationRef.AttestationVersion,
                     content.FxAttestationRef.BaseCurrency,
                     content.FxAttestationRef.TransactionCurrency,
-                    content.FxAttestationRef.EffectiveRate,
-                    content.FxAttestationRef.RateDate));
+                    FormatAmount(content.FxAttestationRef.EffectiveRate),
+                    content.FxAttestationRef.RateDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
+            content.NeedSummary,
+            content.NonStandardTerms,
+            content.PreferredProductRef is null ? null : ToEntityRefBody(content.PreferredProductRef),
+            content.PurchaseType,
+            ToEntityRefBody(content.RequestedForUserRef),
+            content.RequiredProductRef is null ? null : ToEntityRefBody(content.RequiredProductRef),
+            content.RiskAnswers
+                .Select(answer => new PurchaseRequestAnswerBody(
+                    answer.QuestionCode,
+                    answer.SchemaVersion,
+                    answer.Value,
+                    answer.ValueKind == TypedAnswerValueKind.Boolean ? "BOOLEAN" : "ENUM_CODE"))
+                .ToArray(),
+            new PurchaseRequestCodeRefBody(
+                content.SpendCategoryRef.Catalog,
+                content.SpendCategoryRef.Code,
+                content.SpendCategoryRef.Version,
+                content.SpendCategoryRef.Digest),
+            content.SupplierRef is null ? null : ToEntityRefBody(content.SupplierRef),
+            content.TransactionCurrency);
+
+    private static PurchaseRequestEntityRefBody ToEntityRefBody(VersionedEntityRef reference) =>
+        new(reference.EntityType, reference.Id, reference.Version);
+
 }

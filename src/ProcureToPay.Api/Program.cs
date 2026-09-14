@@ -1,5 +1,6 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using ProcureToPay.Api;
 using ProcureToPay.Api.Authentication;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
@@ -170,6 +171,9 @@ var app = builder.Build();
 
 // Configure the HTTP request pipeline.
 app.UseExceptionHandler();
+
+// SPEC 06 REQ-11: the purchase request snapshot budget applies while the body is read.
+app.UseMiddleware<PurchaseRequestSizeLimitMiddleware>();
 
 app.UseHttpsRedirection();
 

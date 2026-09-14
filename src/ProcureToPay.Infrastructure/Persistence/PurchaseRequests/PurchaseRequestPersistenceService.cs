@@ -26,6 +26,12 @@ public sealed record PurchaseRequestLineView(
     PurchaseRequestLineContent Content,
     string ContentDigest);
 
+/// <summary>Persisted owner answers of one presented version, minimized for an AUDITOR (REQ-10).</summary>
+public sealed record PurchaseRequestAttestationView(
+    int Version,
+    DateTimeOffset AttestedAt,
+    IReadOnlyList<PurchaseRequestReferenceAssertion> Assertions);
+
 public sealed record PurchaseRequestVersionView(
     int Version,
     int? PredecessorVersion,
@@ -554,6 +560,25 @@ public sealed class PurchaseRequestPersistenceService(
         request.UpdatedAt = occurredAtUtc;
         await dbContext.SaveChangesAsync(cancellationToken);
         return new PurchaseRequestCancellation(request.Id, request.CurrentVersion, false);
+    }
+
+    /// <summary>Attestations and minimized references of a visible request, ordered by version.</summary>
+    public async Task<IReadOnlyList<PurchaseRequestAttestationView>> ReadAttestationsAsync(
+        Guid requestId,
+        Guid organizationId,
+        CancellationToken cancellationToken = default)
+    {
+        var records = await dbContext.PurchaseRequestReferenceAttestations
+            .AsNoTracking()
+            .Where(record => record.RequestId == requestId && record.OrganizationId == organizationId)
+            .OrderBy(record => record.RequestVersion)
+            .ToArrayAsync(cancellationToken);
+        return records
+            .Select(record => new PurchaseRequestAttestationView(
+                record.RequestVersion,
+                record.AttestedAt,
+                PurchaseRequestSerialization.ReadAssertions(record.AssertionsJson)))
+            .ToArray();
     }
 
     /// <summary>Projects the aggregate status of one immutable version, or null when not visible.</summary>
