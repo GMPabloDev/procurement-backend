@@ -1,0 +1,63 @@
+{
+  "format": "sdd-review/v1",
+  "spec": "06-purchase-requests-versionadas.md",
+  "revision": 1,
+  "digest": "f8c570320cc1093698b8b2998c83eee168335c5345236a2fe457755bf4a41dd8",
+  "dependencies": {
+    "01-organizacion-identidad-roles-autoridades-aprobacion.md": "c5f194a4dca2597aff6cbbace581b1f9212197416c2918559e1a124484de458e",
+    "02-motor-de-politicas.md": "63fec425400bc197524e23cb3a130ab2d7d64f6eba823944b3ebee8923e6d688",
+    "03-approval-workflow.md": "f0b61a917c4c4b4adcaee598c75352ef93d03c3bf25b76d15f80177ba3446234",
+    "04-delegacion-y-evolucion-de-aprobaciones.md": "0ffbc76e8ef5a1c88d251ebad74a99d6cb45cebffd0b6f553fddc5210049933f",
+    "05-integracion-policy-approval-workflow.md": "001c559d72845b0f77919df50bad5e7b74eeecb5e6dc8921d52bba932cb20f70"
+  },
+  "verdict": "PASS",
+  "mode": "full",
+  "baseline_digest": null,
+  "review_count": 3,
+  "reviewer": "sdd-contract-reviewer · openai-codex/gpt-5.6-luna · effort high",
+  "reviewed_at": "2026-09-13",
+  "coverage": {
+    "behavior": "REQ-01..REQ-11 y CA-01..CA-08 recibieron cobertura full; los deltas posteriores se limitaron a R1..R5 y sus efectos próximos, todos cerrados.",
+    "boundaries": "Se contrastaron SPEC 02/03/04/05, provider/manifest, adapters owner exact-one, Policy→Approval, requester=originator y supersesión retained/added/removed; DTOs, refs, assertions y facts quedaron versionados y exactos.",
+    "failure_modes": "Retries entre módulos, carreras de revisión/cancelación/decisión, manifest o provider corrupto, dependencia ausente/ambigua, carry-forward, eventos tardíos y matching de risk answers tienen resultado fail-closed verificable.",
+    "acceptance": "CA-01/03/04/06/07 fijan deltas, cardinalidades, mapping, negativos y goldens independientes. El revisor reprodujo los tres SHA-256 publicados de attestation, materiality y supersession v3.",
+    "implementation_readiness": "Se trazó requester → versiones/manifest → provider real → Policy → adapter v2/Approval → inbox/proyección PR y recovery; se comprobaron los puertos y servicios existentes y la ausencia actual del módulo PR se clasificó como trabajo de implementación."
+  },
+  "findings": [
+    {
+      "id": "R1",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "retained/changed/added/removed no definían elementos, contenido sucesor, nullabilidad ni orden canónico.",
+      "resolution": "La spec publica create/revision/line-content y delta persistido con propiedades exactas, snapshots previous/replacement, sets canónicos y cobertura total; el revisor delta aceptó el cierre."
+    },
+    {
+      "id": "R2",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "El delta solo gobernaba líneas y dejaba requester, Legal Entity y business justification sin regla de cambio.",
+      "resolution": "Organización, requester, request id y Legal Entity quedan fijados en la raíz; business justification viaja completo en cada sucesora. El revisor delta aceptó el cierre."
+    },
+    {
+      "id": "R3",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Owners, references, relations y facts de materiality carecían de schemas y cardinalidades interoperables.",
+      "resolution": "AttestedRef, verification request/response, assertions/cardinalidades, PolicyValue/facts/provenance y preimages quedaron exactos; los hashes publicados fueron reproducidos por el revisor."
+    },
+    {
+      "id": "R4",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "La prohibición de cancelar después de un takeover downstream no tenía owner, evento ni frontera definida.",
+      "resolution": "Cancelación se acota a esta entrega sin consumer downstream y define precedencia/relectura frente a Approval; una spec futura deberá introducir una señal durable antes de cambiar la regla."
+    },
+    {
+      "id": "R5",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "El provider proponía Set<TypedAnswerRef> pero SPEC 02 y el matcher existente solo manejaban un TypedAnswer escalar.",
+      "resolution": "La modificación de SPEC 02 fija ausencia o set no vacío único por question/schema, predicates EQ/NEQ/IN/NOT_IN, selección cero/uno/múltiples y comparación kind/value; el tercer pase autorizado lo declaró implementable."
+    }
+  ]
+}
