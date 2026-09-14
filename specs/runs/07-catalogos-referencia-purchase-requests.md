@@ -1,7 +1,7 @@
 # RUN SPEC 07 — Catálogos de referencia para Purchase Requests y scope Cost Center
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** Lista para integrar
+> **Estado del run:** Integrado
 > **Spec:** specs/07-catalogos-referencia-purchase-requests.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 40e6678e70120be5c0b572646f2d57cf980f51d1
@@ -13,9 +13,9 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-14 11:12 -0500
-> **Actualizado:** 2026-09-14 18:45 -0500
+> **Actualizado:** 2026-09-14 19:05 -0500
 > **HEAD verificado:** b72447a9e00fcdffb666f847678379a37b962ed5
-> **Commit de integración:** Pendiente
+> **Commit de integración:** ad588b2ba7a28fa35fc6c07a9bf2d645579ae45c
 
 ## Línea base
 
@@ -101,3 +101,10 @@ La ronda delta detectó que los CHECK solo exigían `PredecessorVersion = Versio
 > **Modelo efectivo:** sdd-implementation-reviewer · openai-codex/gpt-5.6-sol · effort high (metadatos de la herramienta)
 > **Método:** Ronda 1 full sobre `50b0900` (Git, contrato, migración, evidencia; R1–R10). Ronda 2 delta sobre `b6a281b`: R1–R7, R9 y R10 cerrados; R8 reabierto porque el CHECK no validaba predecessor existente ni avance exacto del puntero. Ronda 3 delta acotada sobre `b72447a`: R8 resuelto (triggers de sucesor exacto/predecessor existente, puntero a fila existente, append antes del avance en la misma transacción y regresión SQL de salto/orfandad/puntero colgante); **PASS** sin hallazgos nuevos. Árbol revisado `b72447a9e00fcdffb666f847678379a37b962ed5`; suites Unit **173/173**, Integración **82/82**, API/E2E **24/24**, build 0 errores.
 > **Fecha:** 2026-09-14
+
+## Cierre
+
+- **Integración:** merge `ad588b2ba7a28fa35fc6c07a9bf2d645579ae45c` de `spec-07-catalogos-referencia-purchase-requests` (tip `d15a7107c885a75fbb878133db3626166823bfa4`) sobre `main` (`40e6678e70120be5c0b572646f2d57cf980f51d1`), 2026-09-14.
+- **Equivalencia:** el candidato verificado `b72447a9e00fcdffb666f847678379a37b962ed5` es ancestro del commit de integración; `git diff b72447a..HEAD -- src/ tests/ docs/` está vacío, por lo que el código integrado es exactamente el revisado (squash + merge, sin reauditoría).
+- **Validaciones:** `dotnet build ProcureToPay.sln` 0 errores; Unit **173/173**, Integración **82/82**, API/E2E **24/24** sobre el árbol certificado; `specctl doctor` sin errores; `specctl git-check 07` coherente.
+- **Vigencia:** SPEC 01, 02, 03, 05 y 06 quedan `Sustituida parcialmente por SPEC 07`; SPEC 07 pasa a `Implementada` / `Integrada` / `Vigente`.

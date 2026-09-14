@@ -1,9 +1,9 @@
 # SPEC 07 — Catálogos de referencia para Purchase Requests y scope Cost Center
 
 > **Formato:** sdd/v3
-> **Estado:** Aprobada
-> **Ejecución:** Lista para integrar
-> **Vigencia:** Pendiente
+> **Estado:** Implementada
+> **Ejecución:** Integrada
+> **Vigencia:** Vigente
 > **Revisión:** 1
 > **Digest contractual:** 64daf9c60d28f2d9a2dc6c286a8e2f12d83dd97a01a7651a3a72e73681f0eed1
 > **Fecha:** 2026-09-14
