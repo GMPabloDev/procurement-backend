@@ -3,6 +3,7 @@ using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
+using ProcureToPay.Infrastructure.Persistence.ReferenceCatalogs;
 
 namespace ProcureToPay.Infrastructure.Persistence;
 
@@ -66,6 +67,10 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<PurchaseRequestLifecycleEventRecord> PurchaseRequestLifecycleEvents =>
         Set<PurchaseRequestLifecycleEventRecord>();
     public DbSet<PurchaseRequestCommandRecord> PurchaseRequestCommands => Set<PurchaseRequestCommandRecord>();
+    public DbSet<CostCenterRecord> CostCenters => Set<CostCenterRecord>();
+    public DbSet<CostCenterVersionRecord> CostCenterVersions => Set<CostCenterVersionRecord>();
+    public DbSet<SpendCategoryRecord> SpendCategories => Set<SpendCategoryRecord>();
+    public DbSet<SpendCategoryVersionRecord> SpendCategoryVersions => Set<SpendCategoryVersionRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -116,6 +121,10 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigurePurchaseRequestApprovalResult(modelBuilder);
         ConfigurePurchaseRequestLifecycleEvent(modelBuilder);
         ConfigurePurchaseRequestCommand(modelBuilder);
+        ConfigureCostCenter(modelBuilder);
+        ConfigureCostCenterVersion(modelBuilder);
+        ConfigureSpendCategory(modelBuilder);
+        ConfigureSpendCategoryVersion(modelBuilder);
         base.OnModelCreating(modelBuilder);
     }
 
@@ -1012,5 +1021,68 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         // One revocation key per evidence scope (REQ-06): replay resolves on the same key.
         entity.HasIndex(record => new { record.OrganizationId, record.EvidenceId, record.RevocationKey }).IsUnique();
         entity.HasIndex(record => record.EvidenceId);
+    }
+
+    private static void ConfigureCostCenter(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<CostCenterRecord>();
+        entity.ToTable("CostCenters", "ReferenceCatalog");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Code).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.OrganizationId, record.Code }).IsUnique();
+        entity.HasOne(record => record.Organization)
+            .WithMany()
+            .HasForeignKey(record => record.OrganizationId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureCostCenterVersion(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<CostCenterVersionRecord>();
+        entity.ToTable("CostCenterVersions", "ReferenceCatalog");
+        entity.HasKey(record => new { record.CostCenterId, record.Version });
+        entity.Property(record => record.Name).HasMaxLength(400).IsRequired();
+        entity.Property(record => record.Reason).HasMaxLength(4000).IsRequired();
+        entity.HasIndex(record => new { record.CostCenterId, record.Version }).IsUnique();
+        entity.HasIndex(record => record.DepartmentId);
+        entity.HasOne(record => record.CostCenter)
+            .WithMany(record => record.Versions)
+            .HasForeignKey(record => record.CostCenterId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(record => record.Department)
+            .WithMany()
+            .HasForeignKey(record => record.DepartmentId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureSpendCategory(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SpendCategoryRecord>();
+        entity.ToTable("SpendCategories", "ReferenceCatalog");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Code).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.OrganizationId, record.Code }).IsUnique();
+        entity.HasOne(record => record.Organization)
+            .WithMany()
+            .HasForeignKey(record => record.OrganizationId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureSpendCategoryVersion(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SpendCategoryVersionRecord>();
+        entity.ToTable("SpendCategoryVersions", "ReferenceCatalog");
+        entity.HasKey(record => new { record.SpendCategoryId, record.Version });
+        entity.Property(record => record.Code).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Name).HasMaxLength(400).IsRequired();
+        entity.Property(record => record.Digest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Reason).HasMaxLength(4000).IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.Code, record.Version }).IsUnique();
+        entity.HasOne(record => record.SpendCategory)
+            .WithMany(record => record.Versions)
+            .HasForeignKey(record => record.SpendCategoryId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

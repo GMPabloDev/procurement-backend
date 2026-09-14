@@ -233,20 +233,20 @@ public sealed class DecisionScopeDescriptor
                 break;
             case ScopeDimension.LegalEntity:
             case ScopeDimension.Department:
+            case ScopeDimension.CostCenter:
                 if (entry.ReferenceId is null || entry.ReferenceId == Guid.Empty)
                 {
-                    throw new DomainValidationException("A legal entity or department scope requires a UUID reference.");
+                    throw new DomainValidationException(
+                        "A legal entity, department or cost center scope requires a UUID reference.");
                 }
 
                 if (entry.ReferenceVersion is null or < 1)
                 {
-                    throw new DomainValidationException("A legal entity or department scope requires a positive version.");
+                    throw new DomainValidationException(
+                        "A legal entity, department or cost center scope requires a positive version.");
                 }
 
                 break;
-            case ScopeDimension.CostCenter:
-                throw new DomainValidationException(
-                    "COST_CENTER scope is not available until the Cost Centers specification extends SPEC 01.");
             default:
                 throw new DomainValidationException("The decision scope dimension is invalid.");
         }

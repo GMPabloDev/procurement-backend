@@ -126,7 +126,14 @@ public sealed class AuthorizationScopeSet
 
         if (materialized.Any(scope => scope.Dimension == ScopeDimension.CostCenter))
         {
-            throw new DomainValidationException("Cost Center scope is not available in this release.");
+            // SPEC 07 REQ-04: COST_CENTER is now a first-class dimension. The persistence and API
+            // layers validate that the code resolves to a current active catalog entry; the domain
+            // set only guarantees an explicit, non-empty reference.
+            if (materialized.Any(scope => scope.Dimension == ScopeDimension.CostCenter &&
+                                          string.IsNullOrWhiteSpace(scope.Reference)))
+            {
+                throw new DomainValidationException("A cost center scope requires its stable code.");
+            }
         }
 
         var duplicate = materialized

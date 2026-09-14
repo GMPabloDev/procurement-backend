@@ -366,9 +366,15 @@ public sealed class PurchaseRequestAttestationService(
             response.VerifiedAt.ToUniversalTime() != request.VerifiedAt ||
             !SameReference(response.SourceRef, request.SourceRef) ||
             !SameReference(response.TargetRef, request.TargetRef) ||
-            string.IsNullOrWhiteSpace(response.OwnerContractVersion))
+            // SPEC 07 REQ-07: the answer must belong to the resolved registration and close the
+            // relation between the boolean and the contractual status.
+            !string.Equals(response.OwnerId, owner.OwnerId, StringComparison.Ordinal) ||
+            !string.Equals(response.OwnerContractVersion, owner.ContractVersion, StringComparison.Ordinal) ||
+            response.Active != string.Equals(
+                response.Status, PurchaseRequestAssertionCodes.StatusActive, StringComparison.Ordinal))
         {
-            throw new DomainValidationException("A reference owner answered with a different binding.");
+            throw new PurchaseRequestDependencyUnavailableException(
+                "A reference owner answered with a different binding.");
         }
 
         if (!response.Active)

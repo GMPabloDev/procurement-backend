@@ -7,8 +7,8 @@ namespace ProcureToPay.Infrastructure.Persistence.Approval;
 
 /// <summary>
 /// Converts the stored <c>decision-scope/v1</c> descriptor into the SPEC 01
-/// <see cref="AuthorizationScopeSet"/> used for eligibility (REQ-02, REQ-04): every
-/// LEGAL_ENTITY and DEPARTMENT reference must resolve to an active catalog entry whose
+/// <see cref="AuthorizationScopeSet"/> used for eligibility (REQ-02, REQ-04, SPEC 07 REQ-05): every
+/// LEGAL_ENTITY, DEPARTMENT and COST_CENTER reference must resolve to an active catalog entry whose
 /// version matches the version frozen in the requirement. Nothing degrades implicitly.
 /// </summary>
 public sealed class ApprovalScopeResolver(ProcureToPayDbContext dbContext)
@@ -33,6 +33,7 @@ public sealed class ApprovalScopeResolver(ProcureToPayDbContext dbContext)
                 ScopeDimension.Organization => AuthorizationScope.Global(),
                 ScopeDimension.LegalEntity => await ResolveLegalEntityAsync(entry, organizationId, cancellationToken),
                 ScopeDimension.Department => await ResolveDepartmentAsync(entry, cancellationToken),
+                ScopeDimension.CostCenter => await ResolveCostCenterAsync(entry, organizationId, cancellationToken),
                 _ => throw new DomainValidationException(
                     "The decision scope dimension is not available in this release.")
             });
@@ -68,6 +69,34 @@ public sealed class ApprovalScopeResolver(ProcureToPayDbContext dbContext)
             .SingleOrDefaultAsync(department => department.Id == referenceId, cancellationToken)
             ?? throw new DomainValidationException("The department reference does not exist.");
         return ScopeFrom(record.Status, record.Version, entry, ScopeDimension.Department, record.Code);
+    }
+
+    private async Task<AuthorizationScope> ResolveCostCenterAsync(
+        DecisionScopeEntry entry,
+        Guid organizationId,
+        CancellationToken cancellationToken)
+    {
+        var referenceId = entry.ReferenceId
+            ?? throw new DomainValidationException("A cost center scope requires a reference.");
+        var row = await dbContext.CostCenterVersions
+            .AsNoTracking()
+            .Where(version => version.CostCenterId == referenceId &&
+                              version.OrganizationId == organizationId &&
+                              version.Version == entry.ReferenceVersion)
+            .Join(
+                dbContext.CostCenters.AsNoTracking(),
+                version => version.CostCenterId,
+                root => root.Id,
+                (version, root) => new
+                {
+                    root.Code,
+                    root.CurrentVersion,
+                    version.Status,
+                    root.OrganizationId
+                })
+            .SingleOrDefaultAsync(candidate => candidate.OrganizationId == organizationId, cancellationToken)
+            ?? throw new DomainValidationException("The cost center reference does not exist.");
+        return ScopeFrom(row.Status, row.CurrentVersion, entry, ScopeDimension.CostCenter, row.Code);
     }
 
     private static AuthorizationScope ScopeFrom(

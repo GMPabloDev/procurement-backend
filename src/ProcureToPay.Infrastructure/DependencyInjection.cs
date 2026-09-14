@@ -91,6 +91,14 @@ public static class DependencyInjection
             services.AddScoped<IPolicyReferenceCatalog>(provider =>
                 new DatabasePolicyReferenceCatalog(
                     provider.GetRequiredService<ProcureToPayDbContext>(), "LEGAL_ENTITY"));
+            // SPEC 07 REQ-05: the reference catalogs own the COST_CENTER and SPEND_CATEGORY
+            // families; these registrations are exact-one and organization-bound.
+            services.AddScoped<IPolicyReferenceCatalog>(provider =>
+                new CostCenterPolicyReferenceCatalog(
+                    provider.GetRequiredService<ProcureToPayDbContext>()));
+            services.AddScoped<IPolicyReferenceCatalog>(provider =>
+                new SpendCategoryPolicyReferenceCatalog(
+                    provider.GetRequiredService<ProcureToPayDbContext>()));
         }
         else if (Uri.TryCreate(catalogUrl, UriKind.Absolute, out var catalogBaseAddress))
         {
@@ -167,8 +175,31 @@ public static class DependencyInjection
         services.AddScoped<IPolicyFactProvider>(provider =>
             provider.GetRequiredService<
                 ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestPolicyFactProvider>());
-        services.AddScoped<IPurchaseRequestReferenceOwner>(
-            provider => new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.OrganizationReferenceOwner(
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.ReferenceCatalogs.ReferenceCatalogPersistenceService>();
+        services.AddScoped<IPurchaseRequestReferenceOwner>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.OrganizationReferenceOwner(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                ProcureToPay.Domain.Modules.PurchaseRequests.PurchaseRequestReferenceType.LegalEntity));
+        services.AddScoped<IPurchaseRequestReferenceOwner>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.OrganizationReferenceOwner(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                ProcureToPay.Domain.Modules.PurchaseRequests.PurchaseRequestReferenceType.User));
+        services.AddScoped<IPurchaseRequestReferenceOwner>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.OrganizationReferenceOwner(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                ProcureToPay.Domain.Modules.PurchaseRequests.PurchaseRequestReferenceType.Department));
+        // SPEC 07 REQ-06: the two Cost Center slots and the Spend Category slot are declared
+        // explicitly; the registry rejects missing or wildcard registrations.
+        services.AddScoped<IPurchaseRequestReferenceOwner>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.CostCenterReferenceOwner(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                ProcureToPay.Domain.Modules.PurchaseRequests.PurchaseRequestAssertionType.ActiveInOrganization));
+        services.AddScoped<IPurchaseRequestReferenceOwner>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.CostCenterReferenceOwner(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                ProcureToPay.Domain.Modules.PurchaseRequests.PurchaseRequestAssertionType.CostCenterOwnedByDepartment));
+        services.AddScoped<IPurchaseRequestReferenceOwner>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.SpendCategoryReferenceOwner(
                 provider.GetRequiredService<ProcureToPayDbContext>()));
         services.AddScoped<IPurchaseRequestReferenceOwnerRegistry>(provider =>
             new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestReferenceOwnerRegistry(

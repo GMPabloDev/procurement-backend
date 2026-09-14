@@ -10,6 +10,7 @@ using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence;
 // pi-lens-ignore: lsp:CS0234
 using ProcureToPay.Infrastructure.Persistence.Organization;
+using ProcureToPay.Infrastructure.Persistence.ReferenceCatalogs;
 
 namespace ProcureToPay.Api.Controllers;
 
@@ -19,7 +20,8 @@ namespace ProcureToPay.Api.Controllers;
 public sealed class OrganizationController(
     ProcureToPayDbContext dbContext,
     CurrentUserProvisioningService provisioningService,
-    IOrganizationEligibilityService eligibilityService) : ControllerBase
+    IOrganizationEligibilityService eligibilityService,
+    ReferenceCatalogPersistenceService referenceCatalogs) : ControllerBase
 {
     [HttpPost("eligibility")]
     public async Task<ActionResult<IReadOnlyCollection<EligibilityResponse>>> ResolveEligibility(
@@ -272,7 +274,18 @@ public sealed class OrganizationController(
                     .ToArrayAsync(cancellationToken);
                 var referencedByScope = assignmentScopes.Concat(grantScopes)
                     .Any(scope => ScopeReferencesDepartment(scope, department.Code));
-                if (userIds.Length > 0 || referencedByScope)
+                var referencedByCostCenter = await dbContext.CostCenterVersions
+                    .Where(version => version.DepartmentId == department.Id)
+                    .Join(
+                        dbContext.CostCenters,
+                        version => version.CostCenterId,
+                        root => root.Id,
+                        (version, root) => new { version, root })
+                    .AnyAsync(
+                        pair => pair.root.CurrentVersion == pair.version.Version &&
+                                pair.version.Status == (int)EntityStatus.Active,
+                        cancellationToken);
+                if (userIds.Length > 0 || referencedByScope || referencedByCostCenter)
                 {
                     throw new DomainConflictException("Department has active references and cannot be deactivated.");
                 }
@@ -1051,10 +1064,10 @@ public sealed class OrganizationController(
 
         var scopes = new List<AuthorizationScope>();
         var serialized = new List<object>();
+        var organizationId = await dbContext.Organizations.Select(item => item.Id).SingleAsync(cancellationToken);
         foreach (var input in inputs)
         {
-            if (!OrganizationContractCodes.TryScope(input.Dimension, out var dimension) ||
-                dimension == ScopeDimension.CostCenter)
+            if (!OrganizationContractCodes.TryScope(input.Dimension, out var dimension))
             {
                 throw new DomainValidationException("Scope dimension is not supported.");
             }
@@ -1082,6 +1095,8 @@ public sealed class OrganizationController(
                                        item.Code.ToUpper() == reference.ToUpper())
                         .Select(item => item.Code)
                         .SingleOrDefaultAsync(cancellationToken),
+                    ScopeDimension.CostCenter => (await referenceCatalogs.FindActiveCostCenterByCodeAsync(
+                        reference, organizationId, cancellationToken))?.Code,
                     _ => null
                 } ?? throw new DomainValidationException("The scoped reference is not active.");
                 scopes.Add(AuthorizationScope.For(dimension, reference));

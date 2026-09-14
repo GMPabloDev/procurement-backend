@@ -25,7 +25,8 @@ public sealed class HttpPolicyReferenceCatalogTests
             NullLogger<HttpPolicyReferenceCatalog>.Instance);
 
         var exists = await catalog.ExistsAsync(
-            new PolicyReferenceLookup("SPEND_CATEGORY", Guid.NewGuid(), 2, new string('a', 64)),
+            new PolicyReferenceLookup(
+                "SPEND_CATEGORY", Guid.NewGuid(), null, 2, new string('a', 64), "HARDWARE", null),
             TestContext.Current.CancellationToken);
 
         Assert.True(exists);
@@ -44,7 +45,8 @@ public sealed class HttpPolicyReferenceCatalogTests
             NullLogger<HttpPolicyReferenceCatalog>.Instance);
 
         await Assert.ThrowsAsync<PolicyDependencyUnavailableException>(() => catalog.ExistsAsync(
-            new PolicyReferenceLookup("SPEND_CATEGORY", Guid.NewGuid(), 2, new string('a', 64)),
+            new PolicyReferenceLookup(
+                "SPEND_CATEGORY", Guid.NewGuid(), null, 2, new string('a', 64), "HARDWARE", null),
             TestContext.Current.CancellationToken));
     }
 
