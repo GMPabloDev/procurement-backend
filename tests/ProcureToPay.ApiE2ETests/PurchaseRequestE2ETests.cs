@@ -145,6 +145,26 @@ public sealed class PurchaseRequestE2ETests
         using var unknown = await requester.PostAsJsonAsync("/v1/purchase-requests", unknownBody, cancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, unknown.StatusCode);
         Assert.Equal("/problems/validation", await Environment.ProblemTypeAsync(unknown, cancellationToken));
+        // Mandatory members must be present and non-null; omission and explicit null are rejected.
+        var nullRiskAnswers = (Dictionary<string, object?>)environment.CreateBodyDictionary("limits-null-line", 1);
+        var firstDraft = (Dictionary<string, object?>)((object[])nullRiskAnswers["line_drafts"]!)[0];
+        ((Dictionary<string, object?>)firstDraft["content"]!)["risk_answers"] = null;
+        using var nullAnswers = await requester.PostAsJsonAsync(
+            "/v1/purchase-requests", nullRiskAnswers, cancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, nullAnswers.StatusCode);
+
+        var nullDrafts = (Dictionary<string, object?>)environment.CreateBodyDictionary("limits-null-drafts", 1);
+        nullDrafts["line_drafts"] = null;
+        using var nullLineDrafts = await requester.PostAsJsonAsync(
+            "/v1/purchase-requests", nullDrafts, cancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, nullLineDrafts.StatusCode);
+
+        var omittedArray = (Dictionary<string, object?>)environment.CreateBodyDictionary("limits-omitted-drafts", 1);
+        omittedArray.Remove("line_drafts");
+        using var omittedDrafts = await requester.PostAsJsonAsync(
+            "/v1/purchase-requests", omittedArray, cancellationToken);
+        Assert.Equal(HttpStatusCode.BadRequest, omittedDrafts.StatusCode);
+
         using var wrongVersion = await requester.PostAsJsonAsync(
             "/v1/purchase-requests",
             environment.CreateBody("limits-version", 1, commandVersion: "purchase-request-create-command/v0"),
@@ -378,25 +398,40 @@ public sealed class PurchaseRequestE2ETests
             return client;
         }
 
+        public object CreateBodyDictionary(string revisionKey, int lineCount)
+        {
+            var body = (Dictionary<string, object?>)CreateBody(
+                revisionKey, lineCount, riskAnswers: 0);
+            return body;
+        }
+
         public object CreateBody(
             string revisionKey,
             int lineCount,
             int riskAnswers = 0,
             string needSummary = "Need for the API E2E test",
-            string? commandVersion = null) => new
+            string? commandVersion = null) => CreateBodyDictionary(
+            revisionKey, lineCount, riskAnswers, needSummary, commandVersion);
+
+        public Dictionary<string, object?> CreateBodyDictionary(
+            string revisionKey,
+            int lineCount,
+            int riskAnswers = 0,
+            string needSummary = "Need for the API E2E test",
+            string? commandVersion = null) => new()
         {
-            business_justification = "Justification",
-            command_version = commandVersion ?? PurchaseRequestCodes.CreateCommandVersion,
-            legal_entity_ref = new { entity_type = "LEGAL_ENTITY", id = legalEntityId, version = 1 },
-            line_drafts = Enumerable.Range(0, lineCount)
-                .Select(index => new
+            ["business_justification"] = "Justification",
+            ["command_version"] = commandVersion ?? PurchaseRequestCodes.CreateCommandVersion,
+            ["legal_entity_ref"] = new { entity_type = "LEGAL_ENTITY", id = legalEntityId, version = 1 },
+            ["line_drafts"] = Enumerable.Range(0, lineCount)
+                .Select(index => new Dictionary<string, object?>
                 {
-                    client_line_key = $"line-{index}",
-                    content = LineContent(needSummary, riskAnswers)
+                    ["client_line_key"] = $"line-{index}",
+                    ["content"] = LineContent(needSummary, riskAnswers)
                 })
                 .ToArray(),
-            reason = "Initial request",
-            revision_key = revisionKey
+            ["reason"] = "Initial request",
+            ["revision_key"] = revisionKey
         };
 
         public object RevisionBody(int expectedVersion, string revisionKey) => new
@@ -452,35 +487,35 @@ public sealed class PurchaseRequestE2ETests
             revision_key = revisionKey
         };
 
-        private object LineContent(string needSummary, int riskAnswers = 0) => new
+        private Dictionary<string, object?> LineContent(string needSummary, int riskAnswers = 0) => new()
         {
-            base_amount = "100",
-            base_currency = "PEN",
-            beneficiary_department_ref = new { entity_type = "DEPARTMENT", id = departmentId, version = 1 },
-            contract_required = false,
-            cost_center_department_ref = new { entity_type = "DEPARTMENT", id = departmentId, version = 1 },
-            cost_center_ref = new { entity_type = "COST_CENTER", id = Guid.NewGuid(), version = 1 },
-            estimated_gross_amount = "100",
-            fiscal_year = 2026,
-            fx_attestation_ref = (object?)null,
-            need_summary = needSummary,
-            non_standard_terms = false,
-            preferred_product_ref = (object?)null,
-            purchase_type = "GOOD",
-            requested_for_user_ref = new { entity_type = "USER", id = Guid.NewGuid(), version = 1 },
-            required_product_ref = (object?)null,
-            risk_answers = Enumerable.Range(0, riskAnswers)
-                .Select(index => new
+            ["base_amount"] = "100",
+            ["base_currency"] = "PEN",
+            ["beneficiary_department_ref"] = new { entity_type = "DEPARTMENT", id = departmentId, version = 1 },
+            ["contract_required"] = false,
+            ["cost_center_department_ref"] = new { entity_type = "DEPARTMENT", id = departmentId, version = 1 },
+            ["cost_center_ref"] = new { entity_type = "COST_CENTER", id = Guid.NewGuid(), version = 1 },
+            ["estimated_gross_amount"] = "100",
+            ["fiscal_year"] = 2026,
+            ["fx_attestation_ref"] = (object?)null,
+            ["need_summary"] = needSummary,
+            ["non_standard_terms"] = false,
+            ["preferred_product_ref"] = (object?)null,
+            ["purchase_type"] = "GOOD",
+            ["requested_for_user_ref"] = new { entity_type = "USER", id = Guid.NewGuid(), version = 1 },
+            ["required_product_ref"] = (object?)null,
+            ["risk_answers"] = Enumerable.Range(0, riskAnswers)
+                .Select(index => new Dictionary<string, object?>
                 {
-                    question_code = $"Q{index}",
-                    schema_version = 1,
-                    value = "true",
-                    value_kind = "BOOLEAN"
+                    ["question_code"] = $"Q{index}",
+                    ["schema_version"] = 1,
+                    ["value"] = "true",
+                    ["value_kind"] = "BOOLEAN"
                 })
                 .ToArray(),
-            spend_category_ref = new { catalog = "SPEND_CATEGORY", code = "HARDWARE", version = 1, digest = new string('d', 64) },
-            supplier_ref = (object?)null,
-            transaction_currency = "PEN"
+            ["spend_category_ref"] = new { catalog = "SPEND_CATEGORY", code = "HARDWARE", version = 1, digest = new string('d', 64) },
+            ["supplier_ref"] = (object?)null,
+            ["transaction_currency"] = "PEN"
         };
 
         public static async Task<string?> ProblemTypeAsync(

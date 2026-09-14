@@ -360,6 +360,64 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task Cancellation_retries_once_and_fails_closed_when_the_case_keeps_moving()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken);
+
+        // One concurrent version advance: the second read cancels the case and the request.
+        var (retryRequest, retryVersion) = await harness.CreateAsync(lineCount: 1, cancellationToken);
+        var retrySubmission = await harness.SubmitAsync(retryRequest, retryVersion, "race-cancel-1", cancellationToken);
+        var caseId = retrySubmission.ApprovalCaseId!.Value;
+        var bumped = false;
+        harness.CancelRaceHook = id =>
+        {
+            if (!bumped && id == caseId)
+            {
+                bumped = true;
+                harness.AdvanceCaseVersion(id);
+            }
+        };
+        var cancellation = await harness.CancelAsync(retryRequest, retryVersion, "race-cancel-1", cancellationToken);
+        Assert.False(cancellation.Replayed);
+        await using (var verification = harness.CreateContext())
+        {
+            var request = await verification.PurchaseRequests.SingleAsync(
+                record => record.Id == retryRequest, cancellationToken);
+            Assert.Equal((int)PurchaseRequestStatus.Cancelled, request.Status);
+            Assert.Equal((int)ApprovalCaseStatus.Cancelled, await harness.CaseStatusAsync(caseId, cancellationToken));
+        }
+
+        // The case keeps moving on every read: the cancellation fails closed and leaves no half
+        // state (REQ-10, NFR-03).
+        harness.CancelRaceHook = null;
+        var (openRequest, openVersion) = await harness.CreateAsync(lineCount: 1, cancellationToken);
+        var openSubmission = await harness.SubmitAsync(openRequest, openVersion, "race-cancel-2", cancellationToken);
+        var openCaseId = openSubmission.ApprovalCaseId!.Value;
+        harness.CancelRaceHook = id =>
+        {
+            if (id == openCaseId)
+            {
+                harness.AdvanceCaseVersion(id);
+            }
+        };
+        await Assert.ThrowsAsync<DomainConflictException>(() =>
+            harness.CancelAsync(openRequest, openVersion, "race-cancel-2", cancellationToken));
+        harness.CancelRaceHook = null;
+        await using (var verification = harness.CreateContext())
+        {
+            var request = await verification.PurchaseRequests.SingleAsync(
+                record => record.Id == openRequest, cancellationToken);
+            Assert.Equal((int)PurchaseRequestStatus.InApproval, request.Status);
+            Assert.Equal((int)ApprovalCaseStatus.Open, await harness.CaseStatusAsync(openCaseId, cancellationToken));
+            Assert.Equal(0, await verification.PurchaseRequestCommands.CountAsync(
+                record => record.RequestId == openRequest &&
+                          record.CommandType == PurchaseRequestPersistenceService.CommandCancel,
+                cancellationToken));
+        }
+    }
+
     private static async Task<(T? Value, Exception? Error)> CaptureAsync<T>(Task<T> task)
     {
         try
@@ -412,6 +470,27 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                 .Options);
 
         public void FailNextApproval() => fault.FailOnce = true;
+
+        /// <summary>Fault injection for the cancellation race (R7): applied to every service set.</summary>
+        public Action<Guid>? CancelRaceHook { get; set; }
+
+        public void AdvanceCaseVersion(Guid caseId)
+        {
+            using var context = CreateContext();
+            context.ApprovalCases
+                .Where(record => record.Id == caseId)
+                .ExecuteUpdate(setters => setters.SetProperty(
+                    record => record.Version, record => record.Version + 1));
+        }
+
+        public async Task<int> CaseStatusAsync(Guid caseId, CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            return await context.ApprovalCases
+                .Where(record => record.Id == caseId)
+                .Select(record => record.Status)
+                .SingleAsync(cancellationToken);
+        }
 
         public async Task<(Guid RequestId, int Version)> CreateAsync(int lineCount, CancellationToken cancellationToken)
         {
@@ -673,8 +752,7 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                 loggerFactory.CreateLogger<ApprovalSupersessionService>());
             var workflow = new ApprovalWorkflowService(
                 context, allowlist, assignmentEngine, loggerFactory.CreateLogger<ApprovalWorkflowService>());
-            return new Services(
-                new PurchaseRequestSubmissionService(
+            var submissionService = new PurchaseRequestSubmissionService(
                     context,
                     persistence,
                     attestation,
@@ -682,7 +760,12 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                     submissions,
                     supersessions,
                     workflow,
-                    NullLogger<PurchaseRequestSubmissionService>.Instance),
+                    NullLogger<PurchaseRequestSubmissionService>.Instance)
+            {
+                BeforeApprovalCaseCancel = CancelRaceHook
+            };
+            return new Services(
+                submissionService,
                 new ApprovalDecisionService(
                     context, assignmentEngine, loggerFactory.CreateLogger<ApprovalDecisionService>()));
         }

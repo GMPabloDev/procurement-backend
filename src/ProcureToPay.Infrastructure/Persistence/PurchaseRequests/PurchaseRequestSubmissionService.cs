@@ -64,6 +64,13 @@ public sealed class PurchaseRequestSubmissionService(
 
     public const string AdapterContractVersion = PolicyApprovalAdapter.ContractVersion;
 
+    /// <summary>
+    /// Fault-injection seam of the cancellation race (T-08): runs after the case version is read
+    /// and before the cancellation attempt, so a test can advance the case concurrently and
+    /// exercise the re-read and the fail-closed outcome without touching production behavior.
+    /// </summary>
+    public Action<Guid>? BeforeApprovalCaseCancel { get; set; }
+
     public async Task<PurchaseRequestSubmissionOutcome> SubmitAsync(
         PurchaseRequestSubmissionCommand command,
         DateTimeOffset occurredAt,
@@ -436,6 +443,7 @@ public sealed class PurchaseRequestSubmissionService(
                 return;
             }
 
+            BeforeApprovalCaseCancel?.Invoke(caseId);
             try
             {
                 await approvalWorkflow.CancelAsync(

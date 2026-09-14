@@ -15,105 +15,105 @@ namespace ProcureToPay.Api.Controllers;
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestEntityRefBody(
-    [property: JsonPropertyName("entity_type")] string EntityType,
-    [property: JsonPropertyName("id")] Guid Id,
-    [property: JsonPropertyName("version")] int Version);
+    [property: JsonRequired] [property: JsonPropertyName("entity_type")] string EntityType,
+    [property: JsonRequired] [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonRequired] [property: JsonPropertyName("version")] int Version);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestCodeRefBody(
-    [property: JsonPropertyName("catalog")] string Catalog,
-    [property: JsonPropertyName("code")] string Code,
-    [property: JsonPropertyName("version")] int Version,
-    [property: JsonPropertyName("digest")] string Digest);
+    [property: JsonRequired] [property: JsonPropertyName("catalog")] string Catalog,
+    [property: JsonRequired] [property: JsonPropertyName("code")] string Code,
+    [property: JsonRequired] [property: JsonPropertyName("version")] int Version,
+    [property: JsonRequired] [property: JsonPropertyName("digest")] string Digest);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestAnswerBody(
-    [property: JsonPropertyName("question_code")] string QuestionCode,
-    [property: JsonPropertyName("schema_version")] int SchemaVersion,
-    [property: JsonPropertyName("value")] string Value,
-    [property: JsonPropertyName("value_kind")] string ValueKind);
+    [property: JsonRequired] [property: JsonPropertyName("question_code")] string QuestionCode,
+    [property: JsonRequired] [property: JsonPropertyName("schema_version")] int SchemaVersion,
+    [property: JsonRequired] [property: JsonPropertyName("value")] string Value,
+    [property: JsonRequired] [property: JsonPropertyName("value_kind")] string ValueKind);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestFxBody(
-    [property: JsonPropertyName("attestation_id")] Guid AttestationId,
-    [property: JsonPropertyName("attestation_version")] int AttestationVersion,
-    [property: JsonPropertyName("base_currency")] string BaseCurrency,
-    [property: JsonPropertyName("transaction_currency")] string TransactionCurrency,
-    [property: JsonPropertyName("effective_rate")] string EffectiveRate,
-    [property: JsonPropertyName("rate_date")] string RateDate);
+    [property: JsonRequired] [property: JsonPropertyName("attestation_id")] Guid AttestationId,
+    [property: JsonRequired] [property: JsonPropertyName("attestation_version")] int AttestationVersion,
+    [property: JsonRequired] [property: JsonPropertyName("base_currency")] string BaseCurrency,
+    [property: JsonRequired] [property: JsonPropertyName("transaction_currency")] string TransactionCurrency,
+    [property: JsonRequired] [property: JsonPropertyName("effective_rate")] string EffectiveRate,
+    [property: JsonRequired] [property: JsonPropertyName("rate_date")] string RateDate);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestLineContentBody(
-    [property: JsonPropertyName("base_amount")] string BaseAmount,
-    [property: JsonPropertyName("base_currency")] string BaseCurrency,
-    [property: JsonPropertyName("beneficiary_department_ref")] PurchaseRequestEntityRefBody BeneficiaryDepartmentRef,
-    [property: JsonPropertyName("contract_required")] bool ContractRequired,
-    [property: JsonPropertyName("cost_center_department_ref")] PurchaseRequestEntityRefBody CostCenterDepartmentRef,
-    [property: JsonPropertyName("cost_center_ref")] PurchaseRequestEntityRefBody CostCenterRef,
-    [property: JsonPropertyName("estimated_gross_amount")] string EstimatedGrossAmount,
-    [property: JsonPropertyName("fiscal_year")] int FiscalYear,
+    [property: JsonRequired] [property: JsonPropertyName("base_amount")] string BaseAmount,
+    [property: JsonRequired] [property: JsonPropertyName("base_currency")] string BaseCurrency,
+    [property: JsonRequired] [property: JsonPropertyName("beneficiary_department_ref")] PurchaseRequestEntityRefBody BeneficiaryDepartmentRef,
+    [property: JsonRequired] [property: JsonPropertyName("contract_required")] bool ContractRequired,
+    [property: JsonRequired] [property: JsonPropertyName("cost_center_department_ref")] PurchaseRequestEntityRefBody CostCenterDepartmentRef,
+    [property: JsonRequired] [property: JsonPropertyName("cost_center_ref")] PurchaseRequestEntityRefBody CostCenterRef,
+    [property: JsonRequired] [property: JsonPropertyName("estimated_gross_amount")] string EstimatedGrossAmount,
+    [property: JsonRequired] [property: JsonPropertyName("fiscal_year")] int FiscalYear,
     [property: JsonPropertyName("fx_attestation_ref")] PurchaseRequestFxBody? FxAttestationRef,
-    [property: JsonPropertyName("need_summary")] string NeedSummary,
-    [property: JsonPropertyName("non_standard_terms")] bool NonStandardTerms,
+    [property: JsonRequired] [property: JsonPropertyName("need_summary")] string NeedSummary,
+    [property: JsonRequired] [property: JsonPropertyName("non_standard_terms")] bool NonStandardTerms,
     [property: JsonPropertyName("preferred_product_ref")] PurchaseRequestEntityRefBody? PreferredProductRef,
-    [property: JsonPropertyName("purchase_type")] string PurchaseType,
-    [property: JsonPropertyName("requested_for_user_ref")] PurchaseRequestEntityRefBody RequestedForUserRef,
+    [property: JsonRequired] [property: JsonPropertyName("purchase_type")] string PurchaseType,
+    [property: JsonRequired] [property: JsonPropertyName("requested_for_user_ref")] PurchaseRequestEntityRefBody RequestedForUserRef,
     [property: JsonPropertyName("required_product_ref")] PurchaseRequestEntityRefBody? RequiredProductRef,
-    [property: JsonPropertyName("risk_answers")] PurchaseRequestAnswerBody[]? RiskAnswers,
-    [property: JsonPropertyName("spend_category_ref")] PurchaseRequestCodeRefBody SpendCategoryRef,
+    [property: JsonRequired] [property: JsonPropertyName("risk_answers")] PurchaseRequestAnswerBody[] RiskAnswers,
+    [property: JsonRequired] [property: JsonPropertyName("spend_category_ref")] PurchaseRequestCodeRefBody SpendCategoryRef,
     [property: JsonPropertyName("supplier_ref")] PurchaseRequestEntityRefBody? SupplierRef,
-    [property: JsonPropertyName("transaction_currency")] string TransactionCurrency);
+    [property: JsonRequired] [property: JsonPropertyName("transaction_currency")] string TransactionCurrency);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestLineDraftBody(
-    [property: JsonPropertyName("client_line_key")] string ClientLineKey,
-    [property: JsonPropertyName("content")] PurchaseRequestLineContentBody Content);
+    [property: JsonRequired] [property: JsonPropertyName("client_line_key")] string ClientLineKey,
+    [property: JsonRequired] [property: JsonPropertyName("content")] PurchaseRequestLineContentBody Content);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestLineRefBody(
-    [property: JsonPropertyName("content_digest")] string ContentDigest,
-    [property: JsonPropertyName("id")] Guid Id,
-    [property: JsonPropertyName("version")] int Version);
+    [property: JsonRequired] [property: JsonPropertyName("content_digest")] string ContentDigest,
+    [property: JsonRequired] [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonRequired] [property: JsonPropertyName("version")] int Version);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestLineChangeBody(
-    [property: JsonPropertyName("content")] PurchaseRequestLineContentBody Content,
-    [property: JsonPropertyName("expected_content_digest")] string ExpectedContentDigest,
-    [property: JsonPropertyName("expected_version")] int ExpectedVersion,
-    [property: JsonPropertyName("id")] Guid Id);
+    [property: JsonRequired] [property: JsonPropertyName("content")] PurchaseRequestLineContentBody Content,
+    [property: JsonRequired] [property: JsonPropertyName("expected_content_digest")] string ExpectedContentDigest,
+    [property: JsonRequired] [property: JsonPropertyName("expected_version")] int ExpectedVersion,
+    [property: JsonRequired] [property: JsonPropertyName("id")] Guid Id);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestCreateBody(
-    [property: JsonPropertyName("business_justification")] string BusinessJustification,
-    [property: JsonPropertyName("command_version")] string CommandVersion,
-    [property: JsonPropertyName("legal_entity_ref")] PurchaseRequestEntityRefBody LegalEntityRef,
-    [property: JsonPropertyName("line_drafts")] PurchaseRequestLineDraftBody[]? LineDrafts,
-    [property: JsonPropertyName("reason")] string Reason,
-    [property: JsonPropertyName("revision_key")] string RevisionKey);
+    [property: JsonRequired] [property: JsonPropertyName("business_justification")] string BusinessJustification,
+    [property: JsonRequired] [property: JsonPropertyName("command_version")] string CommandVersion,
+    [property: JsonRequired] [property: JsonPropertyName("legal_entity_ref")] PurchaseRequestEntityRefBody LegalEntityRef,
+    [property: JsonRequired] [property: JsonPropertyName("line_drafts")] PurchaseRequestLineDraftBody[] LineDrafts,
+    [property: JsonRequired] [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonRequired] [property: JsonPropertyName("revision_key")] string RevisionKey);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestRevisionBody(
-    [property: JsonPropertyName("added")] PurchaseRequestLineDraftBody[]? Added,
-    [property: JsonPropertyName("business_justification")] string BusinessJustification,
-    [property: JsonPropertyName("changed")] PurchaseRequestLineChangeBody[]? Changed,
-    [property: JsonPropertyName("command_version")] string CommandVersion,
-    [property: JsonPropertyName("expected_request_version")] int ExpectedRequestVersion,
-    [property: JsonPropertyName("reason")] string Reason,
-    [property: JsonPropertyName("removed")] PurchaseRequestLineRefBody[]? Removed,
-    [property: JsonPropertyName("retained")] PurchaseRequestLineRefBody[]? Retained,
-    [property: JsonPropertyName("revision_key")] string RevisionKey);
+    [property: JsonRequired] [property: JsonPropertyName("added")] PurchaseRequestLineDraftBody[] Added,
+    [property: JsonRequired] [property: JsonPropertyName("business_justification")] string BusinessJustification,
+    [property: JsonRequired] [property: JsonPropertyName("changed")] PurchaseRequestLineChangeBody[] Changed,
+    [property: JsonRequired] [property: JsonPropertyName("command_version")] string CommandVersion,
+    [property: JsonRequired] [property: JsonPropertyName("expected_request_version")] int ExpectedRequestVersion,
+    [property: JsonRequired] [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonRequired] [property: JsonPropertyName("removed")] PurchaseRequestLineRefBody[] Removed,
+    [property: JsonRequired] [property: JsonPropertyName("retained")] PurchaseRequestLineRefBody[] Retained,
+    [property: JsonRequired] [property: JsonPropertyName("revision_key")] string RevisionKey);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestCancellationBody(
-    [property: JsonPropertyName("cancel_key")] string CancelKey,
-    [property: JsonPropertyName("expected_version")] int ExpectedVersion,
-    [property: JsonPropertyName("reason")] string Reason);
+    [property: JsonRequired] [property: JsonPropertyName("cancel_key")] string CancelKey,
+    [property: JsonRequired] [property: JsonPropertyName("expected_version")] int ExpectedVersion,
+    [property: JsonRequired] [property: JsonPropertyName("reason")] string Reason);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PurchaseRequestSubmissionBody(
-    [property: JsonPropertyName("expected_version")] int ExpectedVersion,
-    [property: JsonPropertyName("reason")] string Reason,
-    [property: JsonPropertyName("submission_key")] string SubmissionKey);
+    [property: JsonRequired] [property: JsonPropertyName("expected_version")] int ExpectedVersion,
+    [property: JsonRequired] [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonRequired] [property: JsonPropertyName("submission_key")] string SubmissionKey);
 
 public sealed record PurchaseRequestCreatedResponse(
     Guid RequestId,
@@ -210,6 +210,12 @@ public sealed class PurchaseRequestController(
     {
         RequireSnapshotSize();
         RequireCommandVersion(request.CommandVersion, PurchaseRequestCodes.CreateCommandVersion);
+        if (request.LegalEntityRef is null || request.LineDrafts is null ||
+            request.LineDrafts.Any(line => line is null))
+        {
+            throw new DomainValidationException("The create command is missing a mandatory member.");
+        }
+
         var profile = await RequireActiveProfileAsync(cancellationToken);
         var creation = await service.CreateAsync(
             new PurchaseRequestCreateCommand(
@@ -219,7 +225,7 @@ public sealed class PurchaseRequestController(
                 request.BusinessJustification,
                 request.RevisionKey,
                 request.Reason,
-                (request.LineDrafts ?? []).Select(line => new PurchaseRequestLineDraft(
+                request.LineDrafts.Select(line => new PurchaseRequestLineDraft(
                     line.ClientLineKey, ToContent(line.Content)))),
             profile.Id,
             Correlation(),
@@ -243,6 +249,15 @@ public sealed class PurchaseRequestController(
     {
         RequireSnapshotSize();
         RequireCommandVersion(request.CommandVersion, PurchaseRequestCodes.RevisionCommandVersion);
+        if (request.Retained is null || request.Changed is null || request.Added is null ||
+            request.Removed is null || request.Retained.Any(reference => reference is null) ||
+            request.Changed.Any(change => change is null) ||
+            request.Added.Any(draft => draft is null) ||
+            request.Removed.Any(reference => reference is null))
+        {
+            throw new DomainValidationException("The revision command is missing a mandatory member.");
+        }
+
         var profile = await RequireActiveProfileAsync(cancellationToken);
         var request_ = await RequireOwnedRequestAsync(requestId, profile, cancellationToken);
         var revision = await service.ReviseAsync(
@@ -252,15 +267,15 @@ public sealed class PurchaseRequestController(
                 request.BusinessJustification,
                 request.RevisionKey,
                 request.Reason,
-                (request.Retained ?? []).Select(ToLineRef),
-                (request.Changed ?? []).Select(change => new PurchaseRequestLineChange(
+                request.Retained.Select(ToLineRef),
+                request.Changed.Select(change => new PurchaseRequestLineChange(
                     change.Id,
                     change.ExpectedVersion,
                     change.ExpectedContentDigest,
-                    ToContent(change.Content))),
-                (request.Added ?? []).Select(line => new PurchaseRequestLineDraft(
-                    line.ClientLineKey, ToContent(line.Content))),
-                (request.Removed ?? []).Select(ToLineRef)),
+                    ToContent(RequireLine(change.Content)))),
+                request.Added.Select(line => new PurchaseRequestLineDraft(
+                    line.ClientLineKey, ToContent(RequireLine(line.Content)))),
+                request.Removed.Select(ToLineRef)),
             request_.OrganizationId,
             profile.Id,
             Correlation(),
@@ -482,6 +497,14 @@ public sealed class PurchaseRequestController(
     private static PurchaseRequestLineRef ToLineRef(PurchaseRequestLineRefBody body) =>
         new(body.Id, body.Version, body.ContentDigest);
 
+    /// <summary>Every mandatory reference and set of a line must be present and non-null (REQ-03).</summary>
+    private static PurchaseRequestLineContentBody RequireLine(PurchaseRequestLineContentBody? body) =>
+        body is null || body.SpendCategoryRef is null || body.CostCenterRef is null ||
+        body.CostCenterDepartmentRef is null || body.BeneficiaryDepartmentRef is null ||
+        body.RequestedForUserRef is null || body.RiskAnswers is null
+            ? throw new DomainValidationException("The purchase request line content is incomplete.")
+            : body;
+
     private static PurchaseRequestLineContent ToContent(PurchaseRequestLineContentBody body) =>
         new(
             Amount(body.EstimatedGrossAmount, "estimated_gross_amount"),
@@ -508,7 +531,7 @@ public sealed class PurchaseRequestController(
             // projects its non-informative value instead of accepting caller input.
             "NONE",
             body.NeedSummary,
-            (body.RiskAnswers ?? []).Select(answer => new TypedAnswerRef(
+            body.RiskAnswers.Select(answer => new TypedAnswerRef(
                 answer.QuestionCode,
                 answer.SchemaVersion,
                 answer.ValueKind switch
