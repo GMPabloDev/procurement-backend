@@ -1,7 +1,7 @@
 # RUN SPEC 06 — Purchase Requests versionadas e integración con Policy y Approval
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** En implementación
+> **Estado del run:** Lista para integrar
 > **Spec:** specs/06-purchase-requests-versionadas.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 0027efbd3478fd1321689f787489b00f5c56e9ca
@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-14 05:52 -0500
-> **Actualizado:** 2026-09-14 11:05 -0500
-> **HEAD verificado:** f2898654708fcca40b1e091f38f629384cc6c5dc
+> **Actualizado:** 2026-09-14 11:35 -0500
+> **HEAD verificado:** 6e94b4d8fdc2423eb60e5f1b7f173965ad036737
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -39,12 +39,33 @@
 
 ## Checkpoints
 
-- **CP-01 — Bloques 1 y 2 parciales (T-01, T-03, T-04).** Árbol probado: `working-tree sobre 0027efbd` en rama `spec-06-purchase-requests-versionadas`. Unit **147/147**, Integración **55/55**, API/E2E **17/17**. Evidencia nueva: `PurchaseRequestCanonicalGoldenTests` (5) y `PurchaseRequestPolicyIntegrationTests` (5).
-- **CP-02 — Matcher de riesgo y superficie HTTP (T-04 completo, T-02 parcial).** Commit `9734f00` más `working-tree sobre 9734f00`, luego `adb49a7`. Unit **160/160**, Integración **55/55**, API/E2E **17/17** (232 pruebas). Evidencia nueva: `PolicyRiskAnswerMatchingTests` (13) y `PurchaseRequestController`.
-- **CP-03 — Adapter v2, supersesión v3 y orquestador (T-05, T-06, T-07).** Árbol probado: `working-tree sobre adb49a7`. Cambios: `policy-approval-adapter/v2`, `approval-supersession-delta/v1` con canonicalización v3, orquestador de presentación con attempts durables y consumer de resultados/lifecycle. Comandos: `dotnet build ProcureToPay.sln` (0 errores), Unit **167/167**, Integración **61/61** (incluye `ApprovalSupersessionDeltaTests`, `Delta_supersession_*` y `Submit_presents_once_*`). Próximo paso: evidencia API/E2E de T-02 y T-08.
-- **CP-06 — Cierre de R6 y R7 (ronda 2 de revisión).** Commit `f289865` en rama `spec-06-purchase-requests-versionadas`. Cambios: miembros obligatorios de los payloads con `[JsonRequired]` y guardas de null (R6), E2E negativos de `risk_answers:null`, `line_drafts` nulo y omitido; seam documentado `BeforeApprovalCaseCancel` y prueba determinista de las dos ramas de la carrera de cancelación (reintento que cancela y 409 fail-closed sin medio estado) (R7). Comandos: `dotnet build ProcureToPay.sln` (0 errores), Unit **167/167**, Integración **63/63**, API/E2E **21/21**. Próximo paso: ronda delta de R6/R7 si el usuario autoriza una tercera llamada (el paquete automático por run está agotado) y metadatos finales.
-- **CP-05 — Cierre de hallazgos R6–R10 de la revisión independiente.** Commit `953c811` en rama `spec-06-purchase-requests-versionadas`. Cambios: payloads `snake_case` exactos con `command_version` y rechazo de propiedades desconocidas (R6), cancelación que cierra el caso Approval abierto con relectura de carrera (R7), límite de 5 MiB independiente de `Content-Length` (R8), digest de materialidad publicado en el delta y afirmación de carry-forward solo por hechos (R9) y lectura auditada de attestations minimizadas (R10). Comandos: `dotnet build ProcureToPay.sln` (0 errores), Unit **167/167**, Integración **62/62**, API/E2E **21/21**. Próximo paso: ronda delta de verificación independiente sobre los IDs R6–R10.
-- **CP-04 — Superficie HTTP, salud y árbol final (T-02, T-08).** Commit candidato `80e73c85aa87d065f87dd616ee01e73d655759d5` en rama `spec-06-purchase-requests-versionadas`. Cambios: `PurchaseRequestE2ETests` (visibilidad, límites ±1, Problem Details, idempotencia y health), `PurchaseRequestHealthCheck` y `docs/purchase-request-operations.md`; además la corrección de la versión de contrato en el outbox, la attestation race-safe, el orden determinista del lifecycle y el mapeo `413` de los límites. Comandos: `dotnet build ProcureToPay.sln` (0 errores), Unit **167/167**, Integración **61/61**, API/E2E **21/21** (249 pruebas, 0 fallos) sobre el árbol del commit. Próximo paso: revisión independiente y metadatos finales.
+### CP-01 — Bloques 1 y 2 parciales (T-01, T-03, T-04)
+
+Árbol probado: `working-tree sobre 0027efbd` en rama `spec-06-purchase-requests-versionadas`. Unit **147/147**, Integración **55/55**, API/E2E **17/17**. Evidencia nueva: `PurchaseRequestCanonicalGoldenTests` (5) y `PurchaseRequestPolicyIntegrationTests` (5).
+
+### CP-02 — Matcher de riesgo y superficie HTTP (T-04 completo, T-02 parcial)
+
+Commit `9734f00` más `working-tree sobre 9734f00`, luego `adb49a7`. Unit **160/160**, Integración **55/55**, API/E2E **17/17** (232 pruebas). Evidencia nueva: `PolicyRiskAnswerMatchingTests` (13) y `PurchaseRequestController`.
+
+### CP-03 — Adapter v2, supersesión v3 y orquestador (T-05, T-06, T-07)
+
+Árbol probado: `working-tree sobre adb49a7`. Cambios: `policy-approval-adapter/v2`, `approval-supersession-delta/v1` con canonicalización v3, orquestador de presentación con attempts durables y consumer de resultados/lifecycle. Comandos: `dotnet build ProcureToPay.sln` (0 errores), Unit **167/167**, Integración **61/61** (incluye `ApprovalSupersessionDeltaTests`, `Delta_supersession_*` y `Submit_presents_once_*`). Próximo paso: evidencia API/E2E de T-02 y T-08.
+
+### CP-04 — Superficie HTTP, salud y árbol final (T-02, T-08)
+
+Commit candidato `80e73c85aa87d065f87dd616ee01e73d655759d5` en rama `spec-06-purchase-requests-versionadas`. Cambios: `PurchaseRequestE2ETests` (visibilidad, límites ±1, Problem Details, idempotencia y health), `PurchaseRequestHealthCheck` y `docs/purchase-request-operations.md`; además la corrección de la versión de contrato en el outbox, la attestation race-safe, el orden determinista del lifecycle y el mapeo `413` de los límites. Comandos: `dotnet build ProcureToPay.sln` (0 errores), Unit **167/167**, Integración **61/61**, API/E2E **21/21** (249 pruebas, 0 fallos) sobre el árbol del commit. Próximo paso: revisión independiente y metadatos finales.
+
+### CP-05 — Cierre de hallazgos R6–R10 de la revisión independiente
+
+Commit `953c811` en rama `spec-06-purchase-requests-versionadas`. Cambios: payloads `snake_case` exactos con `command_version` y rechazo de propiedades desconocidas (R6), cancelación que cierra el caso Approval abierto con relectura de carrera (R7), límite de 5 MiB independiente de `Content-Length` (R8), digest de materialidad publicado en el delta y afirmación de carry-forward solo por hechos (R9) y lectura auditada de attestations minimizadas (R10). Comandos: `dotnet build ProcureToPay.sln` (0 errores), Unit **167/167**, Integración **62/62**, API/E2E **21/21**. Próximo paso: ronda delta de verificación independiente sobre los IDs R6–R10.
+
+### CP-06 — Cierre de R6 y R7 (ronda 2 de revisión)
+
+Commit `f289865` en rama `spec-06-purchase-requests-versionadas`. Cambios: miembros obligatorios de los payloads con `[JsonRequired]` y guardas de null (R6), E2E negativos de `risk_answers:null`, `line_drafts` nulo y omitido; seam documentado `BeforeApprovalCaseCancel` y prueba determinista de las dos ramas de la carrera de cancelación (reintento que cancela y 409 fail-closed sin medio estado) (R7). Comandos: `dotnet build ProcureToPay.sln` (0 errores), Unit **167/167**, Integración **63/63**, API/E2E **21/21**. Próximo paso: ronda delta de R6/R7 si el usuario autoriza una tercera llamada (el paquete automático por run está agotado) y metadatos finales.
+
+### CP-07 — PASS de la revisión independiente y run listo
+
+Árbol revisado y certificado: `6e94b4d8fdc2423eb60e5f1b7f173965ad036737` (código `f289865`, metadatos posteriores solo administrativos). Ronda 3 delta autorizada: PASS, R6 y R7 resueltos sin cobertura pendiente. Suites sobre el código certificado: Unit **167/167**, Integración **63/63**, API/E2E **21/21**. `specctl preflight 06` coherente. Próximo paso: el usuario integra el código ya commiteado y ejecuta `/spec-impl 06 --close` desde la rama base.
 
 ## Evidencia de aceptación
 
@@ -75,13 +96,14 @@
 - **Prueba de materialidad para carry-forward.** El preimage publicado de `purchase-request-materiality/v1` incluye en `provenance` referencias con versión de snapshot y digest de attestation, que cambian en cada versión aunque los hechos sean idénticos. El `materiality_digest` declarado en el delta es el preimage publicado exacto del replacement, y la afirmación de carry-forward (`VerifiedMaterialityIdentities`) es la comparación del dueño in-process sobre los hechos con el ancla del fact (`#<field>`), sin introducir una segunda semántica de digest. Se documenta en `PurchaseRequestSubmissionService.MaterialityProof`.
 - **Versión de contrato del outbox.** El camino de hidratación en memoria de `ApprovalOutboxEvent` devolvía siempre `approval-result/v2`; los eventos v3 y lifecycle se entregaban al consumer v2 y fallaban en el dispatcher. Se corrigió propagando la `ContractVersion` persistida en `ApprovalOutboxEvent.Create/Restore` y `ApprovalOutboxDispatcher.Hydrate`, sin cambiar payloads ni digests históricos.
 - **Límites de tamaño con `413`.** Las violaciones de 500 líneas y 256 respuestas por línea lanzaban `DomainValidationException` (`400`); se movió `PurchaseRequestPayloadTooLargeException` al dominio y se mapean a `413` como exige REQ-11. El guard de 5 MiB se evalúa en el borde HTTP con el límite de Kestrel y, cuando el host no expone esa feature (TestServer, transferencia chunked), con un stream de lectura limitado: ambos caminos devuelven `413`.
+- **Ampliación del presupuesto de revisión.** ronda 3 autorizada explícitamente por el usuario tras agotar las dos rondas automáticas del run; se acotó al delta de R6/R7 y resultó PASS sin hallazgos nuevos.
 - **E2E de SPEC 05 con adapter v2.** Las pruebas de contrato de Policy→Approval ahora declaran `requesterId` en las submissions del adapter, como exige REQ-07; los cuerpos de excepción de política y quotation-waiver conservan su contrato previo (requester nulo).
 
 ## Verificación independiente
 
-> **Resultado:** BLOCK ronda 1 → delta ronda 2 BLOCK parcial (R6/R7 cerrados con evidencia en `f289865`; R8/R9/R10 resueltos)
-> **Rondas:** 2/2 (paquete automático agotado; una tercera llamada exige autorización del usuario)
-> **Triaje:** R6 y R7 corregidos y verificados localmente tras la ronda 2; su delta no fue re-revisado por límite de llamadas
+> **Resultado:** Sin bloqueos
+> **Rondas:** 3/3
+> **Triaje:** Sin bloqueos
 > **Modelo efectivo:** openai-codex/gpt-5.6-sol · effort high (metadatos de la herramienta)
-> **Método:** ronda 1 a `646ddbd` y ronda 2 delta a `b20e630` (R8/R9/R10 resueltos; R6/R7 abiertos por presencia de miembros y evidencia de carrera), correcciones en `f289865`. Revisión independiente de implementación a `646ddbd` (cobertura full de las cinco áreas, evidencia del candidato: build 0 errores, Unit 167/167, Integración 61/61, API/E2E 21/21). Hallazgos: R6 payloads no exactos, R7 cancelación sobre caso abierto, R8 límite 5 MiB evadible sin `Content-Length`, R9 digest de materialidad no publicado, R10 lectura auditora sin attestations. Correcciones con regresión en `953c811` (Unit 167/167, Integración 62/62, API/E2E 21/21).
+> **Método:** ronda 1 a `646ddbd` y ronda 2 delta a `b20e630` (R8/R9/R10 resueltos; R6/R7 abiertos por presencia de miembros y evidencia de carrera), correcciones en `f289865`. Revisión independiente de implementación a `646ddbd` (cobertura full de las cinco áreas, evidencia del candidato: build 0 errores, Unit 167/167, Integración 61/61, API/E2E 21/21). Hallazgos: R6 payloads no exactos, R7 cancelación sobre caso abierto, R8 límite 5 MiB evadible sin `Content-Length`, R9 digest de materialidad no publicado, R10 lectura auditora sin attestations. Correcciones con regresión en `953c811` (Unit 167/167, Integración 62/62, API/E2E 21/21). Ronda 2 delta a `b20e630`: R8/R9/R10 resueltos, R6/R7 abiertos por presencia de miembros y evidencia de carrera; correcciones en `f289865` con Unit 167/167, Integración 63/63 y API/E2E 21/21. Ronda 3 delta autorizada a `6e94b4d`: **PASS**, R6 y R7 resueltos sin hallazgos nuevos.
 > **Fecha:** 2026-09-14
