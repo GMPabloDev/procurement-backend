@@ -1,0 +1,76 @@
+{
+  "format": "sdd-review/v1",
+  "spec": "08-budgets-movimientos-presupuestarios.md",
+  "revision": 1,
+  "digest": "f381a0a03d09ebf344504cc47a64ac6ebcbe20078d143b57af4226012c883326",
+  "dependencies": {
+    "03-approval-workflow.md": "f0b61a917c4c4b4adcaee598c75352ef93d03c3bf25b76d15f80177ba3446234",
+    "05-integracion-policy-approval-workflow.md": "001c559d72845b0f77919df50bad5e7b74eeecb5e6dc8921d52bba932cb20f70",
+    "06-purchase-requests-versionadas.md": "f8c570320cc1093698b8b2998c83eee168335c5345236a2fe457755bf4a41dd8",
+    "07-catalogos-referencia-purchase-requests.md": "64daf9c60d28f2d9a2dc6c286a8e2f12d83dd97a01a7651a3a72e73681f0eed1"
+  },
+  "verdict": "PASS",
+  "mode": "full",
+  "baseline_digest": null,
+  "review_count": 3,
+  "reviewer": "sdd-contract-reviewer · openai-codex/gpt-5.6-luna · effort high",
+  "reviewed_at": "2026-09-14",
+  "coverage": {
+    "behavior": "REQ-01..REQ-10 y CA-01..CA-08 recibieron cobertura full; los deltas cerraron R1–R7 y verificaron sus efectos próximos, incluida la semántica all-or-nothing y los movimientos REQUESTED/RESERVED/COMMITTED/CONSUMED/REVERSE.",
+    "boundaries": "Se contrastaron SPEC 03/05/06/07, Policy, Purchase Requests, Approval, Budget, builders/processors/producers exact-one, parámetros budget-check-owner/v1, adapter v3, releases, identidades, nulabilidad y versiones.",
+    "failure_modes": "Precheck concurrente, sobregiro, allocation race, reserva-señal entre transacciones, insuficiencia, cancelación, supersesión, replay, evento tardío, lease/fencing, compensación y takeover tienen resultado observable y fail-closed.",
+    "acceptance": "CA-01..CA-08 enlazan dominio, SQL, API/E2E, contratos cross-module, health, operación y goldens; la delta autorizada reprodujo las cinco preimages públicas y confirmó sus SHA-256.",
+    "implementation_readiness": "Se trazó PR persistida y atestiguada → Policy → precheck → policy-approval-adapter/v3 → Approval prerequisite → budget-check-owner/v1 → reserva/señal, más liberación, transición downstream y pruebas sin doubles."
+  },
+  "findings": [
+    {
+      "id": "R1",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "REQ-04 no fijaba inicialmente el schema de respuesta ni la frontera del builder server-side de precheck.",
+      "resolution": "REQ-04 y Datos y contratos definen builder exact-one, request/response, derivación desde request/version/manifest, nulabilidad de target, actor/key, minimización y replay; la primera delta lo aceptó."
+    },
+    {
+      "id": "R2",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "El adapter v3 se nombraba sin descriptor completo, derivación por línea, fingerprint ni compatibilidad v2.",
+      "resolution": "REQ-05 y su sección contractual fijan descriptor, mapping budget por target desde PurchaseRequestLineVersion, source digest, submission fingerprint y reanudación histórica v2; la primera delta lo aceptó."
+    },
+    {
+      "id": "R3",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Approval no emite lifecycle CANCELLED para prerequisites ya SATISFIED y el release de una PR completada carecía de trigger/wire.",
+      "resolution": "REQ-08 y budget-release-command/v1 cubren resultados Approval, SUPERSEDED y cancelación PR COMPLETED con trigger, target, auth, key y attempt durable antes de confirmar CANCELLED; la primera delta lo aceptó."
+    },
+    {
+      "id": "R4",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "budget-transition-command/v1 y los producers no tenían resolución exact-one, mapping operación→fuente ni semántica de versión.",
+      "resolution": "REQ-09 fija registration exacta, tabla COMMIT/PURCHASE_ORDER y CONSUME/INVOICE, REVERSE por producer padre, wire/response, parent version y ausencia de registrations productivas; la primera delta lo aceptó."
+    },
+    {
+      "id": "R5",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "BudgetBalance.position/version era ambiguo frente a allocation versions y movimientos históricos.",
+      "resolution": "Datos y contratos separa position id, allocation version y balance version; cambiar allocation conserva buckets, movimientos fijan allocation_version_at_posting y la reconstrucción usa allocation current más todos los deltas; la primera delta lo aceptó."
+    },
+    {
+      "id": "R6",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "BudgetPrerequisiteAttempt no distinguía insuficiencia, señal pendiente, compensación, due time ni artefactos reutilizados.",
+      "resolution": "REQ-07 fija estados/transiciones, keys deterministas, operation/signal/reverse ids, due/next attempt, errores, leases/fencing y consulta de signal antes de compensar; la primera delta lo aceptó."
+    },
+    {
+      "id": "R7",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Schemas actor/cause/source y los vectores allocation/precheck/operation/evidence no determinaban inicialmente todos los bytes y nulls.",
+      "resolution": "La sección de canonicalización publica schemas exactos y cuatro preimages UTF-8 completas además de position key. La delta adicional autorizada recalculó y confirmó `0c27…805f`, `ac78…3706`, `5efa…0c38`, `4eec…c51e` y el position digest, sin hallazgos nuevos."
+    }
+  ]
+}
