@@ -122,7 +122,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 operation = PolicyApprovalAdapter.Operation,
                 contractVersion = PolicyApprovalAdapter.ContractVersion,
                 submissionKey = "contract-submission",
-                requesterId = (Guid?)null,
+                requesterId = RequesterId,
                 originatorId = OriginatorId
             },
             cancellationToken))
@@ -144,7 +144,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 operation = PolicyApprovalAdapter.Operation,
                 contractVersion = PolicyApprovalAdapter.ContractVersion,
                 submissionKey = "contract-submission",
-                requesterId = (Guid?)null,
+                requesterId = RequesterId,
                 originatorId = OriginatorId
             },
             cancellationToken))
@@ -166,7 +166,8 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 operation = PolicyApprovalAdapter.Operation,
                 contractVersion = PolicyApprovalAdapter.ContractVersion,
                 submissionKey = "contract-submission",
-                requesterId = RequesterId,
+                // SPEC 06 REQ-07: another requester is another command for the same key.
+                requesterId = Guid.Parse("77777777-7777-7777-7777-777777777778"),
                 originatorId = OriginatorId
             },
             cancellationToken))
@@ -479,7 +480,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 operation = PolicyApprovalAdapter.Operation,
                 contractVersion = PolicyApprovalAdapter.ContractVersion,
                 submissionKey = "ownerless-submission",
-                requesterId = (Guid?)null,
+                requesterId = RequesterId,
                 originatorId = OriginatorId
             },
             cancellationToken);
@@ -530,7 +531,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 operation = PolicyApprovalAdapter.Operation,
                 contractVersion = PolicyApprovalAdapter.ContractVersion,
                 submissionKey = "tampered-submission",
-                requesterId = (Guid?)null,
+                requesterId = RequesterId,
                 originatorId = OriginatorId
             },
             cancellationToken);

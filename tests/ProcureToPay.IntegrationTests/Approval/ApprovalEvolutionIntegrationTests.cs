@@ -724,6 +724,189 @@ public sealed class ApprovalEvolutionIntegrationTests
         await container.DisposeAsync();
     }
 
+    [Fact]
+    public async Task Delta_supersession_carries_forward_retained_lines_only_with_verified_materiality()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await EvolutionEnvironment.StartAsync(cancellationToken);
+        var adapter = new EvolutionAdapter { ContractVersion = "v2" };
+        var first = await Fresh(environment, adapter).Submission.SubmitAsync(
+            Command("submission-delta-1", 1, "v2", OriginatorId), Now, cancellationToken);
+        var (taskId, taskVersion) = await environment.TaskAsync(first.CaseId, cancellationToken);
+        await Fresh(environment, adapter).Decision.DecideAsync(
+            new ApprovalDecisionCommand(
+                taskId, ApprovalDecisionAction.Approve, "Approved before revision", "decision-delta-1",
+                taskVersion, DelegatorId, "correlation"),
+            Now.AddMinutes(1),
+            cancellationToken);
+        var previousVersion = await environment.CaseVersionAsync(first.CaseId, cancellationToken);
+
+        // The retained line advances its version and material snapshot digest; carry-forward is
+        // admitted only because the owning adapter verified the materiality proof (REQ-08, CA-06).
+        adapter.MaterialDigest = new string('d', 64);
+        adapter.TargetVersion = 2;
+        var previousTarget = new ApprovalTarget("LINE", LineOne, 1, new string('c', 64));
+        var replacementTarget = new ApprovalTarget("LINE", LineOne, 2, new string('d', 64));
+        var delta = new[]
+        {
+            ApprovalSupersessionDeltaEntry.CreateRetained(
+                previousTarget, replacementTarget, "purchase-request-materiality/v1", new string('a', 64))
+        };
+        var outcome = await Fresh(environment, adapter).Supersessions.SupersedeAsync(
+            new ApprovalSupersessionCommand(
+                Workload, first.CaseId, previousVersion, "supersession-delta-1", "submission-delta-2", "v2",
+                [], "correlation", delta, new HashSet<string>([previousTarget.CanonicalIdentity])),
+            Now.AddMinutes(2),
+            cancellationToken);
+        Assert.False(outcome.Replayed);
+        Assert.Equal(1, outcome.CarryForwardCount);
+
+        await using (var verification = environment.CreateContext())
+        {
+            var previous = await verification.ApprovalCases.SingleAsync(
+                record => record.Id == first.CaseId, cancellationToken);
+            Assert.Equal((int)ApprovalCaseStatus.Superseded, previous.Status);
+            var newCase = await verification.ApprovalCases.SingleAsync(
+                record => record.Id == outcome.CaseId, cancellationToken);
+            Assert.Equal((int)ApprovalCaseStatus.Completed, newCase.Status);
+            var decision = await verification.ApprovalDecisions.SingleAsync(
+                record => record.CaseId == outcome.CaseId, cancellationToken);
+            Assert.Equal((int)ApprovalDecisionOrigin.CarryForward, decision.Origin);
+            var target = await verification.ApprovalDecisionTargets.SingleAsync(
+                record => record.DecisionId == decision.Id, cancellationToken);
+            Assert.Equal(replacementTarget.Version, target.TargetVersion);
+            Assert.Equal(replacementTarget.MaterialSnapshotDigest, target.MaterialSnapshotDigest);
+            Assert.Equal(0, await verification.ApprovalTasks.CountAsync(
+                record => record.CaseId == outcome.CaseId, cancellationToken));
+            var supersession = await verification.CaseSupersessions.SingleAsync(
+                record => record.NewCaseId == outcome.CaseId, cancellationToken);
+            var persisted = ApprovalJsonPersistence.DeserializeSupersessionDelta(supersession.TargetMappingJson);
+            var entry = Assert.Single(persisted);
+            Assert.Equal(ApprovalSupersessionChangeKind.Retained, entry.ChangeKind);
+            Assert.Equal(previousTarget.CanonicalIdentity, entry.PreviousIdentity);
+            Assert.Equal(replacementTarget.CanonicalIdentity, entry.ReplacementIdentity);
+        }
+
+        // Without the verified materiality proof the same retained pair keeps a human task.
+        var second = await Fresh(environment, adapter).Submission.SubmitAsync(
+            Command("submission-delta-3", 1, "v2", OriginatorId), Now.AddMinutes(4), cancellationToken);
+        var (secondTask, secondTaskVersion) = await environment.TaskAsync(second.CaseId, cancellationToken);
+        await Fresh(environment, adapter).Decision.DecideAsync(
+            new ApprovalDecisionCommand(
+                secondTask, ApprovalDecisionAction.Approve, "Approved before uncertain revision",
+                "decision-delta-2", secondTaskVersion, DelegatorId, "correlation"),
+            Now.AddMinutes(5),
+            cancellationToken);
+        var secondVersion = await environment.CaseVersionAsync(second.CaseId, cancellationToken);
+        var unverifiedDelta = new[]
+        {
+            ApprovalSupersessionDeltaEntry.CreateRetained(
+                replacementTarget, replacementTarget, "purchase-request-materiality/v1", new string('a', 64))
+        };
+        var unverified = await Fresh(environment, adapter).Supersessions.SupersedeAsync(
+            new ApprovalSupersessionCommand(
+                Workload, second.CaseId, secondVersion, "supersession-delta-2", "submission-delta-4", "v2",
+                [], "correlation", unverifiedDelta, new HashSet<string>()),
+            Now.AddMinutes(6),
+            cancellationToken);
+        Assert.Equal(0, unverified.CarryForwardCount);
+        await using (var verification = environment.CreateContext())
+        {
+            Assert.Equal(0, await verification.DecisionCarryForwardEntries.CountAsync(
+                record => record.NewCaseId == unverified.CaseId, cancellationToken));
+            Assert.Equal(1, await verification.ApprovalTasks.CountAsync(
+                record => record.CaseId == unverified.CaseId, cancellationToken));
+        }
+
+        // The owning adapter declares the delta capability; the historical v1 contract does not.
+        var legacyAdapter = new EvolutionAdapter();
+        await Assert.ThrowsAsync<DomainValidationException>(() =>
+            Fresh(environment, legacyAdapter).Supersessions.SupersedeAsync(
+                new ApprovalSupersessionCommand(
+                    Workload, first.CaseId, previousVersion, "supersession-delta-legacy", "submission-delta-legacy",
+                    "v1", [ApprovalSupersessionMapping.Create(previousTarget, previousTarget,
+                        "purchase-request-materiality/v1", new string('a', 64))], "correlation", delta,
+                    new HashSet<string>([previousTarget.CanonicalIdentity])),
+                Now.AddMinutes(7),
+                cancellationToken));
+    }
+
+    [Fact]
+    public async Task Delta_supersession_covers_removed_and_added_lines_and_fails_closed_on_invalid_deltas()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await EvolutionEnvironment.StartAsync(cancellationToken);
+        var adapter = new EvolutionAdapter { ContractVersion = "v2", Layout = EvolutionLayout.Grouped };
+        var submission = await Fresh(environment, adapter).Submission.SubmitAsync(
+            Command("submission-delta-5", 1, "v2", OriginatorId), Now, cancellationToken);
+        var (taskId, taskVersion) = await environment.TaskAsync(submission.CaseId, cancellationToken);
+        await Fresh(environment, adapter).Decision.DecideAsync(
+            new ApprovalDecisionCommand(
+                taskId, ApprovalDecisionAction.Approve, "Approved before removal", "decision-delta-3",
+                taskVersion, DelegatorId, "correlation"),
+            Now.AddMinutes(1),
+            cancellationToken);
+        var previousVersion = await environment.CaseVersionAsync(submission.CaseId, cancellationToken);
+
+        var retainedOne = ApprovalSupersessionDeltaEntry.CreateRetained(
+            new ApprovalTarget("LINE", LineOne, 1, new string('c', 64)),
+            new ApprovalTarget("LINE", LineOne, 1, new string('c', 64)),
+            "purchase-request-materiality/v1", new string('a', 64));
+        var removedTwo = ApprovalSupersessionDeltaEntry.CreateRemoved(
+            new ApprovalTarget("LINE", LineTwo, 1, new string('c', 64)),
+            "purchase-request-materiality/v1", new string('b', 64));
+        var addedTwo = ApprovalSupersessionDeltaEntry.CreateAdded(
+            new ApprovalTarget("LINE", LineTwo, 1, new string('c', 64)),
+            "purchase-request-materiality/v1", new string('b', 64));
+        var verified = new HashSet<string>([retainedOne.PreviousIdentity]);
+
+        // An addition cannot reuse the stable identity of a previous target (REQ-08).
+        await Assert.ThrowsAsync<DomainConflictException>(() =>
+            Fresh(environment, adapter).Supersessions.SupersedeAsync(
+                new ApprovalSupersessionCommand(
+                    Workload, submission.CaseId, previousVersion, "supersession-delta-bad-1",
+                    "submission-delta-bad-1", "v2", [], "correlation", [retainedOne, removedTwo, addedTwo],
+                    verified),
+                Now.AddMinutes(2),
+                cancellationToken));
+
+        // A delta that omits one previous target cannot supersede the case.
+        await Assert.ThrowsAsync<DomainConflictException>(() =>
+            Fresh(environment, adapter).Supersessions.SupersedeAsync(
+                new ApprovalSupersessionCommand(
+                    Workload, submission.CaseId, previousVersion, "supersession-delta-bad-2",
+                    "submission-delta-bad-2", "v2", [], "correlation", [retainedOne], verified),
+                Now.AddMinutes(2),
+                cancellationToken));
+
+        // The new version keeps only the retained line; the removed target never reappears and the
+        // grouped decision does not jump to the smaller coverage (REQ-08, CA-06).
+        adapter.Layout = EvolutionLayout.Single;
+        var outcome = await Fresh(environment, adapter).Supersessions.SupersedeAsync(
+            new ApprovalSupersessionCommand(
+                Workload, submission.CaseId, previousVersion, "supersession-delta-3", "submission-delta-6",
+                "v2", [], "correlation", [retainedOne, removedTwo], verified),
+            Now.AddMinutes(3),
+            cancellationToken);
+        Assert.Equal(0, outcome.CarryForwardCount);
+        await using (var verification = environment.CreateContext())
+        {
+            var newTargets = (await verification.ApprovalRequirements
+                    .Where(record => record.CaseId == outcome.CaseId)
+                    .Select(record => record.TargetsJson)
+                    .ToArrayAsync(cancellationToken))
+                .SelectMany(ApprovalJsonPersistence.DeserializeTargets)
+                .ToArray();
+            var newTarget = Assert.Single(newTargets);
+            Assert.Equal(LineOne, newTarget.Id);
+            Assert.Equal(1, await verification.ApprovalTasks.CountAsync(
+                record => record.CaseId == outcome.CaseId, cancellationToken));
+            var supersession = await verification.CaseSupersessions.SingleAsync(
+                record => record.NewCaseId == outcome.CaseId, cancellationToken);
+            Assert.Equal(2, ApprovalJsonPersistence.DeserializeSupersessionDelta(supersession.TargetMappingJson).Count);
+        }
+    }
+
     private static ApprovalSubmissionCommand Command(string submissionKey, int subjectVersion) => new(
         Workload,
         OrganizationId,
@@ -734,6 +917,23 @@ public sealed class ApprovalEvolutionIntegrationTests
         "v1",
         submissionKey,
         null,
+        OriginatorId,
+        "correlation");
+
+    private static ApprovalSubmissionCommand Command(
+        string submissionKey,
+        int subjectVersion,
+        string contractVersion,
+        Guid requesterId) => new(
+        Workload,
+        OrganizationId,
+        "PURCHASE_REQUEST",
+        Guid.Parse("66666666-6666-6666-6666-666666666666"),
+        subjectVersion,
+        "SUBMIT",
+        contractVersion,
+        submissionKey,
+        requesterId,
         OriginatorId,
         "correlation");
 
@@ -768,10 +968,22 @@ public sealed class ApprovalEvolutionIntegrationTests
     {
         public string MaterialDigest { get; set; } = new('c', 64);
 
+        /// <summary>Target version emitted by the adapter for every covered line.</summary>
+        public int TargetVersion { get; set; } = 1;
+
         public EvolutionLayout Layout { get; set; } = EvolutionLayout.Single;
 
-        public ApprovalAdapterDescriptor Descriptor { get; } = new(
-            "adapter", "PURCHASE_REQUEST", "SUBMIT", "v1", false);
+        /// <summary>SPEC 06 REQ-07/REQ-08: the v2 contract is the delta-capable one.</summary>
+        public string ContractVersion { get; set; } = "v1";
+
+        public ApprovalAdapterDescriptor Descriptor => new(
+            "adapter",
+            "PURCHASE_REQUEST",
+            "SUBMIT",
+            ContractVersion,
+            RequesterRequired: ContractVersion == "v2",
+            AllowsRequesterAsOriginator: ContractVersion == "v2",
+            SupersessionDeltaSupported: ContractVersion == "v2");
 
         public Task<ApprovalSubmission> BuildAsync(
             ApprovalSubmissionRequest request,
@@ -819,7 +1031,7 @@ public sealed class ApprovalEvolutionIntegrationTests
                 request.OrganizationId, [new DecisionScopeEntry(ScopeDimension.Department, DepartmentId, 1)]),
             [ApprovalDecisionAction.Approve, ApprovalDecisionAction.Reject, ApprovalDecisionAction.RequestChanges],
             [OriginatorId],
-            lineIds.Select(lineId => new ApprovalTarget("LINE", lineId, 1, MaterialDigest)).ToArray(),
+            lineIds.Select(lineId => new ApprovalTarget("LINE", lineId, TargetVersion, MaterialDigest)).ToArray(),
             []);
     }
 

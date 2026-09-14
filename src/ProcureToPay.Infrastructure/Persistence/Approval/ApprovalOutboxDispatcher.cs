@@ -242,7 +242,8 @@ public sealed class ApprovalOutboxDispatcher(
         record.NextAttemptAt,
         record.DeliveredAt,
         record.LastError,
-        record.Version);
+        record.Version,
+        record.ContractVersion);
 
     internal enum DispatchResult
     {

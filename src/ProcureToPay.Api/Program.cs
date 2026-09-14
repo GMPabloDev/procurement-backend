@@ -1,5 +1,6 @@
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using ProcureToPay.Api;
 using ProcureToPay.Api.Authentication;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
@@ -128,7 +129,8 @@ builder.Services
     .AddCheck<OrganizationBootstrapHealthCheck>("organization-bootstrap", tags: ["ready"])
     .AddCheck<PolicyConfigurationHealthCheck>("policy-configuration", tags: ["ready"])
     .AddCheck<ApprovalHealthCheck>("approval", tags: ["ready"])
-    .AddCheck<PolicyExceptionHealthCheck>("policy-exception", tags: ["ready"]);
+    .AddCheck<PolicyExceptionHealthCheck>("policy-exception", tags: ["ready"])
+    .AddCheck<PurchaseRequestHealthCheck>("purchase-request", tags: ["ready"]);
 
 var telemetryServiceName = builder.Configuration["OpenTelemetry:ServiceName"]
     ?? builder.Environment.ApplicationName;
@@ -169,6 +171,9 @@ var app = builder.Build();
 
 // Configure the HTTP request pipeline.
 app.UseExceptionHandler();
+
+// SPEC 06 REQ-11: the purchase request snapshot budget applies while the body is read.
+app.UseMiddleware<PurchaseRequestSizeLimitMiddleware>();
 
 app.UseHttpsRedirection();
 
@@ -223,6 +228,25 @@ app.MapHealthChecks("/health/approval", new HealthCheckOptions
             : entry.Exception is not null
                 ? "APPROVAL_UNAVAILABLE"
                 : entry.Description ?? "APPROVAL_DEGRADED";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            status = report.Status.ToString().ToUpperInvariant(),
+            code
+        });
+    }
+});
+
+app.MapHealthChecks("/health/purchase-request", new HealthCheckOptions
+{
+    Predicate = registration => registration.Name == "purchase-request",
+    ResponseWriter = async (context, report) =>
+    {
+        var entry = report.Entries.Values.Single();
+        var code = report.Status == HealthStatus.Healthy
+            ? "PURCHASE_REQUEST_OK"
+            : entry.Exception is not null
+                ? "PURCHASE_REQUEST_UNAVAILABLE"
+                : entry.Description ?? "PURCHASE_REQUEST_DEGRADED";
         await context.Response.WriteAsJsonAsync(new
         {
             status = report.Status.ToString().ToUpperInvariant(),

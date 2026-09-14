@@ -597,7 +597,8 @@ public sealed class ApprovalOutboxEvent
         string payloadJson,
         DateTimeOffset createdAt,
         string correlationReference,
-        Guid? sourceCommandId)
+        Guid? sourceCommandId,
+        string contractVersion)
     {
         Id = id;
         CaseId = caseId;
@@ -610,7 +611,7 @@ public sealed class ApprovalOutboxEvent
         CorrelationReference = correlationReference;
         SourceCommandId = sourceCommandId;
         State = ApprovalOutboxState.Pending;
-        ContractVersion = ApprovalOutboxPolicy.ContractVersion;
+        ContractVersion = contractVersion;
     }
 
     public Guid Id { get; }
@@ -642,7 +643,8 @@ public sealed class ApprovalOutboxEvent
         string payloadJson,
         DateTimeOffset createdAt,
         string correlationReference,
-        Guid? sourceCommandId = null)
+        Guid? sourceCommandId = null,
+        string? contractVersion = null)
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(resultSource);
@@ -659,7 +661,10 @@ public sealed class ApprovalOutboxEvent
 
         return new ApprovalOutboxEvent(
             id, caseId, organizationId, resultSource, target, result, payloadJson, createdAt,
-            correlationReference, sourceCommandId);
+            correlationReference, sourceCommandId,
+            contractVersion is null
+                ? ApprovalOutboxPolicy.ContractVersion
+                : ApprovalLimits.RequireSchemaVersion(contractVersion, "contract_version"));
     }
 
     public static ApprovalOutboxEvent Restore(
@@ -678,11 +683,12 @@ public sealed class ApprovalOutboxEvent
         DateTimeOffset? nextAttemptAt,
         DateTimeOffset? deliveredAt,
         string? lastError,
-        int version)
+        int version,
+        string? contractVersion = null)
     {
         var outboxEvent = Create(
             id, caseId, organizationId, resultSource, target, result, payloadJson, createdAt,
-            correlationReference, sourceCommandId);
+            correlationReference, sourceCommandId, contractVersion);
         outboxEvent.State = state;
         outboxEvent.Attempts = attempts;
         outboxEvent.NextAttemptAt = nextAttemptAt;

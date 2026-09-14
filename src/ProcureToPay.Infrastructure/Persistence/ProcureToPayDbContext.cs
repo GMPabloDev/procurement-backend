@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.Policy;
+using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 
 namespace ProcureToPay.Infrastructure.Persistence;
 
@@ -48,6 +49,23 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         Set<DecisionCarryForwardEntryRecord>();
     public DbSet<DecisionEvidenceRevocationRecord> DecisionEvidenceRevocations =>
         Set<DecisionEvidenceRevocationRecord>();
+    public DbSet<PurchaseRequestRecord> PurchaseRequests => Set<PurchaseRequestRecord>();
+    public DbSet<PurchaseRequestVersionRecord> PurchaseRequestVersions => Set<PurchaseRequestVersionRecord>();
+    public DbSet<PurchaseRequestLineVersionRecord> PurchaseRequestLineVersions => Set<PurchaseRequestLineVersionRecord>();
+    public DbSet<PurchaseRequestVersionLineRecord> PurchaseRequestVersionLines => Set<PurchaseRequestVersionLineRecord>();
+    public DbSet<PurchaseRequestRevisionDeltaRecord> PurchaseRequestRevisionDeltas =>
+        Set<PurchaseRequestRevisionDeltaRecord>();
+    public DbSet<PurchaseRequestReferenceAttestationRecord> PurchaseRequestReferenceAttestations =>
+        Set<PurchaseRequestReferenceAttestationRecord>();
+    public DbSet<PurchaseRequestCompletenessManifestRecord> PurchaseRequestCompletenessManifests =>
+        Set<PurchaseRequestCompletenessManifestRecord>();
+    public DbSet<PurchaseRequestSubmissionAttemptRecord> PurchaseRequestSubmissionAttempts =>
+        Set<PurchaseRequestSubmissionAttemptRecord>();
+    public DbSet<PurchaseRequestApprovalResultRecord> PurchaseRequestApprovalResults =>
+        Set<PurchaseRequestApprovalResultRecord>();
+    public DbSet<PurchaseRequestLifecycleEventRecord> PurchaseRequestLifecycleEvents =>
+        Set<PurchaseRequestLifecycleEventRecord>();
+    public DbSet<PurchaseRequestCommandRecord> PurchaseRequestCommands => Set<PurchaseRequestCommandRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -87,7 +105,180 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigureDecisionAuthorityEvidence(modelBuilder);
         ConfigureDecisionCarryForwardEntry(modelBuilder);
         ConfigureDecisionEvidenceRevocation(modelBuilder);
+        ConfigurePurchaseRequest(modelBuilder);
+        ConfigurePurchaseRequestVersion(modelBuilder);
+        ConfigurePurchaseRequestLineVersion(modelBuilder);
+        ConfigurePurchaseRequestVersionLine(modelBuilder);
+        ConfigurePurchaseRequestRevisionDelta(modelBuilder);
+        ConfigurePurchaseRequestReferenceAttestation(modelBuilder);
+        ConfigurePurchaseRequestCompletenessManifest(modelBuilder);
+        ConfigurePurchaseRequestSubmissionAttempt(modelBuilder);
+        ConfigurePurchaseRequestApprovalResult(modelBuilder);
+        ConfigurePurchaseRequestLifecycleEvent(modelBuilder);
+        ConfigurePurchaseRequestCommand(modelBuilder);
         base.OnModelCreating(modelBuilder);
+    }
+
+    private static void ConfigurePurchaseRequest(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PurchaseRequestRecord>();
+        entity.ToTable("PurchaseRequests", "PurchaseRequest");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Status).IsRequired();
+        entity.Property(record => record.CurrentVersion).IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.OrganizationId, record.RequesterId, record.Status });
+    }
+
+    private static void ConfigurePurchaseRequestVersion(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PurchaseRequestVersionRecord>();
+        entity.ToTable("PurchaseRequestVersions", "PurchaseRequest");
+        entity.HasKey(record => new { record.RequestId, record.Version });
+        entity.Property(record => record.BusinessJustification).HasMaxLength(2000).IsRequired();
+        entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.RevisionKey).HasMaxLength(128);
+        entity.Property(record => record.Reason).HasMaxLength(4000);
+        entity.HasIndex(record => new { record.OrganizationId, record.RequestId });
+    }
+
+    private static void ConfigurePurchaseRequestLineVersion(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PurchaseRequestLineVersionRecord>();
+        entity.ToTable("PurchaseRequestLineVersions", "PurchaseRequest");
+        entity.HasKey(record => new { record.LineId, record.LineVersion });
+        entity.Property(record => record.TransactionCurrency).HasMaxLength(3).IsRequired();
+        entity.Property(record => record.BaseCurrency).HasMaxLength(3).IsRequired();
+        entity.Property(record => record.PurchaseType).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.AgreementStatus).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.NeedSummary).HasMaxLength(2000).IsRequired();
+        entity.Property(record => record.SpendCategoryJson).HasMaxLength(1000).IsRequired();
+        entity.Property(record => record.CostCenterJson).HasMaxLength(1000).IsRequired();
+        entity.Property(record => record.CostCenterDepartmentJson).HasMaxLength(1000).IsRequired();
+        entity.Property(record => record.BeneficiaryDepartmentJson).HasMaxLength(1000).IsRequired();
+        entity.Property(record => record.RequestedForUserJson).HasMaxLength(1000).IsRequired();
+        entity.Property(record => record.SupplierJson).HasMaxLength(1000);
+        entity.Property(record => record.PreferredProductJson).HasMaxLength(1000);
+        entity.Property(record => record.RequiredProductJson).HasMaxLength(1000);
+        entity.Property(record => record.RiskAnswersJson).HasMaxLength(200_000).IsRequired();
+        entity.Property(record => record.FxAttestationJson).HasMaxLength(1000);
+        entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.EstimatedGrossAmount).HasPrecision(38, 12);
+        entity.Property(record => record.BaseAmount).HasPrecision(38, 12);
+        entity.HasIndex(record => new { record.OrganizationId, record.RequestId });
+    }
+
+    private static void ConfigurePurchaseRequestVersionLine(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PurchaseRequestVersionLineRecord>();
+        entity.ToTable("PurchaseRequestVersionLines", "PurchaseRequest");
+        entity.HasKey(record => new { record.RequestId, record.RequestVersion, record.LineId });
+        entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
+        entity.HasIndex(record => new { record.RequestId, record.RequestVersion, record.LineVersion });
+    }
+
+    private static void ConfigurePurchaseRequestRevisionDelta(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PurchaseRequestRevisionDeltaRecord>();
+        entity.ToTable("PurchaseRequestRevisionDeltas", "PurchaseRequest");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.RevisionKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Fingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Reason).HasMaxLength(4000).IsRequired();
+        entity.Property(record => record.DeltaJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.HasIndex(record => new { record.RequestId, record.ToRequestVersion }).IsUnique();
+        entity.HasIndex(record => new { record.OrganizationId, record.RevisionKey }).IsUnique();
+    }
+
+    private static void ConfigurePurchaseRequestReferenceAttestation(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PurchaseRequestReferenceAttestationRecord>();
+        entity.ToTable("PurchaseRequestReferenceAttestations", "PurchaseRequest");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Digest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.AssertionsJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.HasIndex(record => new { record.RequestId, record.RequestVersion }).IsUnique();
+    }
+
+    private static void ConfigurePurchaseRequestCompletenessManifest(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PurchaseRequestCompletenessManifestRecord>();
+        entity.ToTable("PurchaseRequestCompletenessManifests", "PurchaseRequest");
+        entity.HasKey(record => new { record.RequestId, record.RequestVersion });
+        entity.Property(record => record.RequestContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ReferenceAttestationDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.PolicyManifestDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.DomainAttestationDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.LinesJson).HasColumnType("nvarchar(max)").IsRequired();
+    }
+
+    private static void ConfigurePurchaseRequestSubmissionAttempt(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PurchaseRequestSubmissionAttemptRecord>();
+        entity.ToTable("PurchaseRequestSubmissionAttempts", "PurchaseRequest");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.SubmissionKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Fingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.PolicyResultDigest).HasMaxLength(64);
+        entity.Property(record => record.ApprovalContractVersion).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.ErrorCode).HasMaxLength(64);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        // One submission key per requester and organization (REQ-06): replay resolves on the key.
+        entity.HasIndex(record => new { record.OrganizationId, record.RequesterId, record.SubmissionKey })
+            .IsUnique();
+        entity.HasIndex(record => new { record.RequestId, record.RequestVersion }).IsUnique();
+    }
+
+    private static void ConfigurePurchaseRequestApprovalResult(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PurchaseRequestApprovalResultRecord>();
+        entity.ToTable("PurchaseRequestApprovalResults", "PurchaseRequest");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.ContractVersion).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.SourceType).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.SourceKey).HasMaxLength(128);
+        entity.Property(record => record.MaterialSnapshotDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Result).HasMaxLength(32).IsRequired();
+        // Deduplication of an at-least-once delivery includes the exact target (REQ-09).
+        entity.HasIndex(record => new
+        {
+            record.EventId,
+            record.ContractVersion,
+            record.SourceType,
+            record.SourceId,
+            record.LineId,
+            record.LineVersion
+        }).IsUnique();
+        entity.HasIndex(record => new { record.RequestId, record.RequestVersion });
+    }
+
+    private static void ConfigurePurchaseRequestLifecycleEvent(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PurchaseRequestLifecycleEventRecord>();
+        entity.ToTable("PurchaseRequestLifecycleEvents", "PurchaseRequest");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Action).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ReasonCode).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Reason).HasMaxLength(1000).IsRequired();
+        entity.Property(record => record.CorrelationReference).HasMaxLength(120).IsRequired();
+        entity.HasIndex(record => new { record.RequestId, record.RequestVersion, record.OccurredAt });
+    }
+
+    private static void ConfigurePurchaseRequestCommand(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PurchaseRequestCommandRecord>();
+        entity.ToTable("PurchaseRequestCommands", "PurchaseRequest");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.CommandType).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.CommandKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Fingerprint).HasMaxLength(64).IsRequired();
+        entity.HasIndex(record => new
+        {
+            record.OrganizationId,
+            record.ActorUserId,
+            record.CommandType,
+            record.CommandKey
+        }).IsUnique();
     }
 
     private static void ConfigureBootstrapState(ModelBuilder modelBuilder)

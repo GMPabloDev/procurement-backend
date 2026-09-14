@@ -16,6 +16,14 @@ public static class ApprovalCanonicalJson
 {
     public const string CanonicalizationVersion = "approval-canonical-json/v2";
 
+    /// <summary>
+    /// Canonicalization version of the SPEC 06 supersession delta (REQ-08). The writer rules are
+    /// those of <c>approval-canonical-json/v2</c>; the version changes because the supersession
+    /// preimage is widened by <c>approval-supersession-delta/v1</c>, so historical v2 fingerprints
+    /// stay byte-identical and verifiable.
+    /// </summary>
+    public const string CanonicalizationVersionV3 = "approval-canonical-json/v3";
+
     public static CanonicalValue String(string value) => new CanonicalString(
         (value ?? throw new DomainValidationException("Canonical strings cannot be null."))
         .Normalize(NormalizationForm.FormC));

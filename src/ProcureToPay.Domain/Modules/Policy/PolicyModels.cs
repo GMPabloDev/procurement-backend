@@ -420,6 +420,23 @@ public static class PolicyFactCatalog
 
         if (string.Equals(factKey, "RISK_ANSWER", StringComparison.Ordinal))
         {
+            // SPEC 06: one answer per question/schema. EQ/NEQ declare a single typed answer; IN/NOT_IN
+            // declare a homogeneous set of answers of the same question and schema version.
+            if (@operator is PolicyOperator.In or PolicyOperator.NotIn)
+            {
+                if (value.Kind != PolicyValueKind.Set || value.Members.IsDefaultOrEmpty ||
+                    value.Members.Any(member => member.Kind != PolicyValueKind.TypedAnswer) ||
+                    value.Members
+                        .Select(member => (member.QuestionCode, member.SchemaVersion, member.AnswerKind))
+                        .Distinct().Count() != 1)
+                {
+                    throw new DomainValidationException(
+                        "Fact 'RISK_ANSWER' only accepts IN/NOT_IN over one question, schema and value kind.");
+                }
+
+                return;
+            }
+
             RequireTextualOperator(factKey, @operator, value);
             RequireKind(factKey, value, PolicyValueKind.TypedAnswer);
             return;

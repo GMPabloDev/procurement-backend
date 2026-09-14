@@ -7,12 +7,23 @@ namespace ProcureToPay.Domain.Modules.Approval;
 public sealed record ApprovalWorkloadIdentity(string Issuer, string ClientId);
 
 /// <summary>Versioned adapter contract: mandatory actors declared per operation (REQ-05).</summary>
+/// <param name="RequesterRequired">The adapter always declares its requester (REQ-05).</param>
+/// <param name="AllowsRequesterAsOriginator">
+/// SPEC 06 REQ-07: only adapters for which the requester legitimately creates the subject admit
+/// <c>requester_id=originator_id</c>; the identity is excluded once and still cannot decide.
+/// </param>
+/// <param name="SupersessionDeltaSupported">
+/// SPEC 06 REQ-08: the adapter declares the variable-cardinality <c>approval-supersession-delta/v1</c>
+/// instead of the equal-cardinality mapping of SPEC 04.
+/// </param>
 public sealed record ApprovalAdapterDescriptor(
     string AdapterId,
     string SubjectType,
     string Operation,
     string ContractVersion,
-    bool RequesterRequired)
+    bool RequesterRequired,
+    bool AllowsRequesterAsOriginator = false,
+    bool SupersessionDeltaSupported = false)
 {
     /// <summary>Validates the declared keys and codes of the adapter contract.</summary>
     public void Validate()
@@ -373,7 +384,8 @@ public static class ApprovalSubmissionRules
             }
         }
 
-        if (submission.RequesterId is not null && submission.RequesterId == submission.OriginatorId)
+        if (submission.RequesterId is not null && submission.RequesterId == submission.OriginatorId &&
+            !adapter.AllowsRequesterAsOriginator)
         {
             throw new DomainValidationException("Requester and originator cannot be the same actor.");
         }
