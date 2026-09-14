@@ -1,0 +1,77 @@
+{
+  "format": "sdd-review/v1",
+  "spec": "07-catalogos-referencia-purchase-requests.md",
+  "revision": 1,
+  "digest": "64daf9c60d28f2d9a2dc6c286a8e2f12d83dd97a01a7651a3a72e73681f0eed1",
+  "dependencies": {
+    "01-organizacion-identidad-roles-autoridades-aprobacion.md": "c5f194a4dca2597aff6cbbace581b1f9212197416c2918559e1a124484de458e",
+    "02-motor-de-politicas.md": "63fec425400bc197524e23cb3a130ab2d7d64f6eba823944b3ebee8923e6d688",
+    "03-approval-workflow.md": "f0b61a917c4c4b4adcaee598c75352ef93d03c3bf25b76d15f80177ba3446234",
+    "05-integracion-policy-approval-workflow.md": "001c559d72845b0f77919df50bad5e7b74eeecb5e6dc8921d52bba932cb20f70",
+    "06-purchase-requests-versionadas.md": "f8c570320cc1093698b8b2998c83eee168335c5345236a2fe457755bf4a41dd8"
+  },
+  "verdict": "PASS",
+  "mode": "full",
+  "baseline_digest": null,
+  "review_count": 2,
+  "reviewer": "sdd-contract-reviewer · openai-codex/gpt-5.6-luna · effort high",
+  "reviewed_at": "2026-09-14",
+  "coverage": {
+    "behavior": "REQ-01..REQ-09 y CA-01..CA-08 recibieron cobertura full; el delta revisó R1, R2, R5, R6 y efectos próximos, todos cerrados.",
+    "boundaries": "Se contrastaron SPEC 01/02/03/05/06, catálogos root/version, relación Cost Center→Department, scopes administrativos y de decisión, owners PR y catálogos Policy exact-one, más sus identidades, versiones y nulabilidad.",
+    "failure_modes": "Concurrencia de versiones, Department rename, stale/inactivo, digest/relación falsa, otra organización, cardinalidad 0/2, wildcard, timeout, respuesta owner incoherente, fallo parcial y rollback tienen resultado fail-closed.",
+    "acceptance": "CA-01..CA-08 enlazan pruebas unitarias, SQL, API/E2E, health, migración y golden independiente; los gaps del código actual están trazados a T-01..T-07 y no se confundieron con contradicciones del diseño.",
+    "implementation_readiness": "Se trazó lectura de refs → PR → attestation real → provider/catálogos Policy → Approval con scope COST_CENTER → elegibilidad, junto con DI, health, tests y comandos existentes necesarios para demostrarlo."
+  },
+  "findings": [
+    {
+      "id": "R1",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "La primera redacción copiaba id+versión Department dentro de CostCenterVersion sin decidir qué ocurría al renombrar un Department referenciado.",
+      "resolution": "REQ-02 guarda department_id estable y resuelve/congela la versión Department current al proyectar o atestiguar; no hay cascada y un draft con ref stale debe revisarse. El delta lo aceptó."
+    },
+    {
+      "id": "R2",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "El lookup Policy actual no transporta organización y usa Guid.Empty/strings vacíos, insuficientes para la forma y aislamiento exigidos.",
+      "resolution": "Datos y contratos modifica explícitamente el DTO/puerto con organization_id, propiedades nullable presentes y nulos reales; CA-04 cubre forma, otra organización y 0/2. El delta lo aceptó."
+    },
+    {
+      "id": "R3",
+      "severity": "blocker",
+      "status": "dismissed",
+      "evidence": "La producción actual registra OrganizationReferenceOwner con ReferenceType=null y por ello no satisface los slots exactos.",
+      "resolution": "Es el gap objetivo, no una contradicción contractual: REQ-06, T-05 y CA-05 exigen seis slots explícitos, rechazan wildcard y verifican identidad/contrato; el revisor delta confirmó la clasificación."
+    },
+    {
+      "id": "R4",
+      "severity": "blocker",
+      "status": "dismissed",
+      "evidence": "El código actual rechaza COST_CENTER en AuthorizationScope/DecisionScope/ApprovalScopeResolver y no registra los catálogos nuevos.",
+      "resolution": "Es trabajo nuevo trazado por REQ-04/05, T-03/04 y CA-03/04; que todavía no esté implementado no invalida implementation_readiness. El revisor delta confirmó la clasificación."
+    },
+    {
+      "id": "R5",
+      "severity": "question",
+      "status": "resolved",
+      "evidence": "Health prometía distinguir assertion+familia, pero el formato existente solo incluía familia y colapsaba los dos slots Cost Center.",
+      "resolution": "REQ-09 y CA-07 fijan gramática exacta por assertion+reference, catálogo, storage y corrupción, sin datos empresariales. El delta lo aceptó."
+    },
+    {
+      "id": "R6",
+      "severity": "warning",
+      "status": "resolved",
+      "evidence": "La validación actual de attestation no compara OwnerId/OwnerContractVersion con el registro ni cierra la coherencia entre Active y Status.",
+      "resolution": "REQ-07 y CA-05 exigen eco, identidad/contrato exactos, active=true solo con ACTIVE y respuesta incoherente como dependencia inválida 503. El delta lo aceptó."
+    },
+    {
+      "id": "R7",
+      "severity": "warning",
+      "status": "dismissed",
+      "evidence": "Tests y health actuales codifican ausencia/rechazo, las integraciones usan doubles y el runbook aún no existe.",
+      "resolution": "Es evidencia de implementación pendiente cubierta por T-06/07 y CA-06/07/08, no falta de aceptación del contrato; el revisor delta confirmó que no queda cobertura sin revisar."
+    }
+  ]
+}
