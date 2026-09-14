@@ -1,6 +1,8 @@
+using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.SharedKernel;
+using ProcureToPay.Infrastructure.Persistence.Approval;
 
 namespace ProcureToPay.UnitTests.Approval;
 
@@ -456,6 +458,55 @@ public sealed class ApprovalContractTests
         Assert.Equal(64, authority.Length);
         Assert.Throws<DomainValidationException>(() =>
             ApprovalFingerprints.AuthorityEvidenceDigest(string.Empty));
+    }
+
+    [Fact]
+    public void Requester_as_originator_is_admitted_only_by_an_adapter_that_declares_it()
+    {
+        var originator = Guid.NewGuid();
+        var workload = new ApprovalWorkloadIdentity("internal://procure-to-pay", "adapter");
+        var v2 = new ApprovalAdapterDescriptor(
+            "policy-approval-adapter", "PURCHASE_REQUEST", "SUBMIT", "v2",
+            RequesterRequired: true, AllowsRequesterAsOriginator: true, SupersessionDeltaSupported: true);
+        var v1 = new ApprovalAdapterDescriptor("adapter", "PURCHASE_REQUEST", "SUBMIT", "v1", false);
+
+        // SPEC 06 REQ-07: the requester creates and presents, so the v2 contract admits the same
+        // identity once in the exclusion set and still keeps every decision action available.
+        var submission = BuildSubmission(originator, [originator], null, requesterId: originator);
+        ApprovalSubmissionRules.Validate(submission, v2, workload);
+        var requirement = submission.Requirements.Single();
+        Assert.Single(requirement.ExcludedUserIds, id => id == originator);
+        Assert.Contains(ApprovalDecisionAction.RequestChanges, requirement.Actions);
+
+        // Every other contract keeps rejecting the same actor, so the relaxation is adapter-scoped.
+        Assert.Throws<DomainValidationException>(() => ApprovalSubmissionRules.Validate(submission, v1, workload));
+        Assert.True(v2.RequesterRequired);
+    }
+
+    [Fact]
+    public void Adapter_registry_resolves_the_declared_contract_version_exactly_one()
+    {
+        var registry = new ApprovalSubmissionAdapterRegistry(
+            [new StubAdapter("v1"), new StubAdapter("v2")]);
+        Assert.Equal("v1", registry.ResolveExactlyOne("PURCHASE_REQUEST", "SUBMIT", "v1").Descriptor.ContractVersion);
+        Assert.Equal("v2", registry.ResolveExactlyOne("PURCHASE_REQUEST", "SUBMIT", "v2").Descriptor.ContractVersion);
+
+        // Without a version the resolution is ambiguous and fails closed (503).
+        Assert.Throws<ApprovalDependencyUnavailableException>(() =>
+            registry.ResolveExactlyOne("PURCHASE_REQUEST", "SUBMIT", null));
+        Assert.Throws<ApprovalDependencyUnavailableException>(() =>
+            registry.ResolveExactlyOne("PURCHASE_REQUEST", "SUBMIT", "v9"));
+    }
+
+    private sealed class StubAdapter(string contractVersion) : IApprovalSubmissionAdapter
+    {
+        public ApprovalAdapterDescriptor Descriptor { get; } = new(
+            "adapter", "PURCHASE_REQUEST", "SUBMIT", contractVersion, false);
+
+        public Task<ApprovalSubmission> BuildAsync(
+            ApprovalSubmissionRequest request,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private static ApprovalTarget Target(string type, Guid id) => new(type, id, 1, new string('c', 64));

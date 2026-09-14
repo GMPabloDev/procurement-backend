@@ -68,6 +68,37 @@ public enum PurchaseRequestRevisionChangeKind
     Removed = 4
 }
 
+/// <summary>Durable states of one submission attempt (REQ-06, Datos y contratos).</summary>
+public enum PurchaseRequestSubmissionStatus
+{
+    Pending = 1,
+    PolicyConfirmed = 2,
+    ApprovalConfirmed = 3,
+    Blocked = 4,
+    DependencyFailed = 5
+}
+
+/// <summary>
+/// A payload over the contractual limits (500 lines, 256 risk answers per line, 5 MiB snapshot)
+/// is rejected with <c>413</c> before the affected artefact is persisted (REQ-11).
+/// </summary>
+public sealed class PurchaseRequestPayloadTooLargeException(string message) : DomainException(message)
+{
+}
+
+/// <summary>Closed action and error codes of the submission lifecycle (REQ-06, REQ-11).</summary>
+public static class PurchaseRequestSubmissionCodes
+{
+    public const string CommandSubmit = "SUBMIT";
+    public const string ActionSubmitted = "SUBMITTED";
+    public const string ActionInApproval = "IN_APPROVAL";
+    public const string ActionApproved = "APPROVED";
+    public const string ReasonCodeSubmit = "PURCHASE_REQUEST_SUBMIT";
+    public const string ErrorPolicyBlocked = "POLICY_BLOCKED";
+    public const string ErrorPolicyDependency = "POLICY_DEPENDENCY_UNAVAILABLE";
+    public const string ErrorApprovalDependency = "APPROVAL_DEPENDENCY_UNAVAILABLE";
+}
+
 public static class PurchaseRequestCodes
 {
     public const string CreateCommandVersion = "purchase-request-create-command/v1";
@@ -261,7 +292,7 @@ public sealed record PurchaseRequestLineContent
         var answers = (riskAnswers ?? []).ToImmutableArray();
         if (answers.Length > PurchaseRequestLimits.MaxRiskAnswersPerLine)
         {
-            throw new DomainValidationException(
+            throw new PurchaseRequestPayloadTooLargeException(
                 $"A line supports at most {PurchaseRequestLimits.MaxRiskAnswersPerLine} risk answers.");
         }
 
@@ -410,7 +441,7 @@ public sealed record PurchaseRequestSnapshot
 
         if (lines.Length > PurchaseRequestLimits.MaxLines)
         {
-            throw new DomainValidationException(
+            throw new PurchaseRequestPayloadTooLargeException(
                 $"A request version supports at most {PurchaseRequestLimits.MaxLines} lines.");
         }
 

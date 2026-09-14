@@ -58,6 +58,7 @@ public sealed class PurchaseRequestPersistenceService(
     public const string CommandCreate = "CREATE";
     public const string CommandRevision = "REVISION";
     public const string CommandCancel = "CANCEL";
+    public const string CommandSubmit = "SUBMIT";
 
     public async Task<PurchaseRequestCreation> CreateAsync(
         PurchaseRequestCreateCommand command,
@@ -806,6 +807,3 @@ public sealed class PurchaseRequestPersistenceService(
 }
 
 /// <summary>Payload-too-large condition of the Purchase Requests boundary (REQ-11).</summary>
-public sealed class PurchaseRequestPayloadTooLargeException(string message) : DomainException(message)
-{
-}

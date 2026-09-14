@@ -86,6 +86,47 @@ public static partial class ApprovalFingerprints
                 .Select(MappingValue)))));
     }
 
+    /// <summary>
+    /// <c>supersession_fingerprint</c> of <c>approval-supersession-delta/v1</c> (SPEC 06 REQ-08):
+    /// exact preimage of the widened supersession contract under <c>approval-canonical-json/v3</c>.
+    /// The historical v2 preimage stays untouched and verifiable above.
+    /// </summary>
+    public static string SupersessionFingerprintV3(
+        string newSubmissionFingerprint,
+        ApprovalWorkloadIdentity workload,
+        Guid previousCaseId,
+        int previousCaseVersion,
+        string supersessionKey,
+        IEnumerable<ApprovalSupersessionDeltaEntry> targetDelta) =>
+        ApprovalCanonicalJson.Digest(SupersessionPreimageV3(
+            newSubmissionFingerprint, workload, previousCaseId, previousCaseVersion, supersessionKey, targetDelta));
+
+    /// <summary>Exact canonical preimage of <c>supersession_fingerprint</c> under v3 (SPEC 06 REQ-08).</summary>
+    public static CanonicalValue SupersessionPreimageV3(
+        string newSubmissionFingerprint,
+        ApprovalWorkloadIdentity workload,
+        Guid previousCaseId,
+        int previousCaseVersion,
+        string supersessionKey,
+        IEnumerable<ApprovalSupersessionDeltaEntry> targetDelta)
+    {
+        ArgumentNullException.ThrowIfNull(workload);
+        var delta = (targetDelta ?? throw new DomainValidationException("A supersession needs its target delta."))
+            .ToArray();
+        ApprovalSupersessionDeltaRules.Validate(delta);
+        return ApprovalCanonicalJson.Object(
+            ("canonicalization_version", ApprovalCanonicalJson.String(ApprovalCanonicalJson.CanonicalizationVersionV3)),
+            ("new_submission_fingerprint", ApprovalCanonicalJson.String(
+                ApprovalLimits.RequireSha256(newSubmissionFingerprint, "new submission fingerprint"))),
+            ("owner_workload_client_id", ApprovalCanonicalJson.String(workload.ClientId)),
+            ("owner_workload_issuer", ApprovalCanonicalJson.String(workload.Issuer)),
+            ("previous_case_id", ApprovalCanonicalJson.String(previousCaseId)),
+            ("previous_case_version", ApprovalCanonicalJson.Number(previousCaseVersion)),
+            ("supersession_key", ApprovalCanonicalJson.String(
+                ApprovalLimits.RequireKey(supersessionKey, "supersession_key"))),
+            ("target_delta", ApprovalCanonicalJson.Set(delta.Select(entry => entry.ToCanonicalValue()))));
+    }
+
     public static string RevocationFingerprint(
         EvidenceRevocationActorType actorType,
         Guid? actorUserId,

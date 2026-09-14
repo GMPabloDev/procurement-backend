@@ -81,6 +81,21 @@ public sealed class PurchaseRequestAttestationService(
             references);
 
         var occurredAtUtc = occurredAt.ToUniversalTime();
+        // Two concurrent presentations of the same version must produce exactly one attestation and
+        // one manifest (NFR-03, CA-03): the rows are written in one transaction and the losing
+        // writer resolves the winner's frozen manifest instead of writing a second one.
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        var concurrent = await dbContext.PurchaseRequestCompletenessManifests
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                record => record.RequestId == requestId && record.RequestVersion == requestVersion,
+                cancellationToken);
+        if (concurrent is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return ReadManifest(concurrent);
+        }
+
         dbContext.PurchaseRequestReferenceAttestations.Add(new PurchaseRequestReferenceAttestationRecord
         {
             Id = Guid.NewGuid(),
@@ -122,7 +137,34 @@ public sealed class PurchaseRequestAttestationService(
             CorrelationReference = $"attestation-{requestVersion}",
             OccurredAt = occurredAtUtc
         });
-        await dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            // The winner committed while this transaction was inserting: reuse its frozen rows.
+            try
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+            }
+            catch (InvalidOperationException)
+            {
+                // The engine already aborted the transaction (for example on a deadlock victim).
+            }
+
+            dbContext.ChangeTracker.Clear();
+            var winner = await dbContext.PurchaseRequestCompletenessManifests
+                .AsNoTracking()
+                .SingleOrDefaultAsync(
+                    record => record.RequestId == requestId && record.RequestVersion == requestVersion,
+                    cancellationToken)
+                ?? throw new PurchaseRequestDependencyUnavailableException(
+                    "The concurrent attestation of the purchase request version did not complete.");
+            return ReadManifest(winner);
+        }
+
         logger.LogInformation(
             "Purchase request {RequestId} version {Version} attested with {AssertionCount} assertion(s).",
             requestId,

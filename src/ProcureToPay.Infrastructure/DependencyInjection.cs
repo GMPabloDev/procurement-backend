@@ -3,6 +3,7 @@ using Amazon.S3;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Infrastructure.Persistence.Approval;
@@ -10,6 +11,7 @@ using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Application.Abstractions.Files;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Organization;
+using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 using ProcureToPay.Infrastructure.Storage.S3;
 
 namespace ProcureToPay.Infrastructure;
@@ -35,6 +37,8 @@ public static class DependencyInjection
             provider.GetRequiredService<PolicyWorkloadAllowlist>());
         // pi-lens-ignore: CS0246
         services.AddScoped<PolicyFactProviderRegistry>();
+        services.AddScoped<IPolicyFactProviderRegistry>(provider =>
+            provider.GetRequiredService<PolicyFactProviderRegistry>());
         var workflowUrl = configuration["Policy:ExceptionWorkflow:BaseUrl"];
         if (string.IsNullOrWhiteSpace(workflowUrl))
         {
@@ -109,6 +113,8 @@ public static class DependencyInjection
             provider.GetRequiredService<OrganizationEligibilityService>());
 
         services.AddSingleton<ApprovalWorkloadAllowlist>();
+        services.AddSingleton<IApprovalWorkloadAllowlist>(provider =>
+            provider.GetRequiredService<ApprovalWorkloadAllowlist>());
         services.AddSingleton<ApprovalInstanceIdentity>();
         services.AddSingleton<IApprovalOwnerWorkloadRegistry>(provider =>
             new ApprovalOwnerWorkloadRegistry(
@@ -143,6 +149,20 @@ public static class DependencyInjection
         // provider evaluated by the SPEC 02 engine (REQ-05, DEC-03).
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestPersistenceService>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestAttestationService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestSubmissionService>();
+        // SPEC 06 REQ-09: one consumer per result contract version plus the SPEC 04 lifecycle.
+        services.AddScoped<IApprovalResultConsumer>(provider => new PurchaseRequestApprovalResultConsumer(
+            provider.GetRequiredService<ProcureToPayDbContext>(),
+            provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
+            "approval-result/v2"));
+        services.AddScoped<IApprovalResultConsumer>(provider => new PurchaseRequestApprovalResultConsumer(
+            provider.GetRequiredService<ProcureToPayDbContext>(),
+            provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
+            "approval-result/v3"));
+        services.AddScoped<IApprovalResultConsumer>(provider => new PurchaseRequestApprovalResultConsumer(
+            provider.GetRequiredService<ProcureToPayDbContext>(),
+            provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
+            "approval-case-lifecycle/v1"));
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestPolicyFactProvider>();
         services.AddScoped<IPolicyFactProvider>(provider =>
             provider.GetRequiredService<

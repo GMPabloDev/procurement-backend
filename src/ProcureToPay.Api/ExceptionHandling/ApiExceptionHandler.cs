@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc;
 using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.PurchaseRequests;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;

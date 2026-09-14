@@ -80,6 +80,17 @@ public sealed record PurchaseRequestRevisionBody(
 
 public sealed record PurchaseRequestCancellationBody(int ExpectedVersion, string CancelKey, string Reason);
 
+public sealed record PurchaseRequestSubmissionBody(int ExpectedVersion, string SubmissionKey, string Reason);
+
+public sealed record PurchaseRequestSubmissionResponse(
+    Guid RequestId,
+    int Version,
+    PurchaseRequestStatus Status,
+    PurchaseRequestSubmissionStatus AttemptStatus,
+    Guid? PolicyEvaluationBundleId,
+    Guid? ApprovalCaseId,
+    bool Replayed);
+
 public sealed record PurchaseRequestCreatedResponse(
     Guid RequestId,
     int Version,
@@ -131,7 +142,8 @@ public sealed record PurchaseRequestResponse(
 public sealed class PurchaseRequestController(
     ProcureToPayDbContext dbContext,
     CurrentUserProvisioningService provisioningService,
-    PurchaseRequestPersistenceService service) : ControllerBase
+    PurchaseRequestPersistenceService service,
+    PurchaseRequestSubmissionService submissionService) : ControllerBase
 {
     private const string GlobalScopeJson = "[{\"dimension\":\"ORGANIZATION\",\"reference\":null}]";
 
@@ -140,6 +152,7 @@ public sealed class PurchaseRequestController(
         PurchaseRequestCreateBody request,
         CancellationToken cancellationToken)
     {
+        RequireSnapshotSize();
         var profile = await RequireActiveProfileAsync(cancellationToken);
         var creation = await service.CreateAsync(
             new PurchaseRequestCreateCommand(
@@ -171,6 +184,7 @@ public sealed class PurchaseRequestController(
         PurchaseRequestRevisionBody request,
         CancellationToken cancellationToken)
     {
+        RequireSnapshotSize();
         var profile = await RequireActiveProfileAsync(cancellationToken);
         var request_ = await RequireOwnedRequestAsync(requestId, profile, cancellationToken);
         var revision = await service.ReviseAsync(
@@ -231,6 +245,35 @@ public sealed class PurchaseRequestController(
         });
     }
 
+    [HttpPost("{requestId:guid}/submission")]
+    public async Task<ActionResult<PurchaseRequestSubmissionResponse>> Submit(
+        Guid requestId,
+        PurchaseRequestSubmissionBody request,
+        CancellationToken cancellationToken)
+    {
+        var profile = await RequireActiveProfileAsync(cancellationToken);
+        var request_ = await RequireOwnedRequestAsync(requestId, profile, cancellationToken);
+        var outcome = await submissionService.SubmitAsync(
+            new PurchaseRequestSubmissionCommand(
+                requestId,
+                request.ExpectedVersion,
+                request.SubmissionKey,
+                request.Reason,
+                request_.OrganizationId,
+                profile.Id,
+                Correlation()),
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        return Ok(new PurchaseRequestSubmissionResponse(
+            outcome.RequestId,
+            outcome.Version,
+            outcome.Status,
+            outcome.AttemptStatus,
+            outcome.PolicyEvaluationBundleId,
+            outcome.ApprovalCaseId,
+            outcome.Replayed));
+    }
+
     [HttpGet("{requestId:guid}")]
     public async Task<ActionResult<PurchaseRequestResponse>> Get(
         Guid requestId,
@@ -266,6 +309,16 @@ public sealed class PurchaseRequestController(
                 isRequester ? version.BusinessJustification : null,
                 isRequester ? version.RevisionKey : null,
                 isRequester ? version.Reason : null)).ToArray()));
+    }
+
+    /// <summary>The incoming snapshot cannot exceed 5 MiB (REQ-11).</summary>
+    private void RequireSnapshotSize()
+    {
+        if (Request.ContentLength is > PurchaseRequestLimits.MaxSnapshotBytes)
+        {
+            throw new PurchaseRequestPayloadTooLargeException(
+                $"The purchase request snapshot exceeds {PurchaseRequestLimits.MaxSnapshotBytes} bytes.");
+        }
     }
 
     private async Task<UserProfileRecord> RequireActiveProfileAsync(CancellationToken cancellationToken)

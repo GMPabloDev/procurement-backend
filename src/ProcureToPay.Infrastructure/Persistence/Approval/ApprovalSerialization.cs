@@ -106,6 +106,28 @@ public static class ApprovalJsonPersistence
             payload.MaterialityDigest!)).ToArray();
     }
 
+    /// <summary>Closed target delta of a SPEC 06 supersession (<c>approval-supersession-delta/v1</c>).</summary>
+    public static string SerializeSupersessionDelta(IEnumerable<ApprovalSupersessionDeltaEntry> delta) =>
+        JsonSerializer.Serialize(
+            delta.Select(entry => new SupersessionDeltaEntryPayload(
+                ApprovalSupersessionDeltaCodes.Code(entry.ChangeKind),
+                entry.Previous is null ? null : TargetPayload.From(entry.Previous),
+                entry.Replacement is null ? null : TargetPayload.From(entry.Replacement),
+                entry.MaterialitySchemaVersion,
+                entry.MaterialityDigest)).ToArray(),
+            Options);
+
+    public static IReadOnlyList<ApprovalSupersessionDeltaEntry> DeserializeSupersessionDelta(string json)
+    {
+        var payloads = JsonSerializer.Deserialize<SupersessionDeltaEntryPayload[]>(json, Options) ?? [];
+        return payloads.Select(payload => ApprovalSupersessionDeltaEntry.Restore(
+            payload.ChangeKind,
+            payload.Previous is null ? null : ToTarget(payload.Previous),
+            payload.Replacement is null ? null : ToTarget(payload.Replacement),
+            payload.MaterialitySchemaVersion,
+            payload.MaterialityDigest)).ToArray();
+    }
+
     public static IReadOnlyList<Guid> DeserializeGuids(string json) =>
         JsonSerializer.Deserialize<Guid[]>(json, Options) ?? [];
 
@@ -158,4 +180,14 @@ public static class ApprovalJsonPersistence
         TargetPayload? Replacement,
         string? MaterialitySchemaVersion,
         string? MaterialityDigest);
+
+    private sealed record SupersessionDeltaEntryPayload(
+        string? ChangeKind,
+        TargetPayload? Previous,
+        TargetPayload? Replacement,
+        string? MaterialitySchemaVersion,
+        string? MaterialityDigest);
+
+    private static ApprovalTarget ToTarget(TargetPayload payload) =>
+        new(payload.Type!, payload.Id, payload.Version, payload.MaterialSnapshotDigest!);
 }

@@ -24,14 +24,19 @@ public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IAp
 {
     public const string AdapterId = "policy-approval-adapter";
     /// <summary>Adapter contract version; the submission command carries this exact value.</summary>
-    public const string ContractVersion = "v1";
-    public const string AdapterIdentity = "policy-approval-adapter/v1";
+    public const string ContractVersion = "v2";
+    /// <summary>
+    /// SPEC 06 REQ-07: the v2 contract declares its requester, admits requester=originator for the
+    /// Purchase Request flow and offers <c>REQUEST_CHANGES</c> beside APPROVE and REJECT.
+    /// </summary>
+    public const string AdapterIdentity = "policy-approval-adapter/v2";
     public const string SubjectType = "PURCHASE_REQUEST";
     public const string Operation = "SUBMIT_PURCHASE_REQUEST";
     public const string SnapshotContractVersion = "policy-evaluation-snapshot/v1";
 
     private static readonly ApprovalAdapterDescriptor DescriptorValue = new(
-        AdapterId, SubjectType, Operation, ContractVersion, RequesterRequired: false);
+        AdapterId, SubjectType, Operation, ContractVersion, RequesterRequired: true,
+        AllowsRequesterAsOriginator: true, SupersessionDeltaSupported: true);
 
     private static readonly IReadOnlyDictionary<PolicyEffectType, string> OwnerAdapters =
         new Dictionary<PolicyEffectType, string>
@@ -139,7 +144,7 @@ public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IAp
                     parts.Authority,
                     parts.Scope,
                     // pi-lens-ignore: lsp:CS0117
-                    [ApprovalDecisionAction.Approve, ApprovalDecisionAction.Reject],
+                    [ApprovalDecisionAction.Approve, ApprovalDecisionAction.Reject, ApprovalDecisionAction.RequestChanges],
                     parts.Exclusions,
                     node.Targets,
                     DependenciesFor(node, nodes)));
