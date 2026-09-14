@@ -1049,7 +1049,7 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
         {
             public string AssertionType => PurchaseRequestCodes.Code(assertionType);
 
-            public PurchaseRequestReferenceType? ReferenceType => referenceType;
+            public PurchaseRequestReferenceType ReferenceType => referenceType;
 
             public string OwnerId => ownerId;
 

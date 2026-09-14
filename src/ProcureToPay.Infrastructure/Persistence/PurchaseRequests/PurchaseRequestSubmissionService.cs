@@ -225,7 +225,27 @@ public sealed class PurchaseRequestSubmissionService(
         attempt.Status = (int)PurchaseRequestSubmissionStatus.PolicyConfirmed;
         attempt.ErrorCode = null;
         attempt.UpdatedAt = utcNow;
-        await dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            // A concurrent identical presentation advanced the same attempt first.
+            dbContext.ChangeTracker.Clear();
+            var winner = await FindAttemptAsync(request.Id, request.CurrentVersion, cancellationToken);
+            if (winner is not null &&
+                winner.Status == (int)PurchaseRequestSubmissionStatus.ApprovalConfirmed)
+            {
+                var currentRequest = await dbContext.PurchaseRequests
+                    .AsNoTracking()
+                    .SingleAsync(record => record.Id == request.Id, cancellationToken);
+                return Replay(winner, request.CurrentVersion, (PurchaseRequestStatus)currentRequest.Status);
+            }
+
+            throw new DomainConflictException(
+                "The purchase request presentation raced with another command; reload and retry.");
+        }
 
         // (3) Open, or supersede the previous case, through the trusted in-process adapter v2.
         var submissionKeyInternal = $"pr-submit-{request.Id:D}-v{request.CurrentVersion}";
@@ -312,7 +332,28 @@ public sealed class PurchaseRequestSubmissionService(
             RequestVersion = request.CurrentVersion,
             CreatedAt = utcNow
         });
-        await dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            // A concurrent identical presentation confirmed first: resolve its stored outcome
+            // instead of surfacing a raw persistence failure (SPEC 06 REQ-06, exactly-once).
+            dbContext.ChangeTracker.Clear();
+            var winner = await FindAttemptAsync(request.Id, request.CurrentVersion, cancellationToken);
+            if (winner is not null &&
+                winner.Status == (int)PurchaseRequestSubmissionStatus.ApprovalConfirmed)
+            {
+                var currentRequest = await dbContext.PurchaseRequests
+                    .AsNoTracking()
+                    .SingleAsync(record => record.Id == request.Id, cancellationToken);
+                return Replay(winner, request.CurrentVersion, (PurchaseRequestStatus)currentRequest.Status);
+            }
+
+            throw new DomainConflictException(
+                "The purchase request presentation raced with another command; reload and retry.");
+        }
         logger.LogInformation(
             "Purchase request {RequestId} version {Version} was presented with policy bundle {BundleId} and case {CaseId}.",
             request.Id,
@@ -657,7 +698,16 @@ public sealed class PurchaseRequestSubmissionService(
         current.ErrorCode = errorCode;
         current.AttemptCount++;
         current.UpdatedAt = occurredAt;
-        await dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            // A concurrent command owns the attempt row; the caller already reports the failure
+            // that triggered this best-effort mark.
+            dbContext.ChangeTracker.Clear();
+        }
     }
 
     /// <summary>

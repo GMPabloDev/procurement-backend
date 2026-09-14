@@ -39,26 +39,39 @@ public sealed class PurchaseRequestReferenceOwnerRegistry(
                 $"More than one reference owner matches '{assertionCode}' for that reference family.");
         }
 
+        // SPEC 07 REQ-06: the registration must declare a stable identity and contract version;
+        // an empty one is an unavailable slot, never a valid owner.
+        if (string.IsNullOrWhiteSpace(matches[0].OwnerId) ||
+            string.IsNullOrWhiteSpace(matches[0].ContractVersion))
+        {
+            throw new PurchaseRequestDependencyUnavailableException(
+                $"The registered owner for '{assertionCode}' has no stable identity or contract version.");
+        }
+
         return matches[0];
     }
 }
 
 /// <summary>
-/// In-process owner of the organization-owned references that already exist (SPEC 01): legal
-/// entities, users and departments. Cost Centers, spend categories, products, suppliers, risk
-/// schemas and FX remain owned by their future domains and stay unregistered until they exist.
+/// In-process owner of one organization-owned reference family (SPEC 01 / SPEC 07 REQ-06): legal
+/// entities, users and departments, declared explicitly per slot so the registry never interprets a
+/// missing family as a wildcard. Cost Centers and Spend Categories are owned by their own catalog
+/// adapters; products, suppliers, risk schemas and FX stay unregistered until they exist.
 /// </summary>
-public sealed class OrganizationReferenceOwner(ProcureToPayDbContext dbContext) : IPurchaseRequestReferenceOwner
+public sealed class OrganizationReferenceOwner(
+    ProcureToPayDbContext dbContext,
+    PurchaseRequestReferenceType referenceType) : IPurchaseRequestReferenceOwner
 {
     public const string OwnerIdentity = "organization-domain";
+    public const string OwnerContractVersionValue = "organization-db/v1";
 
     public string AssertionType => PurchaseRequestCodes.Code(PurchaseRequestAssertionType.ActiveInOrganization);
 
-    public PurchaseRequestReferenceType? ReferenceType => null;
+    public PurchaseRequestReferenceType ReferenceType => referenceType;
 
     public string OwnerId => OwnerIdentity;
 
-    public string ContractVersion => "organization-db/v1";
+    public string ContractVersion => OwnerContractVersionValue;
 
     public async Task<PurchaseRequestVerificationResponse> VerifyAsync(
         PurchaseRequestVerificationRequest request,
@@ -67,6 +80,12 @@ public sealed class OrganizationReferenceOwner(ProcureToPayDbContext dbContext) 
         ArgumentNullException.ThrowIfNull(request);
         var reference = request.SourceRef
             ?? throw new DomainValidationException("A verification request requires its source reference.");
+        if (reference.Type != ReferenceType)
+        {
+            throw new PurchaseRequestDependencyUnavailableException(
+                "The organization owner was asked for a reference family it does not own.");
+        }
+
         var active = reference.Type switch
         {
             PurchaseRequestReferenceType.LegalEntity => await IsActiveLegalEntityAsync(request, reference, cancellationToken),

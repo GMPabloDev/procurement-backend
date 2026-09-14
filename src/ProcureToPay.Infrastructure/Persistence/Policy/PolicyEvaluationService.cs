@@ -757,7 +757,7 @@ public sealed class PolicyEvaluationService(
             bool exists;
             try
             {
-                exists = await catalog.ExistsAsync(Lookup(resolverKey, value), timeout.Token);
+                exists = await catalog.ExistsAsync(Lookup(resolverKey, value, request.OrganizationId), timeout.Token);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
@@ -800,31 +800,30 @@ public sealed class PolicyEvaluationService(
         _ => throw new DomainValidationException("Unsupported policy reference kind.")
     };
 
-    private static PolicyReferenceLookup Lookup(string resolverKey, PolicyValue value)
+    private static PolicyReferenceLookup Lookup(string resolverKey, PolicyValue value, Guid organizationId)
     {
         switch (value.Kind)
         {
             case PolicyValueKind.VersionedEntityRef:
                 return new PolicyReferenceLookup(
-                    resolverKey, value.EntityId ?? Guid.Empty, value.Version ?? 1, string.Empty);
+                    resolverKey, organizationId, value.EntityId, value.Version, null, null, null);
             case PolicyValueKind.VersionedCodeRef:
                 return new PolicyReferenceLookup(
-                    resolverKey, Guid.Empty, value.Version ?? 1, value.Digest ?? string.Empty)
-                {
-                    Code = value.Value
-                };
+                    resolverKey, organizationId, null, value.Version, value.Digest, value.Value, null);
             case PolicyValueKind.TypedAnswer:
                 return new PolicyReferenceLookup(
-                    resolverKey, Guid.Empty, value.SchemaVersion ?? 1, string.Empty)
-                {
-                    Code = value.Value,
-                    ValueKind = value.AnswerKind switch
-                {
-                    TypedAnswerValueKind.Boolean => "BOOLEAN",
-                    TypedAnswerValueKind.EnumCode => "ENUM_CODE",
-                    _ => null
-                }
-                };
+                    resolverKey,
+                    organizationId,
+                    null,
+                    value.SchemaVersion,
+                    null,
+                    value.Value,
+                    value.AnswerKind switch
+                    {
+                        TypedAnswerValueKind.Boolean => "BOOLEAN",
+                        TypedAnswerValueKind.EnumCode => "ENUM_CODE",
+                        _ => null
+                    });
             default:
                 throw new DomainValidationException("Unsupported policy reference kind.");
         }

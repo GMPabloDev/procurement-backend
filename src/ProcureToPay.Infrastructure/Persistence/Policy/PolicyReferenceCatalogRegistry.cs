@@ -1,17 +1,18 @@
 namespace ProcureToPay.Infrastructure.Persistence.Policy;
 
+/// <summary>
+/// Exact in-process lookup of SPEC 07 Datos y contratos: `reference_type`, `organization_id`,
+/// `id`, `version`, `digest`, `code` and `value_kind` are always present and carry the shape's own
+/// nullability. `Guid.Empty` and empty strings never substitute a real `null`.
+/// </summary>
 public sealed record PolicyReferenceLookup(
     string ReferenceType,
-    Guid Id,
-    int Version,
-    string Digest)
-{
-    /// <summary>Versioned code or typed answer value the resolver must validate (REQ-04/REQ-05).</summary>
-    public string? Code { get; init; }
-
-    /// <summary>Typed answer schema kind (BOOLEAN/ENUM_CODE) when applicable.</summary>
-    public string? ValueKind { get; init; }
-}
+    Guid OrganizationId,
+    Guid? Id,
+    int? Version,
+    string? Digest,
+    string? Code,
+    string? ValueKind);
 
 public interface IPolicyReferenceCatalog
 {

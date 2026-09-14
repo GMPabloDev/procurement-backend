@@ -96,9 +96,22 @@ public sealed class ApprovalContractTests
         Assert.Throws<DomainValidationException>(() => DecisionScopeDescriptor.Parse(
             canonical[..^1] + ",\"extra\":1}"));
         Assert.Throws<DomainValidationException>(() => DecisionScopeDescriptor.Parse(
-            canonical.Replace("\"DEPARTMENT\"", "\"COST_CENTER\"", StringComparison.Ordinal)));
-        Assert.Throws<DomainValidationException>(() => DecisionScopeDescriptor.Parse(
             canonical, Guid.Parse("33333333-3333-3333-3333-333333333333")));
+
+        // SPEC 07 REQ-05: COST_CENTER is now a valid canonical dimension that keeps the frozen
+        // UUID/version pair; a missing reference id or version is still invalid.
+        var costCenter = DecisionScopeDescriptor.Create(
+            OrganizationId,
+            [new DecisionScopeEntry(ScopeDimension.CostCenter, departmentId, 2)]);
+        Assert.Equal(
+            costCenter.ToCanonicalJson(),
+            DecisionScopeDescriptor.Parse(costCenter.ToCanonicalJson(), OrganizationId).ToCanonicalJson());
+        Assert.Throws<DomainValidationException>(() => DecisionScopeDescriptor.Create(
+            OrganizationId,
+            [new DecisionScopeEntry(ScopeDimension.CostCenter, departmentId, null)]));
+        Assert.Throws<DomainValidationException>(() => DecisionScopeDescriptor.Create(
+            OrganizationId,
+            [new DecisionScopeEntry(ScopeDimension.CostCenter, null, 1)]));
 
         Assert.Throws<DomainValidationException>(() => DecisionScopeDescriptor.Create(
             OrganizationId,

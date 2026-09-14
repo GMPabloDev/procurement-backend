@@ -2,13 +2,16 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
+using ProcureToPay.Domain.Modules.ReferenceCatalogs;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
+using System.Data.Common;
 
 namespace ProcureToPay.Api.Health;
 
@@ -31,6 +34,13 @@ public sealed class PurchaseRequestHealthCheck(
         (PurchaseRequestAssertionType.ActiveInOrganization, PurchaseRequestReferenceType.CostCenter),
         (PurchaseRequestAssertionType.ActiveInOrganization, PurchaseRequestReferenceType.SpendCategory),
         (PurchaseRequestAssertionType.CostCenterOwnedByDepartment, PurchaseRequestReferenceType.CostCenter)
+    ];
+
+    /// <summary>Policy catalogs the SPEC 07 reference catalogs must resolve exactly once (REQ-05).</summary>
+    private static readonly string[] RequiredPolicyCatalogs =
+    [
+        CostCenterPolicyReferenceCatalog.Catalog,
+        SpendCategoryPolicyReferenceCatalog.Catalog
     ];
 
     private static readonly TimeSpan StuckAttemptBudget = TimeSpan.FromMinutes(15);
@@ -88,17 +98,50 @@ public sealed class PurchaseRequestHealthCheck(
             {
                 try
                 {
-                    _ = owners.ResolveExactlyOne(slot.Assertion, slot.Reference);
+                    var owner = owners.ResolveExactlyOne(slot.Assertion, slot.Reference);
+                    // SPEC 07 REQ-06/REQ-09: readiness also requires the contractual identity and
+                    // version of the slot, not only its cardinality.
+                    var expected = ExpectedOwnerContract(slot.Reference);
+                    if (expected is not null &&
+                        (!string.Equals(owner.OwnerId, expected.Value.OwnerId, StringComparison.Ordinal) ||
+                         !string.Equals(owner.ContractVersion, expected.Value.ContractVersion, StringComparison.Ordinal)))
+                    {
+                        reasons.Add(OwnerUnavailable(slot));
+                    }
                 }
                 catch (DomainException)
                 {
-                    // The slot identifies the missing registration without exposing any binding.
-                    reasons.Add(
-                        $"PURCHASE_REQUEST_OWNER_UNAVAILABLE:{PurchaseRequestCodes.Code(slot.Reference)}");
+                    // SPEC 07 REQ-09: the grammar distinguishes the two Cost Center slots and never
+                    // exposes ids, names or digests.
+                    reasons.Add(OwnerUnavailable(slot));
+                }
+            }
+
+            var catalogRegistry = scope.ServiceProvider.GetRequiredService<PolicyReferenceCatalogRegistry>();
+            foreach (var catalog in RequiredPolicyCatalogs)
+            {
+                try
+                {
+                    var resolved = catalogRegistry.Resolve(catalog);
+                    var expectedVersion = string.Equals(
+                        catalog, CostCenterPolicyReferenceCatalog.Catalog, StringComparison.Ordinal)
+                        ? CostCenterPolicyReferenceCatalog.Version
+                        : SpendCategoryPolicyReferenceCatalog.Version;
+                    if (string.IsNullOrWhiteSpace(resolved.ContractVersion) ||
+                        !string.Equals(resolved.ContractVersion, expectedVersion, StringComparison.Ordinal))
+                    {
+                        reasons.Add($"POLICY_REFERENCE_CATALOG_UNAVAILABLE:{catalog}");
+                    }
+                }
+                catch (DomainException)
+                {
+                    reasons.Add($"POLICY_REFERENCE_CATALOG_UNAVAILABLE:{catalog}");
                 }
             }
 
             var dbContext = scope.ServiceProvider.GetRequiredService<ProcureToPayDbContext>();
+            await CheckReferenceCatalogStorageAsync(dbContext, reasons, cancellationToken);
+
             var now = DateTimeOffset.UtcNow;
             var overdue = now - StuckAttemptBudget;
             var stuck = await dbContext.PurchaseRequestSubmissionAttempts
@@ -159,6 +202,91 @@ public sealed class PurchaseRequestHealthCheck(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return HealthCheckResult.Unhealthy("Purchase request health could not be determined.", exception);
+        }
+    }
+
+    /// <summary>
+    /// Storage access plus current-pointer/digest consistency of both reference catalogs (REQ-09).
+    /// An empty catalog is a valid business configuration and never degrades by itself.
+    /// </summary>
+    private static string OwnerUnavailable(
+        (PurchaseRequestAssertionType Assertion, PurchaseRequestReferenceType Reference) slot) =>
+        $"PURCHASE_REQUEST_OWNER_UNAVAILABLE:{PurchaseRequestCodes.Code(slot.Assertion)}:" +
+        $"{PurchaseRequestCodes.Code(slot.Reference)}";
+
+    /// <summary>Contractual identity expected for each reference family of the PR boundary.</summary>
+    private static (string OwnerId, string ContractVersion)? ExpectedOwnerContract(
+        PurchaseRequestReferenceType reference) => reference switch
+    {
+        PurchaseRequestReferenceType.CostCenter =>
+            (ReferenceCatalogCodes.CostCenterOwnerId, ReferenceCatalogCodes.CostCenterOwnerContractVersion),
+        PurchaseRequestReferenceType.SpendCategory =>
+            (ReferenceCatalogCodes.SpendCategoryOwnerId, ReferenceCatalogCodes.SpendCategoryOwnerContractVersion),
+        PurchaseRequestReferenceType.LegalEntity or
+        PurchaseRequestReferenceType.User or
+        PurchaseRequestReferenceType.Department =>
+            (OrganizationReferenceOwner.OwnerIdentity, OrganizationReferenceOwner.OwnerContractVersionValue),
+        _ => null
+    };
+
+    private static async Task CheckReferenceCatalogStorageAsync(
+        ProcureToPayDbContext dbContext,
+        List<string> reasons,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var costCenterRoots = await dbContext.CostCenters.CountAsync(cancellationToken);
+            var currentCostCenters = await (
+                from root in dbContext.CostCenters.AsNoTracking()
+                join version in dbContext.CostCenterVersions.AsNoTracking()
+                    on new { root.Id, Version = root.CurrentVersion } equals new
+                    {
+                        Id = version.CostCenterId,
+                        version.Version
+                    }
+                join department in dbContext.Departments.AsNoTracking()
+                    on version.DepartmentId equals department.Id
+                where version.Status == (int)EntityStatus.Active ||
+                      version.Status == (int)EntityStatus.Inactive
+                select root.Id).CountAsync(cancellationToken);
+            if (currentCostCenters != costCenterRoots)
+            {
+                reasons.Add($"REFERENCE_CATALOG_CORRUPTED:{CostCenterPolicyReferenceCatalog.Catalog}");
+            }
+
+            var spendCategoryRoots = await dbContext.SpendCategories.CountAsync(cancellationToken);
+            var currentSpendCategories = await (
+                from root in dbContext.SpendCategories.AsNoTracking()
+                join version in dbContext.SpendCategoryVersions.AsNoTracking()
+                    on new { root.Id, Version = root.CurrentVersion } equals new
+                    {
+                        Id = version.SpendCategoryId,
+                        version.Version
+                    }
+                select new
+                {
+                    version.Code,
+                    version.Name,
+                    root.OrganizationId,
+                    version.Version,
+                    version.Digest
+                }).ToArrayAsync(cancellationToken);
+            var spendCategoryCorrupted = currentSpendCategories.Length != spendCategoryRoots ||
+                currentSpendCategories.Any(version => !ReferenceCatalogCanonicalizer.MatchesSpendCategoryDigest(
+                    version.Code,
+                    version.Name,
+                    version.OrganizationId,
+                    version.Version,
+                    version.Digest));
+            if (spendCategoryCorrupted)
+            {
+                reasons.Add($"REFERENCE_CATALOG_CORRUPTED:{SpendCategoryPolicyReferenceCatalog.Catalog}");
+            }
+        }
+        catch (DbException)
+        {
+            reasons.Add("REFERENCE_CATALOG_STORAGE_UNAVAILABLE");
         }
     }
 }

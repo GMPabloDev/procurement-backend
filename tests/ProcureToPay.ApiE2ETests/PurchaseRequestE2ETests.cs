@@ -260,22 +260,25 @@ public sealed class PurchaseRequestE2ETests
     }
 
     [Fact]
-    public async Task Health_reports_the_missing_purchase_request_registrations()
+    public async Task Health_reports_only_the_really_missing_registrations()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var environment = await Environment.StartAsync(cancellationToken);
         using var client = environment.Client("requester");
 
-        // Health is anonymous and code-only: it names the missing owner slots and workload without
-        // exposing ids, bindings or content (SPEC 06 NFR-04, T-08).
+        // Health is anonymous and code-only: it names the missing workload without exposing ids,
+        // bindings or content. SPEC 07 REQ-09: with the real owner and Policy catalog registrations,
+        // the Cost Center/Spend Category slots and the catalog checks are no longer reported, and an
+        // empty catalog never degrades by itself.
         using var response = await client.GetAsync("/health/purchase-request", cancellationToken);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
         Assert.Equal("DEGRADED", body.GetProperty("status").GetString());
-        var code = body.GetProperty("code").GetString();
-        Assert.Contains("PURCHASE_REQUEST_OWNER_UNAVAILABLE:COST_CENTER", code, StringComparison.Ordinal);
-        Assert.Contains("PURCHASE_REQUEST_OWNER_UNAVAILABLE:SPEND_CATEGORY", code, StringComparison.Ordinal);
+        var code = body.GetProperty("code").GetString() ?? string.Empty;
         Assert.Contains("PURCHASE_REQUEST_WORKLOAD_UNAVAILABLE", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("PURCHASE_REQUEST_OWNER_UNAVAILABLE", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("POLICY_REFERENCE_CATALOG_UNAVAILABLE", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("REFERENCE_CATALOG_", code, StringComparison.Ordinal);
         Assert.DoesNotContain("ACME", code, StringComparison.Ordinal);
     }
 

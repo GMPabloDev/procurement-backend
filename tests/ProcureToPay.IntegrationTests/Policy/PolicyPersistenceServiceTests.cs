@@ -53,9 +53,15 @@ public sealed class PolicyPersistenceServiceTests
         await context.SaveChangesAsync(cancellationToken);
         var departmentCatalog = new DatabasePolicyReferenceCatalog(context, "DEPARTMENT");
         Assert.True(await departmentCatalog.ExistsAsync(
-            new PolicyReferenceLookup("DEPARTMENT", departmentId, 1, string.Empty), cancellationToken));
+            new PolicyReferenceLookup("DEPARTMENT", organizationId, departmentId, 1, null, null, null),
+            cancellationToken));
         Assert.False(await departmentCatalog.ExistsAsync(
-            new PolicyReferenceLookup("DEPARTMENT", departmentId, 2, string.Empty), cancellationToken));
+            new PolicyReferenceLookup("DEPARTMENT", organizationId, departmentId, 2, null, null, null),
+            cancellationToken));
+        // SPEC 07 REQ-05: a lookup of another organization never resolves.
+        Assert.False(await departmentCatalog.ExistsAsync(
+            new PolicyReferenceLookup("DEPARTMENT", Guid.NewGuid(), departmentId, 1, null, null, null),
+            cancellationToken));
 
         var policy = new PolicySetVersion(Guid.NewGuid(), organizationId, 1, [PolicyScope.Line]);
         policy.AddRule(new PolicyRule(

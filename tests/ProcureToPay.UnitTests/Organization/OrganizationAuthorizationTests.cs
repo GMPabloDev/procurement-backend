@@ -76,21 +76,34 @@ public sealed class OrganizationAuthorizationTests
     }
 
     [Fact]
-    public void Scope_set_requires_explicit_non_empty_scope_and_rejects_cost_centers()
+    public void Scope_set_requires_explicit_non_empty_scope_and_accepts_cost_centers()
     {
         Assert.Throws<DomainValidationException>(() => AuthorizationScopeSet.Create([]));
-        Assert.Throws<DomainValidationException>(() => AuthorizationScopeSet.Create([
+        // SPEC 07 REQ-04: COST_CENTER is now a first-class dimension with an exact code.
+        var costCenter = AuthorizationScopeSet.Create([
             AuthorizationScope.For(ScopeDimension.CostCenter, "CC-IT-DEV")
-        ]));
+        ]);
 
         var global = AuthorizationScopeSet.Create([AuthorizationScope.Global()]);
         var department = AuthorizationScopeSet.Create([
             AuthorizationScope.For(ScopeDimension.Department, "IT")
         ]);
+        var sameCostCenter = AuthorizationScopeSet.Create([
+            AuthorizationScope.For(ScopeDimension.CostCenter, "cc-it-dev")
+        ]);
+        var otherCostCenter = AuthorizationScopeSet.Create([
+            AuthorizationScope.For(ScopeDimension.CostCenter, "CC-IT-INFRA")
+        ]);
 
         Assert.True(global.Covers(department));
         Assert.False(department.Covers(global));
         Assert.True(global.Overlaps(department));
+        Assert.True(global.Covers(costCenter));
+        // Department and Cost Center never cover each other implicitly (DEC-04).
+        Assert.False(department.Covers(costCenter));
+        Assert.False(costCenter.Covers(department));
+        Assert.True(costCenter.Covers(sameCostCenter));
+        Assert.False(costCenter.Covers(otherCostCenter));
     }
 
     [Fact]

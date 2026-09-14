@@ -12,8 +12,8 @@ public interface IPurchaseRequestReferenceOwner
     /// <summary>Assertion this owner answers: ACTIVE_IN_ORGANIZATION, COST_CENTER_OWNED_BY_DEPARTMENT or FX_ATTESTATION_VALID.</summary>
     string AssertionType { get; }
 
-    /// <summary>Reference family it verifies, or null when it only answers ownership relations.</summary>
-    PurchaseRequestReferenceType? ReferenceType { get; }
+    /// <summary>Exact reference family this owner declares; never a wildcard.</summary>
+    PurchaseRequestReferenceType ReferenceType { get; }
 
     string OwnerId { get; }
 

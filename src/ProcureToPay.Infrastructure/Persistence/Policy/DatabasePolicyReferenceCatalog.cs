@@ -4,7 +4,11 @@ using ProcureToPay.Infrastructure.Persistence.Organization;
 
 namespace ProcureToPay.Infrastructure.Persistence.Policy;
 
-/// <summary>Concrete catalog for versioned organization-owned departments and legal entities.</summary>
+/// <summary>
+/// Concrete catalog for versioned organization-owned departments and legal entities. Every lookup
+/// is bound to the requesting organization (SPEC 07 REQ-05): a reference of another organization is
+/// never visible to Policy.
+/// </summary>
 public sealed class DatabasePolicyReferenceCatalog(
     ProcureToPayDbContext dbContext,
     string catalogId) : IPolicyReferenceCatalog
@@ -16,7 +20,14 @@ public sealed class DatabasePolicyReferenceCatalog(
         PolicyReferenceLookup reference,
         CancellationToken cancellationToken = default)
     {
-        if (!string.Equals(reference.ReferenceType, CatalogId, StringComparison.Ordinal))
+        ArgumentNullException.ThrowIfNull(reference);
+        if (!string.Equals(reference.ReferenceType, CatalogId, StringComparison.Ordinal) ||
+            reference.OrganizationId == Guid.Empty ||
+            reference.Id is not Guid entityId ||
+            reference.Version is not int entityVersion ||
+            reference.Code is not null ||
+            reference.Digest is not null ||
+            reference.ValueKind is not null)
         {
             return false;
         }
@@ -24,11 +35,13 @@ public sealed class DatabasePolicyReferenceCatalog(
         return reference.ReferenceType switch
         {
             "DEPARTMENT" => await dbContext.Departments.AnyAsync(item =>
-                item.Id == reference.Id && item.Version == reference.Version &&
-                item.Status == (int)EntityStatus.Active, cancellationToken),
+                item.Id == entityId && item.OrganizationId == reference.OrganizationId &&
+                item.Version == entityVersion && item.Status == (int)EntityStatus.Active,
+                cancellationToken),
             "LEGAL_ENTITY" => await dbContext.LegalEntities.AnyAsync(item =>
-                item.Id == reference.Id && item.Version == reference.Version &&
-                item.Status == (int)EntityStatus.Active, cancellationToken),
+                item.Id == entityId && item.OrganizationId == reference.OrganizationId &&
+                item.Version == entityVersion && item.Status == (int)EntityStatus.Active,
+                cancellationToken),
             _ => false
         };
     }
