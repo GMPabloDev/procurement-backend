@@ -1,7 +1,7 @@
 # RUN SPEC 07 — Catálogos de referencia para Purchase Requests y scope Cost Center
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** En implementación
+> **Estado del run:** Lista para integrar
 > **Spec:** specs/07-catalogos-referencia-purchase-requests.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 40e6678e70120be5c0b572646f2d57cf980f51d1
@@ -13,8 +13,8 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-14 11:12 -0500
-> **Actualizado:** 2026-09-14 18:10 -0500
-> **HEAD verificado:** Pendiente
+> **Actualizado:** 2026-09-14 18:45 -0500
+> **HEAD verificado:** b72447a9e00fcdffb666f847678379a37b962ed5
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -72,14 +72,14 @@ La ronda delta detectó que los CHECK solo exigían `PredecessorVersion = Versio
 
 | Criterio | Estado | Evidencia | Verificador |
 |---|---|---|---|
-| CA-01 | Cumplido | `ReferenceCatalogPersistenceTests` (11) cubre crear/renombrar/reasignar/desactivar/reactivar con historia y audit, unicidad case-insensitive, stale `409`, carrera con una sola sucesora, reactivación solo con Department activo, rechazo por SQL directo de saltos de versión (incluido predecessor inexistente), punteros a versiones inexistentes, UPDATE/DELETE histórico y digest por versión; `ReferenceCatalogCanonicalizationTests` reproduce el SHA-256 `4ed4dc13…` y falla al alterar nombre, organización o versión. | Pendiente de revisión |
-| CA-02 | Cumplido | `ReferenceCatalogE2ETests.Admin_mutations_and_scoped_reads_follow_the_contract` verifica lecturas mínimas por cualquier usuario activo, `403` para no-ADMIN, `400/404/409` de validación/unicidad/versión, historia global vs `COST_CENTER` (ajena `403`) vs `DEPARTMENT` (`403`) y Spend Category solo `ORGANIZATION`. | Pendiente de revisión |
-| CA-03 | Cumplido | `OrganizationAuthorizationTests` fija cobertura global/exacta y ausencia de herencia Department↔Cost Center; el E2E acepta un assignment `COST_CENTER` real y rechaza código inexistente (`400`); la integración bloquea la desactivación con scope vigente y la libera tras revocar. | Pendiente de revisión |
-| CA-04 | Cumplido | `ReferenceCatalogPersistenceTests.Policy_and_approval_resolution_is_organization_bound_and_fail_closed` prueba catálogos Policy válidos, versión stale, otra organización, digest distinto, formas de lookup inválidas (campos no nulos donde el contrato exige `null`) y resolución/`422` de `decision-scope/v1`; `ApprovalContractTests` cubre round-trip/digest con `COST_CENTER`; el E2E de health prueba registros 0 de ambos catálogos. | Pendiente de revisión |
-| CA-05 | Cumplido | `PurchaseRequestReferenceOwnerRegistryTests` exige seis slots exactos, rechaza ausencia/ambigüedad y registros sin identidad/contrato; `ReferenceCatalogOwnerTests` verifica `ACTIVE/INACTIVE/NOT_FOUND` por antigüedad, organización, digest y relación exacta Cost Center→Department (incluida versión Department stale). | Pendiente de revisión |
-| CA-06 | Cumplido | `ReferenceCatalogSubmitIntegrationTests` (5) ejecuta el recorrido real sin owners ni catálogos permisivos: attestation con owners de catálogo, Policy con catálogos reales, caso con `"dimension":"COST_CENTER"` y asignación solo al candidato cubierto; replay recupera caso y artefactos; referencia stale, slot ausente, respuesta incoherente o fallo de catálogo Policy no crean manifest/caso (y el fallo Policy sí conserva manifest con attempt recuperable); dos presentaciones concurrentes producen un solo efecto. | Pendiente de revisión |
-| CA-07 | Cumplido | `ReferenceCatalogE2ETests.Health_distinguishes_missing_ambiguous_and_corrupted_catalogs` cubre owner 0/2, contrato de owner incorrecto, catálogos 0, corrupción de puntero/digest y storage indisponible con la gramática exacta y sin datos de negocio; `PurchaseRequestE2ETests` confirma health estable con catálogo vacío y registros reales. | Pendiente de revisión |
-| CA-08 | Cumplido | Migración aplicada sobre la línea base en todos los arneses de integración/E2E (con CHECK/triggers append-only y `Down` no destructivo); scopes y digests históricos se conservan; suites completas Unit **173/173**, Integración **82/82**, API/E2E **24/24**, build 0 errores, `git diff --check` limpio y runbook `docs/reference-catalogs-operations.md` ejercitado por las pruebas de health y desactivación. | Pendiente de revisión |
+| CA-01 | Cumplido | `ReferenceCatalogPersistenceTests` (11) cubre crear/renombrar/reasignar/desactivar/reactivar con historia y audit, unicidad case-insensitive, stale `409`, carrera con una sola sucesora, reactivación solo con Department activo, rechazo por SQL directo de saltos de versión (incluido predecessor inexistente), punteros a versiones inexistentes, UPDATE/DELETE histórico y digest por versión; `ReferenceCatalogCanonicalizationTests` reproduce el SHA-256 `4ed4dc13…` y falla al alterar nombre, organización o versión. | sdd-implementation-reviewer (ronda 3 delta) |
+| CA-02 | Cumplido | `ReferenceCatalogE2ETests.Admin_mutations_and_scoped_reads_follow_the_contract` verifica lecturas mínimas por cualquier usuario activo, `403` para no-ADMIN, `400/404/409` de validación/unicidad/versión, historia global vs `COST_CENTER` (ajena `403`) vs `DEPARTMENT` (`403`) y Spend Category solo `ORGANIZATION`. | sdd-implementation-reviewer (ronda 3 delta) |
+| CA-03 | Cumplido | `OrganizationAuthorizationTests` fija cobertura global/exacta y ausencia de herencia Department↔Cost Center; el E2E acepta un assignment `COST_CENTER` real y rechaza código inexistente (`400`); la integración bloquea la desactivación con scope vigente y la libera tras revocar. | sdd-implementation-reviewer (ronda 3 delta) |
+| CA-04 | Cumplido | `ReferenceCatalogPersistenceTests.Policy_and_approval_resolution_is_organization_bound_and_fail_closed` prueba catálogos Policy válidos, versión stale, otra organización, digest distinto, formas de lookup inválidas (campos no nulos donde el contrato exige `null`) y resolución/`422` de `decision-scope/v1`; `ApprovalContractTests` cubre round-trip/digest con `COST_CENTER`; el E2E de health prueba registros 0 de ambos catálogos. | sdd-implementation-reviewer (ronda 3 delta) |
+| CA-05 | Cumplido | `PurchaseRequestReferenceOwnerRegistryTests` exige seis slots exactos, rechaza ausencia/ambigüedad y registros sin identidad/contrato; `ReferenceCatalogOwnerTests` verifica `ACTIVE/INACTIVE/NOT_FOUND` por antigüedad, organización, digest y relación exacta Cost Center→Department (incluida versión Department stale). | sdd-implementation-reviewer (ronda 3 delta) |
+| CA-06 | Cumplido | `ReferenceCatalogSubmitIntegrationTests` (5) ejecuta el recorrido real sin owners ni catálogos permisivos: attestation con owners de catálogo, Policy con catálogos reales, caso con `"dimension":"COST_CENTER"` y asignación solo al candidato cubierto; replay recupera caso y artefactos; referencia stale, slot ausente, respuesta incoherente o fallo de catálogo Policy no crean manifest/caso (y el fallo Policy sí conserva manifest con attempt recuperable); dos presentaciones concurrentes producen un solo efecto. | sdd-implementation-reviewer (ronda 3 delta) |
+| CA-07 | Cumplido | `ReferenceCatalogE2ETests.Health_distinguishes_missing_ambiguous_and_corrupted_catalogs` cubre owner 0/2, contrato de owner incorrecto, catálogos 0, corrupción de puntero/digest y storage indisponible con la gramática exacta y sin datos de negocio; `PurchaseRequestE2ETests` confirma health estable con catálogo vacío y registros reales. | sdd-implementation-reviewer (ronda 3 delta) |
+| CA-08 | Cumplido | Migración aplicada sobre la línea base en todos los arneses de integración/E2E (con CHECK/triggers append-only y `Down` no destructivo); scopes y digests históricos se conservan; suites completas Unit **173/173**, Integración **82/82**, API/E2E **24/24**, build 0 errores, `git diff --check` limpio y runbook `docs/reference-catalogs-operations.md` ejercitado por las pruebas de health y desactivación. | sdd-implementation-reviewer (ronda 3 delta) |
 
 ## Desviaciones y bloqueos
 
@@ -89,14 +89,15 @@ La ronda delta detectó que los CHECK solo exigían `PredecessorVersion = Versio
 
 ### Desviaciones registradas
 
+- **Ronda 3 autorizada.** El presupuesto automático es de dos llamadas; la ronda 3 delta se ejecutó solo para verificar el cierre de R8 con autorización explícita del usuario (ronda 3 autorizada).
 - **Runner `dotnet test` con 0 pruebas.** Desviación de entorno ya documentada en SPEC 06: el wrapper `Microsoft.Testing.Platform` reporta 0 pruebas aunque compile. Toda la evidencia usa las asambleas compiladas directamente (`tests/<proyecto>/bin/Debug/net10.0/<proyecto>`), que son las mismas que produce el runner.
 - **Modo HTTP de catálogos Policy.** La certificación cubre el modo in-process (sin `Policy:ReferenceCatalog:BaseUrl`), donde `COST_CENTER` y `SPEND_CATEGORY` quedan registrados exact-one. En el modo HTTP, el servicio externo debe servir ambas familias con la misma forma; queda documentado en el runbook y no se certifica aquí.
 
 ## Verificación independiente
 
-> **Resultado:** Ronda 1 full BLOCK; ronda 2 delta BLOCK solo por R8 (corregido después); verificación delta de R8 pendiente de autorización
-> **Rondas:** 2/2 (presupuesto automático agotado)
-> **Triaje:** R4/R5 resueltos en el diseño; R1/R2/R3/R6/R7/R9/R10 cerrados y confirmados por la ronda delta; R8 corregido tras la ronda delta con triggers de predecessor/avance exacto y regresión nueva, pendiente de una verificación delta acotada
+> **Resultado:** Sin bloqueos
+> **Rondas:** 3/3
+> **Triaje:** PASS. R4/R5 resueltos en el diseño; R1/R2/R3/R6/R7/R9/R10 cerrados y confirmados en la ronda 2 delta; R8 cerrado en la ronda 3 delta acotada sobre `b72447a`, autorizada explícitamente por el usuario, sin hallazgos nuevos
 > **Modelo efectivo:** sdd-implementation-reviewer · openai-codex/gpt-5.6-sol · effort high (metadatos de la herramienta)
-> **Método:** Ronda 1 full sobre `50b0900`: Git/contrato/migración/evidencia; R1 reactivación con Department inactivo, R2 forma de lookup Policy, R3 identidad/contrato en registry/health, R6 status fuera de vocabulario, R7 falta de negativos/carrera en submit real, R8 protección append-only en SQL, R9 `Down` destructivo, R10 carrera desactivación↔scope. Ronda 2 delta sobre `b6a281b`: R1–R7, R9 y R10 cerrados; R8 reabierto porque el CHECK no validaba la existencia del predecessor ni el avance exacto del puntero. Corrección posterior en el árbol actual con suites Unit **173/173**, Integración **82/82**, API/E2E **24/24**.
+> **Método:** Ronda 1 full sobre `50b0900` (Git, contrato, migración, evidencia; R1–R10). Ronda 2 delta sobre `b6a281b`: R1–R7, R9 y R10 cerrados; R8 reabierto porque el CHECK no validaba predecessor existente ni avance exacto del puntero. Ronda 3 delta acotada sobre `b72447a`: R8 resuelto (triggers de sucesor exacto/predecessor existente, puntero a fila existente, append antes del avance en la misma transacción y regresión SQL de salto/orfandad/puntero colgante); **PASS** sin hallazgos nuevos. Árbol revisado `b72447a9e00fcdffb666f847678379a37b962ed5`; suites Unit **173/173**, Integración **82/82**, API/E2E **24/24**, build 0 errores.
 > **Fecha:** 2026-09-14
