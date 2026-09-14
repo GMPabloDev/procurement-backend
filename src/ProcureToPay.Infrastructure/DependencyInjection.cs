@@ -139,6 +139,21 @@ public static class DependencyInjection
             new ApprovalResultConsumerRegistry(provider.GetServices<IApprovalResultConsumer>()));
         services.AddScoped<ApprovalOutboxDispatcher>();
 
+        // SPEC 06: immutable Purchase Requests, owner attestation and the real in-process fact
+        // provider evaluated by the SPEC 02 engine (REQ-05, DEC-03).
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestPersistenceService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestAttestationService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestPolicyFactProvider>();
+        services.AddScoped<IPolicyFactProvider>(provider =>
+            provider.GetRequiredService<
+                ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestPolicyFactProvider>());
+        services.AddScoped<IPurchaseRequestReferenceOwner>(
+            provider => new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.OrganizationReferenceOwner(
+                provider.GetRequiredService<ProcureToPayDbContext>()));
+        services.AddScoped<IPurchaseRequestReferenceOwnerRegistry>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestReferenceOwnerRegistry(
+                provider.GetServices<IPurchaseRequestReferenceOwner>()));
+
         services.AddDefaultAWSOptions(configuration.GetAWSOptions());
         services.AddAWSService<IAmazonS3>();
         services.AddSingleton(S3StorageOptions.FromConfiguration(configuration));
