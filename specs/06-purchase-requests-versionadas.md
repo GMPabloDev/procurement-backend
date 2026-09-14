@@ -1,13 +1,13 @@
 # SPEC 06 — Purchase Requests versionadas e integración con Policy y Approval
 
 > **Formato:** sdd/v3
-> **Estado:** Aprobada
-> **Ejecución:** Lista para integrar
-> **Vigencia:** Pendiente
+> **Estado:** Implementada
+> **Ejecución:** Integrada
+> **Vigencia:** Vigente
 > **Revisión:** 1
 > **Digest contractual:** f8c570320cc1093698b8b2998c83eee168335c5345236a2fe457755bf4a41dd8
 > **Fecha:** 2026-09-13
-> **Actualizada:** 2026-09-13
+> **Actualizada:** 2026-09-14
 > **Aprobada el:** 2026-09-13
 > **Aprobada por:** osiosad mediante specctl approve
 > **Objetivo:** Crear y revisar Purchase Requests multilínea mediante versiones y líneas inmutables, atestiguar su completitud y presentarlas por referencia al motor de políticas y al Approval Workflow sin confiar en snapshots del caller.

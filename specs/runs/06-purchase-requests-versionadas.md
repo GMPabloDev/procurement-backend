@@ -1,7 +1,7 @@
 # RUN SPEC 06 — Purchase Requests versionadas e integración con Policy y Approval
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** Lista para integrar
+> **Estado del run:** Integrado
 > **Spec:** specs/06-purchase-requests-versionadas.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 0027efbd3478fd1321689f787489b00f5c56e9ca
@@ -13,9 +13,9 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-14 05:52 -0500
-> **Actualizado:** 2026-09-14 11:35 -0500
+> **Actualizado:** 2026-09-14 12:40 -0500
 > **HEAD verificado:** 6e94b4d8fdc2423eb60e5f1b7f173965ad036737
-> **Commit de integración:** Pendiente
+> **Commit de integración:** afbbb1dc2db423ec53f318ac07c8dd20899c22c8
 
 ## Línea base
 
@@ -107,3 +107,10 @@ Commit `f289865` en rama `spec-06-purchase-requests-versionadas`. Cambios: miemb
 > **Modelo efectivo:** openai-codex/gpt-5.6-sol · effort high (metadatos de la herramienta)
 > **Método:** ronda 1 a `646ddbd` y ronda 2 delta a `b20e630` (R8/R9/R10 resueltos; R6/R7 abiertos por presencia de miembros y evidencia de carrera), correcciones en `f289865`. Revisión independiente de implementación a `646ddbd` (cobertura full de las cinco áreas, evidencia del candidato: build 0 errores, Unit 167/167, Integración 61/61, API/E2E 21/21). Hallazgos: R6 payloads no exactos, R7 cancelación sobre caso abierto, R8 límite 5 MiB evadible sin `Content-Length`, R9 digest de materialidad no publicado, R10 lectura auditora sin attestations. Correcciones con regresión en `953c811` (Unit 167/167, Integración 62/62, API/E2E 21/21). Ronda 2 delta a `b20e630`: R8/R9/R10 resueltos, R6/R7 abiertos por presencia de miembros y evidencia de carrera; correcciones en `f289865` con Unit 167/167, Integración 63/63 y API/E2E 21/21. Ronda 3 delta autorizada a `6e94b4d`: **PASS**, R6 y R7 resueltos sin hallazgos nuevos.
 > **Fecha:** 2026-09-14
+
+## Cierre
+
+- **Integración:** merge `afbbb1dc2db423ec53f318ac07c8dd20899c22c8` de `spec-06-purchase-requests-versionadas` (tip `ed8e79f`) sobre `main` (`0027efb`), estrategia `--no-ff`, 2026-09-14.
+- **Equivalencia:** el candidato verificado `6e94b4d` (código `f289865`) es ancestro del commit de integración; el diff de `src/`, `tests/` y `docs/` entre la rama integrada y `main` está vacío, por lo que el código integrado es exactamente el revisado.
+- **Validaciones:** `dotnet build ProcureToPay.sln` 0 errores; Unit **167/167**, Integración **63/63**, API/E2E **21/21** sobre el árbol certificado; `specctl doctor` sin errores; `specctl git-check 06` coherente (solo el aviso esperado de metadatos sin commitear).
+- **Vigencia:** SPEC 02, 03, 04 y 05 quedan `Sustituida parcialmente por SPEC 06`; SPEC 06 pasa a `Implementada` / `Integrada` / `Vigente`.
