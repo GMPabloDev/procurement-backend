@@ -163,6 +163,9 @@ public sealed class ReferenceCatalogPersistenceService(ProcureToPayDbContext dbC
             OccurredAt = occurredAt,
             Reason = cleanReason
         });
+        // The append-only trigger requires the successor row to exist before the pointer can
+        // advance to it; both statements stay inside the same transaction.
+        await SaveAsync(cancellationToken);
         root.CurrentVersion = nextVersion;
         AddAudit(
             actorUserId,
@@ -299,6 +302,7 @@ public sealed class ReferenceCatalogPersistenceService(ProcureToPayDbContext dbC
             OccurredAt = occurredAt,
             Reason = cleanReason
         });
+        await SaveAsync(cancellationToken);
         root.CurrentVersion = nextVersion;
         AddAudit(
             actorUserId,

@@ -310,9 +310,15 @@ public sealed class ReferenceCatalogE2ETests
             {
                 // The pointer can move forward but the history cannot be rewritten (append-only
                 // triggers), so corruption is injected as a forward version with a wrong digest.
-                await corruption.CostCenters
-                    .Where(record => record.Id == environment.CostCenterId)
-                    .ExecuteUpdateAsync(setters => setters.SetProperty(record => record.CurrentVersion, 99), cancellationToken);
+                // The Cost Center pointer is corrupted with its protection explicitly disabled,
+                // simulating an out-of-band schema-level incident that health must still detect.
+                await corruption.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE [ReferenceCatalog].[CostCenters] DISABLE TRIGGER " +
+                    "[TR_CostCenters_IdentityStable];" +
+                    $"UPDATE [ReferenceCatalog].[CostCenters] SET [CurrentVersion] = 99 WHERE [Id] = '{environment.CostCenterId}';" +
+                    "ALTER TABLE [ReferenceCatalog].[CostCenters] ENABLE TRIGGER " +
+                    "[TR_CostCenters_IdentityStable];",
+                    cancellationToken);
                 await corruption.Database.ExecuteSqlRawAsync(
                     "INSERT INTO [ReferenceCatalog].[SpendCategoryVersions] " +
                     "([SpendCategoryId],[Version],[OrganizationId],[Code],[Name],[Digest],[Status]," +

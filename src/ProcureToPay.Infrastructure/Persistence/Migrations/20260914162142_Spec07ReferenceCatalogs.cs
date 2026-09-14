@@ -182,23 +182,50 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                 "BEGIN SET NOCOUNT ON; " +
                 "IF EXISTS (SELECT 1 FROM deleted) " +
                 "THROW 51000, 'Spend Category versions are append-only.', 1; END");
-            // The root keeps its identity and the current pointer never moves backwards.
+            // A version must be exactly the successor of the current one and its immediate
+            // predecessor must exist, so history cannot skip a version or start at an orphan.
+            migrationBuilder.Sql(
+                "CREATE TRIGGER [ReferenceCatalog].[TR_CostCenterVersions_PredecessorExists] " +
+                "ON [ReferenceCatalog].[CostCenterVersions] AFTER INSERT AS " +
+                "BEGIN SET NOCOUNT ON; " +
+                "IF EXISTS (SELECT 1 FROM inserted i WHERE " +
+                "(i.Version > 1 AND i.Version <> (SELECT r.[CurrentVersion] + 1 FROM [ReferenceCatalog].[CostCenters] r " +
+                "WHERE r.[Id] = i.[CostCenterId])) OR " +
+                "(i.Version > 1 AND NOT EXISTS (SELECT 1 FROM [ReferenceCatalog].[CostCenterVersions] v " +
+                "WHERE v.[CostCenterId] = i.[CostCenterId] AND v.[Version] = i.[PredecessorVersion]))) " +
+                "THROW 51002, 'A Cost Center version must succeed the current one and keep its predecessor.', 1; END");
+            migrationBuilder.Sql(
+                "CREATE TRIGGER [ReferenceCatalog].[TR_SpendCategoryVersions_PredecessorExists] " +
+                "ON [ReferenceCatalog].[SpendCategoryVersions] AFTER INSERT AS " +
+                "BEGIN SET NOCOUNT ON; " +
+                "IF EXISTS (SELECT 1 FROM inserted i WHERE " +
+                "(i.Version > 1 AND i.Version <> (SELECT r.[CurrentVersion] + 1 FROM [ReferenceCatalog].[SpendCategories] r " +
+                "WHERE r.[Id] = i.[SpendCategoryId])) OR " +
+                "(i.Version > 1 AND NOT EXISTS (SELECT 1 FROM [ReferenceCatalog].[SpendCategoryVersions] v " +
+                "WHERE v.[SpendCategoryId] = i.[SpendCategoryId] AND v.[Version] = i.[PredecessorVersion]))) " +
+                "THROW 51002, 'A Spend Category version must succeed the current one and keep its predecessor.', 1; END");
+            // The root keeps its identity, advances exactly one version and only points at an
+            // existing version row.
             migrationBuilder.Sql(
                 "CREATE TRIGGER [ReferenceCatalog].[TR_CostCenters_IdentityStable] " +
                 "ON [ReferenceCatalog].[CostCenters] AFTER UPDATE AS " +
                 "BEGIN SET NOCOUNT ON; " +
                 "IF EXISTS (SELECT 1 FROM inserted i JOIN deleted d ON i.Id = d.Id WHERE " +
                 "i.OrganizationId <> d.OrganizationId OR i.Code <> d.Code OR " +
-                "i.CurrentVersion < d.CurrentVersion) " +
-                "THROW 51001, 'Cost Center identity is stable and the current version never moves backwards.', 1; END");
+                "i.CurrentVersion <> d.CurrentVersion + 1 OR " +
+                "NOT EXISTS (SELECT 1 FROM [ReferenceCatalog].[CostCenterVersions] v " +
+                "WHERE v.[CostCenterId] = i.[Id] AND v.[Version] = i.[CurrentVersion])) " +
+                "THROW 51001, 'Cost Center identity is stable and the current version advances to an existing successor.', 1; END");
             migrationBuilder.Sql(
                 "CREATE TRIGGER [ReferenceCatalog].[TR_SpendCategories_IdentityStable] " +
                 "ON [ReferenceCatalog].[SpendCategories] AFTER UPDATE AS " +
                 "BEGIN SET NOCOUNT ON; " +
                 "IF EXISTS (SELECT 1 FROM inserted i JOIN deleted d ON i.Id = d.Id WHERE " +
                 "i.OrganizationId <> d.OrganizationId OR i.Code <> d.Code OR " +
-                "i.CurrentVersion < d.CurrentVersion) " +
-                "THROW 51001, 'Spend Category identity is stable and the current version never moves backwards.', 1; END");
+                "i.CurrentVersion <> d.CurrentVersion + 1 OR " +
+                "NOT EXISTS (SELECT 1 FROM [ReferenceCatalog].[SpendCategoryVersions] v " +
+                "WHERE v.[SpendCategoryId] = i.[Id] AND v.[Version] = i.[CurrentVersion])) " +
+                "THROW 51001, 'Spend Category identity is stable and the current version advances to an existing successor.', 1; END");
         }
 
         /// <inheritdoc />

@@ -250,6 +250,28 @@ public sealed class ReferenceCatalogPersistenceTests
             "[ActorUserId],[OccurredAt],[Reason]) VALUES " +
             $"('{costCenter.Id}',3,'{OrganizationId}','Jump','{DepartmentId}',1,1,'{ActorId}',SYSDATETIMEOFFSET(),'Jump')",
             cancellationToken));
+        // A version that claims a predecessor which does not exist is also a jump, even when the
+        // CHECK (Version-1) is satisfied.
+        await Assert.ThrowsAnyAsync<DbException>(() => context.Database.ExecuteSqlRawAsync(
+            "INSERT INTO [ReferenceCatalog].[CostCenterVersions] " +
+            "([CostCenterId],[Version],[OrganizationId],[Name],[DepartmentId],[Status],[PredecessorVersion]," +
+            "[ActorUserId],[OccurredAt],[Reason]) VALUES " +
+            $"('{costCenter.Id}',3,'{OrganizationId}','Orphan','{DepartmentId}',1,2,'{ActorId}',SYSDATETIMEOFFSET(),'Orphan')",
+            cancellationToken));
+        // The current pointer cannot skip forward to a version that was never appended.
+        await Assert.ThrowsAnyAsync<DbException>(() => context.Database.ExecuteSqlRawAsync(
+            $"UPDATE [ReferenceCatalog].[CostCenters] SET [CurrentVersion] = 3 WHERE [Id] = '{costCenter.Id}'",
+            cancellationToken));
+        await Assert.ThrowsAnyAsync<DbException>(() => context.Database.ExecuteSqlRawAsync(
+            $"UPDATE [ReferenceCatalog].[CostCenters] SET [CurrentVersion] = 2 WHERE [Id] = '{costCenter.Id}'",
+            cancellationToken));
+        await Assert.ThrowsAnyAsync<DbException>(() => context.Database.ExecuteSqlRawAsync(
+            "INSERT INTO [ReferenceCatalog].[SpendCategoryVersions] " +
+            "([SpendCategoryId],[Version],[OrganizationId],[Code],[Name],[Digest],[Status]," +
+            "[PredecessorVersion],[ActorUserId],[OccurredAt],[Reason]) " +
+            "SELECT [Id],3,[OrganizationId],'HARDWARE','Hardware','" + new string('b', 64) + "',1,2,'" + ActorId +
+            "',SYSDATETIMEOFFSET(),'Orphan' FROM [ReferenceCatalog].[SpendCategories] WHERE [Code] = '" + category.Code + "'",
+            cancellationToken));
         await Assert.ThrowsAnyAsync<DbException>(() => context.Database.ExecuteSqlRawAsync(
             $"UPDATE [ReferenceCatalog].[CostCenterVersions] SET [Name] = 'Rewritten' " +
             $"WHERE [CostCenterId] = '{costCenter.Id}' AND [Version] = 1",

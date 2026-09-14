@@ -13,7 +13,7 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-14 11:12 -0500
-> **Actualizado:** 2026-09-14 16:41 -0500
+> **Actualizado:** 2026-09-14 18:10 -0500
 > **HEAD verificado:** Pendiente
 > **Commit de integración:** Pendiente
 
@@ -64,11 +64,15 @@ Health distingue slots ausentes/ambiguos (`PURCHASE_REQUEST_OWNER_UNAVAILABLE:<A
 
 Triaje de R1–R10: reactivación de Cost Center exige Department current activo; lookups Policy validan exactamente la nulabilidad por tipo; registry y health verifican identidad y contrato por slot (no solo cardinalidad); attestation rechaza status fuera del vocabulario; la desactivación serializa con la creación de scopes vía lectura bloqueante `UPDLOCK/HOLDLOCK` en aislamiento serializable; la migración añade CHECK de monotonicidad y triggers append-only/identidad estable; `Down` deja de ser destructivo; submit real añade negativos de owner/catálogo incoherente, fallo Policy recuperable tras atestiguar y carrera de dos instancias. Suites: Unit **173/173**, Integración **82/82**, API/E2E **24/24**, build 0 errores.
 
+### CP-07 — R8 cerrado: historia sin saltos ni punteros huérfanos
+
+La ronda delta detectó que los CHECK solo exigían `PredecessorVersion = Version - 1` y los triggers de raíz solo impedían retrocesos: con current=1 era posible insertar versión 3/predecessor=2 y avanzar el puntero. Se añadieron triggers de inserción que exigen que la versión sea exactamente `current + 1` y que el predecessor exista en la misma raíz, y el trigger de raíz exige ahora `CurrentVersion = anterior + 1` y que la versión destino exista. La actualización de catálogos appendea primero la versión y después avanza el puntero dentro de la misma transacción serializable, de modo que el invariante no depende del orden de sentencias de EF. La regresión cubre salto con predecessor inexistente, puntero a versión inexistente y salto de Spend Category. Suites: Unit **173/173**, Integración **82/82**, API/E2E **24/24**, build 0 errores.
+
 ## Evidencia de aceptación
 
 | Criterio | Estado | Evidencia | Verificador |
 |---|---|---|---|
-| CA-01 | Cumplido | `ReferenceCatalogPersistenceTests` (11) cubre crear/renombrar/reasignar/desactivar/reactivar con historia y audit, unicidad case-insensitive, stale `409`, carrera con una sola sucesora, reactivación solo con Department activo, rechazo de saltos/predecessor incorrecto/UPDATE/DELETE por SQL directo y digest por versión; `ReferenceCatalogCanonicalizationTests` reproduce el SHA-256 `4ed4dc13…` y falla al alterar nombre, organización o versión. | Pendiente de revisión |
+| CA-01 | Cumplido | `ReferenceCatalogPersistenceTests` (11) cubre crear/renombrar/reasignar/desactivar/reactivar con historia y audit, unicidad case-insensitive, stale `409`, carrera con una sola sucesora, reactivación solo con Department activo, rechazo por SQL directo de saltos de versión (incluido predecessor inexistente), punteros a versiones inexistentes, UPDATE/DELETE histórico y digest por versión; `ReferenceCatalogCanonicalizationTests` reproduce el SHA-256 `4ed4dc13…` y falla al alterar nombre, organización o versión. | Pendiente de revisión |
 | CA-02 | Cumplido | `ReferenceCatalogE2ETests.Admin_mutations_and_scoped_reads_follow_the_contract` verifica lecturas mínimas por cualquier usuario activo, `403` para no-ADMIN, `400/404/409` de validación/unicidad/versión, historia global vs `COST_CENTER` (ajena `403`) vs `DEPARTMENT` (`403`) y Spend Category solo `ORGANIZATION`. | Pendiente de revisión |
 | CA-03 | Cumplido | `OrganizationAuthorizationTests` fija cobertura global/exacta y ausencia de herencia Department↔Cost Center; el E2E acepta un assignment `COST_CENTER` real y rechaza código inexistente (`400`); la integración bloquea la desactivación con scope vigente y la libera tras revocar. | Pendiente de revisión |
 | CA-04 | Cumplido | `ReferenceCatalogPersistenceTests.Policy_and_approval_resolution_is_organization_bound_and_fail_closed` prueba catálogos Policy válidos, versión stale, otra organización, digest distinto, formas de lookup inválidas (campos no nulos donde el contrato exige `null`) y resolución/`422` de `decision-scope/v1`; `ApprovalContractTests` cubre round-trip/digest con `COST_CENTER`; el E2E de health prueba registros 0 de ambos catálogos. | Pendiente de revisión |
@@ -90,9 +94,9 @@ Triaje de R1–R10: reactivación de Cost Center exige Department current activo
 
 ## Verificación independiente
 
-> **Resultado:** BLOCK (ronda 1) → delta pendiente
-> **Rondas:** 1/2
-> **Triaje:** R4/R5 resueltos en el diseño; R1/R2/R3/R6/R7/R8/R9/R10 corregidos con regresión y pendientes de verificación delta
+> **Resultado:** Ronda 1 full BLOCK; ronda 2 delta BLOCK solo por R8 (corregido después); verificación delta de R8 pendiente de autorización
+> **Rondas:** 2/2 (presupuesto automático agotado)
+> **Triaje:** R4/R5 resueltos en el diseño; R1/R2/R3/R6/R7/R9/R10 cerrados y confirmados por la ronda delta; R8 corregido tras la ronda delta con triggers de predecessor/avance exacto y regresión nueva, pendiente de una verificación delta acotada
 > **Modelo efectivo:** sdd-implementation-reviewer · openai-codex/gpt-5.6-sol · effort high (metadatos de la herramienta)
-> **Método:** Cobertura full de las cinco áreas sobre `50b0900` (base `40e6678e`): verificación de Git, contrato, migración y evidencia ejecutada. Hallazgos: R1 reactivación con Department inactivo, R2 forma de lookup Policy, R3 identidad/contrato en registry/health, R6 status fuera de vocabulario, R7 falta de negativos/carrera en submit real, R8 protección append-only en SQL, R9 `Down` destructivo, R10 carrera desactivación↔scope. Correcciones con regresión en el árbol actual; suites Unit **173/173**, Integración **82/82**, API/E2E **24/24**.
+> **Método:** Ronda 1 full sobre `50b0900`: Git/contrato/migración/evidencia; R1 reactivación con Department inactivo, R2 forma de lookup Policy, R3 identidad/contrato en registry/health, R6 status fuera de vocabulario, R7 falta de negativos/carrera en submit real, R8 protección append-only en SQL, R9 `Down` destructivo, R10 carrera desactivación↔scope. Ronda 2 delta sobre `b6a281b`: R1–R7, R9 y R10 cerrados; R8 reabierto porque el CHECK no validaba la existencia del predecessor ni el avance exacto del puntero. Corrección posterior en el árbol actual con suites Unit **173/173**, Integración **82/82**, API/E2E **24/24**.
 > **Fecha:** 2026-09-14
