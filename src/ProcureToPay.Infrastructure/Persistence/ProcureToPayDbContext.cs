@@ -1026,7 +1026,10 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     private static void ConfigureCostCenter(ModelBuilder modelBuilder)
     {
         var entity = modelBuilder.Entity<CostCenterRecord>();
-        entity.ToTable("CostCenters", "ReferenceCatalog");
+        // SPEC 07 NFR-01: the table carries an identity/current-pointer trigger, and SQL Server
+        // forbids OUTPUT without INTO on a table with enabled triggers. EF re-reads the rowversion
+        // with a follow-up SELECT instead of using OUTPUT.
+        entity.ToTable("CostCenters", "ReferenceCatalog", table => table.UseSqlOutputClause(false));
         entity.HasKey(record => record.Id);
         entity.Property(record => record.Code).HasMaxLength(64).IsRequired();
         entity.Property(record => record.RowVersion).IsRowVersion();
@@ -1059,7 +1062,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     private static void ConfigureSpendCategory(ModelBuilder modelBuilder)
     {
         var entity = modelBuilder.Entity<SpendCategoryRecord>();
-        entity.ToTable("SpendCategories", "ReferenceCatalog");
+        entity.ToTable("SpendCategories", "ReferenceCatalog", table => table.UseSqlOutputClause(false));
         entity.HasKey(record => record.Id);
         entity.Property(record => record.Code).HasMaxLength(64).IsRequired();
         entity.Property(record => record.RowVersion).IsRowVersion();

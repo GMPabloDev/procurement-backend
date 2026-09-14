@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using System.Data.Common;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.ReferenceCatalogs;
@@ -170,6 +171,160 @@ public sealed class ReferenceCatalogPersistenceTests
         var deactivated = await harness.Service.UpdateCostCenterAsync(
             OrganizationId, ActorId, created.Id, 1, null, null, EntityStatus.Inactive, "Retire", "corr-3", cancellationToken);
         Assert.Equal(2, deactivated.Version);
+    }
+
+    [Fact]
+    public async Task Reactivation_requires_an_active_owning_department()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await ReferenceCatalogHarness.StartAsync(
+            OrganizationId, OtherOrganizationId, DepartmentId, OtherDepartmentId, cancellationToken);
+        var created = await harness.Service.CreateCostCenterAsync(
+            OrganizationId, ActorId, "CC-IT-DEV", "Development", DepartmentId, "Initial", "corr-1", cancellationToken);
+        await harness.Service.UpdateCostCenterAsync(
+            OrganizationId, ActorId, created.Id, 1, null, null, EntityStatus.Inactive, "Retire", "corr-2", cancellationToken);
+        await using (var retiring = harness.CreateContext())
+        {
+            retiring.Departments.Single(record => record.Id == DepartmentId).Status = (int)EntityStatus.Inactive;
+            await retiring.SaveChangesAsync(cancellationToken);
+        }
+
+        // Reactivating without an active owning department is an invalid relation, not a success.
+        await Assert.ThrowsAsync<DomainValidationException>(() => harness.Service.UpdateCostCenterAsync(
+            OrganizationId, ActorId, created.Id, 2, null, null, EntityStatus.Active, "Reactivate", "corr-3", cancellationToken));
+        Assert.Empty(await harness.Service.ListActiveCostCentersAsync(OrganizationId, cancellationToken));
+    }
+
+    [Fact]
+    public async Task Invalid_lookup_shapes_never_resolve()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await ReferenceCatalogHarness.StartAsync(
+            OrganizationId, OtherOrganizationId, DepartmentId, OtherDepartmentId, cancellationToken);
+        var costCenter = await harness.Service.CreateCostCenterAsync(
+            OrganizationId, ActorId, "CC-IT-DEV", "Development", DepartmentId, "Initial", "corr-1", cancellationToken);
+        var category = await harness.Service.CreateSpendCategoryAsync(
+            OrganizationId, ActorId, "HARDWARE", "Hardware", "Initial", "corr-2", cancellationToken);
+
+        await using var context = harness.CreateContext();
+        var costCenterCatalog = new CostCenterPolicyReferenceCatalog(context);
+        // COST_CENTER only accepts id/version; code, digest and value_kind must be null.
+        Assert.False(await costCenterCatalog.ExistsAsync(
+            new PolicyReferenceLookup("COST_CENTER", OrganizationId, costCenter.Id, 1, null, "CC-IT-DEV", null),
+            cancellationToken));
+        Assert.False(await costCenterCatalog.ExistsAsync(
+            new PolicyReferenceLookup("COST_CENTER", OrganizationId, costCenter.Id, 1, category.Digest, null, null),
+            cancellationToken));
+        Assert.False(await costCenterCatalog.ExistsAsync(
+            new PolicyReferenceLookup("COST_CENTER", OrganizationId, costCenter.Id, 1, null, null, "BOOLEAN"),
+            cancellationToken));
+
+        var categoryCatalog = new SpendCategoryPolicyReferenceCatalog(context);
+        // SPEND_CATEGORY only accepts code/version/digest; id and value_kind must be null.
+        Assert.False(await categoryCatalog.ExistsAsync(
+            new PolicyReferenceLookup(
+                "SPEND_CATEGORY", OrganizationId, costCenter.Id, 1, category.Digest, "HARDWARE", null),
+            cancellationToken));
+        Assert.False(await categoryCatalog.ExistsAsync(
+            new PolicyReferenceLookup(
+                "SPEND_CATEGORY", OrganizationId, null, 1, category.Digest, "HARDWARE", "ENUM_CODE"),
+            cancellationToken));
+    }
+
+    [Fact]
+    public async Task Append_only_history_rejects_direct_sql_mutations_and_version_jumps()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await ReferenceCatalogHarness.StartAsync(
+            OrganizationId, OtherOrganizationId, DepartmentId, OtherDepartmentId, cancellationToken);
+        var costCenter = await harness.Service.CreateCostCenterAsync(
+            OrganizationId, ActorId, "CC-IT-DEV", "Development", DepartmentId, "Initial", "corr-1", cancellationToken);
+        var category = await harness.Service.CreateSpendCategoryAsync(
+            OrganizationId, ActorId, "HARDWARE", "Hardware", "Initial", "corr-2", cancellationToken);
+
+        await using var context = harness.CreateContext();
+        // A skipped version or a wrong predecessor violates the monotonic check constraint.
+        await Assert.ThrowsAnyAsync<DbException>(() => context.Database.ExecuteSqlRawAsync(
+            "INSERT INTO [ReferenceCatalog].[CostCenterVersions] " +
+            "([CostCenterId],[Version],[OrganizationId],[Name],[DepartmentId],[Status],[PredecessorVersion]," +
+            "[ActorUserId],[OccurredAt],[Reason]) VALUES " +
+            $"('{costCenter.Id}',3,'{OrganizationId}','Jump','{DepartmentId}',1,1,'{ActorId}',SYSDATETIMEOFFSET(),'Jump')",
+            cancellationToken));
+        await Assert.ThrowsAnyAsync<DbException>(() => context.Database.ExecuteSqlRawAsync(
+            $"UPDATE [ReferenceCatalog].[CostCenterVersions] SET [Name] = 'Rewritten' " +
+            $"WHERE [CostCenterId] = '{costCenter.Id}' AND [Version] = 1",
+            cancellationToken));
+        await Assert.ThrowsAnyAsync<DbException>(() => context.Database.ExecuteSqlRawAsync(
+            $"DELETE FROM [ReferenceCatalog].[SpendCategoryVersions] WHERE [SpendCategoryId] = " +
+            $"(SELECT TOP(1) [Id] FROM [ReferenceCatalog].[SpendCategories] WHERE [Code] = '{category.Code}')",
+            cancellationToken));
+        await Assert.ThrowsAnyAsync<DbException>(() => context.Database.ExecuteSqlRawAsync(
+            $"UPDATE [ReferenceCatalog].[CostCenters] SET [Code] = 'CC-OTHER' WHERE [Id] = '{costCenter.Id}'",
+            cancellationToken));
+        await Assert.ThrowsAnyAsync<DbException>(() => context.Database.ExecuteSqlRawAsync(
+            $"UPDATE [ReferenceCatalog].[CostCenters] SET [CurrentVersion] = 0 WHERE [Id] = '{costCenter.Id}'",
+            cancellationToken));
+    }
+
+    [Fact]
+    public async Task Deactivation_and_scope_creation_cannot_race_into_an_invalid_state()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await ReferenceCatalogHarness.StartAsync(
+            OrganizationId, OtherOrganizationId, DepartmentId, OtherDepartmentId, cancellationToken);
+        var created = await harness.Service.CreateCostCenterAsync(
+            OrganizationId, ActorId, "CC-IT-DEV", "Development", DepartmentId, "Initial", "corr-1", cancellationToken);
+        var actor = await harness.EnsureUserAsync(cancellationToken);
+
+        var deactivation = CaptureAsync(async () =>
+        {
+            await using var context = harness.CreateContext();
+            await new ReferenceCatalogPersistenceService(context).UpdateCostCenterAsync(
+                OrganizationId, ActorId, created.Id, 1, null, null, EntityStatus.Inactive, "Retire", "corr-2", cancellationToken);
+        });
+        var scopeCreation = CaptureAsync(async () =>
+        {
+            await using var context = harness.CreateContext();
+            await using var transaction = await context.Database.BeginTransactionAsync(
+                System.Data.IsolationLevel.Serializable, cancellationToken);
+            // Same validation the ADMIN path performs before persisting an assignment.
+            var resolved = await new ReferenceCatalogPersistenceService(context)
+                .FindActiveCostCenterByCodeAsync("CC-IT-DEV", OrganizationId, cancellationToken);
+            if (resolved is null)
+            {
+                throw new DomainValidationException("The scoped reference is not active.");
+            }
+
+            context.RoleAssignments.Add(new RoleAssignmentRecord
+            {
+                Id = Guid.NewGuid(),
+                UserProfileId = actor,
+                Role = (int)SystemRole.FinanceApprover,
+                ScopeJson = "[{\"dimension\":\"COST_CENTER\",\"reference\":\"CC-IT-DEV\"}]",
+                Status = (int)AssignmentStatus.Active,
+                AssignedAt = DateTimeOffset.UtcNow,
+                AssignedBy = ActorId,
+                Version = 1
+            });
+            await context.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        });
+        await Task.WhenAll(deactivation, scopeCreation);
+
+        await using var verification = harness.CreateContext();
+        var status = await verification.CostCenterVersions
+            .Where(record => record.CostCenterId == created.Id)
+            .OrderByDescending(record => record.Version)
+            .Select(record => record.Status)
+            .FirstAsync(cancellationToken);
+        var activeScope = await verification.RoleAssignments.AnyAsync(
+            record => record.Status == (int)AssignmentStatus.Active,
+            cancellationToken);
+        // The only two valid outcomes: an active scope keeps the catalog active, or the retired
+        // catalog rejected the scope. A live scope must never point at an inactive cost center.
+        Assert.False(
+            status == (int)EntityStatus.Inactive && activeScope,
+            "A live COST_CENTER scope points at an inactive cost center.");
     }
 
     [Fact]

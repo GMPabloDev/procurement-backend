@@ -99,6 +99,122 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
         Assert.Equal(0, await context.ApprovalCases.CountAsync(cancellationToken));
     }
 
+    [Fact]
+    public async Task Incoherent_owner_answers_and_missing_slots_fail_closed_without_artifacts()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+
+        // A missing owner slot is a 503 dependency failure, not a partial attestation.
+        await Assert.ThrowsAsync<PurchaseRequestDependencyUnavailableException>(() => harness.SubmitAsync(
+            requestId,
+            version,
+            "submit-missing-owner",
+            cancellationToken,
+            owners => owners
+                .Where(owner => !(owner.ReferenceType == PurchaseRequestReferenceType.CostCenter &&
+                                  owner.AssertionType == "COST_CENTER_OWNED_BY_DEPARTMENT"))
+                .ToArray()));
+
+        // An unknown status with active=false is an invalid contractual answer, not a 422 negative.
+        await Assert.ThrowsAsync<PurchaseRequestDependencyUnavailableException>(() => harness.SubmitAsync(
+            requestId,
+            version,
+            "submit-bad-status",
+            cancellationToken,
+            owners => owners.Select(owner =>
+                owner.ReferenceType == PurchaseRequestReferenceType.SpendCategory
+                    ? (IPurchaseRequestReferenceOwner)new Harness.ScriptedOwner(
+                        owner.AssertionType, owner.ReferenceType, false, "BANANA", owner.OwnerId, owner.ContractVersion)
+                    : owner).ToArray()));
+
+        // A wrong contract identity is also a dependency failure.
+        await Assert.ThrowsAsync<PurchaseRequestDependencyUnavailableException>(() => harness.SubmitAsync(
+            requestId,
+            version,
+            "submit-wrong-contract",
+            cancellationToken,
+            owners => owners.Select(owner =>
+                owner.ReferenceType == PurchaseRequestReferenceType.SpendCategory
+                    ? (IPurchaseRequestReferenceOwner)new Harness.ScriptedOwner(
+                        owner.AssertionType, owner.ReferenceType, true, "ACTIVE", owner.OwnerId,
+                        contractVersion: "spend-category-db/v1", responseContractVersion: "wrong-db/v9")
+                    : owner).ToArray()));
+
+        await using var verification = harness.CreateContext();
+        Assert.Equal(0, await verification.PurchaseRequestReferenceAttestations.CountAsync(cancellationToken));
+        Assert.Equal(0, await verification.PurchaseRequestCompletenessManifests.CountAsync(cancellationToken));
+        Assert.Equal(0, await verification.ApprovalCases.CountAsync(cancellationToken));
+    }
+
+    [Fact]
+    public async Task Policy_failure_after_attestation_is_recoverable_without_duplicates()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+
+        harness.FailNextPolicyCatalog();
+        await Assert.ThrowsAsync<PolicyDependencyUnavailableException>(() =>
+            harness.SubmitAsync(requestId, version, "submit-fault-1", cancellationToken));
+
+        await using (var afterFailure = harness.CreateContext())
+        {
+            // The attestation is frozen, no case exists and the attempt is recoverable.
+            Assert.Equal(1, await afterFailure.PurchaseRequestCompletenessManifests.CountAsync(cancellationToken));
+            Assert.Equal(0, await afterFailure.ApprovalCases.CountAsync(cancellationToken));
+            var attempt = await afterFailure.PurchaseRequestSubmissionAttempts.SingleAsync(cancellationToken);
+            Assert.Equal((int)PurchaseRequestSubmissionStatus.DependencyFailed, attempt.Status);
+            Assert.Equal(PurchaseRequestSubmissionCodes.ErrorPolicyDependency, attempt.ErrorCode);
+        }
+
+        var outcome = await harness.SubmitAsync(requestId, version, "submit-fault-1", cancellationToken);
+        Assert.Equal(PurchaseRequestStatus.InApproval, outcome.Status);
+        await using var verification = harness.CreateContext();
+        Assert.Equal(1, await verification.PurchaseRequestCompletenessManifests.CountAsync(cancellationToken));
+        Assert.Equal(1, await verification.PurchaseRequestSubmissionAttempts.CountAsync(cancellationToken));
+        Assert.Equal(1, await verification.ApprovalCases.CountAsync(cancellationToken));
+    }
+
+    [Fact]
+    public async Task Concurrent_submissions_with_real_catalogs_produce_one_effect()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+
+        var outcomes = await Task.WhenAll(
+            CaptureAsync(() => harness.SubmitAsync(requestId, version, "submit-race", cancellationToken)),
+            CaptureAsync(() => harness.SubmitAsync(requestId, version, "submit-race", cancellationToken)));
+        var completed = outcomes.Where(outcome => outcome is not null).Select(outcome => outcome!).ToArray();
+        Assert.True(completed.Length >= 1, "At least one concurrent submission must complete.");
+        Assert.Single(completed.Select(outcome => outcome.ApprovalCaseId).Distinct());
+
+        await using var verification = harness.CreateContext();
+        Assert.Equal(1, await verification.PurchaseRequestReferenceAttestations.CountAsync(cancellationToken));
+        Assert.Equal(1, await verification.PurchaseRequestCompletenessManifests.CountAsync(cancellationToken));
+        Assert.Equal(1, await verification.PurchaseRequestSubmissionAttempts.CountAsync(cancellationToken));
+        Assert.Equal(1, await verification.ApprovalCases.CountAsync(cancellationToken));
+    }
+
+    private static async Task<PurchaseRequestSubmissionOutcome?> CaptureAsync(
+        Func<Task<PurchaseRequestSubmissionOutcome>> action)
+    {
+        try
+        {
+            return await action();
+        }
+        catch (DomainConflictException)
+        {
+            return null;
+        }
+        catch (PurchaseRequestDependencyUnavailableException)
+        {
+            return null;
+        }
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         private MsSqlContainer container = null!;
@@ -269,7 +385,8 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
             Guid requestId,
             int version,
             string submissionKey,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            Func<IReadOnlyList<IPurchaseRequestReferenceOwner>, IReadOnlyList<IPurchaseRequestReferenceOwner>>? ownerOverride = null)
         {
             if (DateTimeOffset.UtcNow < activationAt)
             {
@@ -277,7 +394,7 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                     activationAt - DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(250), cancellationToken);
             }
 
-            return await CreateServices().Submission.SubmitAsync(
+            return await CreateServices(ownerOverride).Submission.SubmitAsync(
                 new PurchaseRequestSubmissionCommand(
                     requestId,
                     version,
@@ -373,7 +490,7 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 cancellationToken);
         }
 
-        private Services CreateServices()
+        private Services CreateServices(Func<IReadOnlyList<IPurchaseRequestReferenceOwner>, IReadOnlyList<IPurchaseRequestReferenceOwner>>? ownerOverride = null)
         {
             using var loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Warning));
             var configuration = new ConfigurationBuilder()
@@ -389,15 +506,20 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
             var persistence = new PurchaseRequestPersistenceService(
                 context, NullLogger<PurchaseRequestPersistenceService>.Instance);
             // Real owners: no controlled double answers any reference.
-            var owners = new IPurchaseRequestReferenceOwner[]
-            {
+            IReadOnlyList<IPurchaseRequestReferenceOwner> owners =
+            [
                 new OrganizationReferenceOwner(context, PurchaseRequestReferenceType.LegalEntity),
                 new OrganizationReferenceOwner(context, PurchaseRequestReferenceType.User),
                 new OrganizationReferenceOwner(context, PurchaseRequestReferenceType.Department),
                 new CostCenterReferenceOwner(context, PurchaseRequestAssertionType.ActiveInOrganization),
                 new CostCenterReferenceOwner(context, PurchaseRequestAssertionType.CostCenterOwnedByDepartment),
                 new SpendCategoryReferenceOwner(context)
-            };
+            ];
+            if (ownerOverride is not null)
+            {
+                owners = ownerOverride(owners);
+            }
+
             var attestation = new PurchaseRequestAttestationService(
                 context,
                 new PurchaseRequestReferenceOwnerRegistry(owners),
@@ -415,7 +537,7 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 [
                     new DatabasePolicyReferenceCatalog(context, "DEPARTMENT"),
                     new DatabasePolicyReferenceCatalog(context, "LEGAL_ENTITY"),
-                    new CostCenterPolicyReferenceCatalog(context),
+                    new FaultInjectingCatalog(new CostCenterPolicyReferenceCatalog(context), catalogFault),
                     new SpendCategoryPolicyReferenceCatalog(context)
                 ]),
                 NullLogger<PolicyEvaluationService>.Instance);
@@ -449,5 +571,70 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
         public async ValueTask DisposeAsync() => await container.DisposeAsync();
 
         private sealed record Services(PurchaseRequestSubmissionService Submission);
+
+        private readonly CatalogFaultState catalogFault = new();
+
+        /// <summary>Arms one injected Policy catalog failure for the next evaluation (CA-06).</summary>
+        public void FailNextPolicyCatalog() => catalogFault.FailOnce = true;
+
+        private sealed class CatalogFaultState
+        {
+            public bool FailOnce { get; set; }
+        }
+
+        private sealed class FaultInjectingCatalog(
+            IPolicyReferenceCatalog inner,
+            CatalogFaultState state) : IPolicyReferenceCatalog
+        {
+            public string CatalogId => inner.CatalogId;
+
+            public string ContractVersion => inner.ContractVersion;
+
+            public Task<bool> ExistsAsync(
+                PolicyReferenceLookup reference,
+                CancellationToken cancellationToken = default)
+            {
+                if (state.FailOnce)
+                {
+                    state.FailOnce = false;
+                    throw new PolicyDependencyUnavailableException("Injected policy catalog failure.");
+                }
+
+                return inner.ExistsAsync(reference, cancellationToken);
+            }
+        }
+
+        /// <summary>Owner that answers with a controlled, possibly incoherent, response (REQ-07).</summary>
+        internal sealed class ScriptedOwner(
+            string assertionType,
+            PurchaseRequestReferenceType referenceType,
+            bool active,
+            string status,
+            string ownerId,
+            string contractVersion,
+            string? responseContractVersion = null) : IPurchaseRequestReferenceOwner
+        {
+            public string AssertionType => assertionType;
+
+            public PurchaseRequestReferenceType ReferenceType => referenceType;
+
+            public string OwnerId => ownerId;
+
+            public string ContractVersion => contractVersion;
+
+            public Task<PurchaseRequestVerificationResponse> VerifyAsync(
+                PurchaseRequestVerificationRequest request,
+                CancellationToken cancellationToken = default) =>
+                Task.FromResult(new PurchaseRequestVerificationResponse(
+                    active,
+                    request.AssertionType,
+                    request.OrganizationId,
+                    responseContractVersion ?? contractVersion,
+                    ownerId,
+                    request.SourceRef!,
+                    status,
+                    request.TargetRef,
+                    request.VerifiedAt));
+        }
     }
 }

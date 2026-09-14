@@ -12,11 +12,13 @@ public static class PurchaseRequestAssertionCodes
     public const string RefKindCode = "CODE";
     public const string RefKindQuestionSchema = "QUESTION_SCHEMA";
 
-    public static string RequireStatus(string? status) => status switch
-    {
-        StatusActive or StatusInactive or StatusNotFound => status,
-        _ => throw new DomainValidationException("The reference verification status is invalid.")
-    };
+    public static string RequireStatus(string? status) => IsKnownStatus(status)
+        ? status!
+        : throw new DomainValidationException("The reference verification status is invalid.");
+
+    /// <summary>Closed status vocabulary of the owner answer (SPEC 07 REQ-07).</summary>
+    public static bool IsKnownStatus(string? status) =>
+        status is StatusActive or StatusInactive or StatusNotFound;
 }
 
 /// <summary>

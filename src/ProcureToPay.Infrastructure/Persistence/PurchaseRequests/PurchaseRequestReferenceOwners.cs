@@ -39,6 +39,15 @@ public sealed class PurchaseRequestReferenceOwnerRegistry(
                 $"More than one reference owner matches '{assertionCode}' for that reference family.");
         }
 
+        // SPEC 07 REQ-06: the registration must declare a stable identity and contract version;
+        // an empty one is an unavailable slot, never a valid owner.
+        if (string.IsNullOrWhiteSpace(matches[0].OwnerId) ||
+            string.IsNullOrWhiteSpace(matches[0].ContractVersion))
+        {
+            throw new PurchaseRequestDependencyUnavailableException(
+                $"The registered owner for '{assertionCode}' has no stable identity or contract version.");
+        }
+
         return matches[0];
     }
 }
@@ -54,6 +63,7 @@ public sealed class OrganizationReferenceOwner(
     PurchaseRequestReferenceType referenceType) : IPurchaseRequestReferenceOwner
 {
     public const string OwnerIdentity = "organization-domain";
+    public const string OwnerContractVersionValue = "organization-db/v1";
 
     public string AssertionType => PurchaseRequestCodes.Code(PurchaseRequestAssertionType.ActiveInOrganization);
 
@@ -61,7 +71,7 @@ public sealed class OrganizationReferenceOwner(
 
     public string OwnerId => OwnerIdentity;
 
-    public string ContractVersion => "organization-db/v1";
+    public string ContractVersion => OwnerContractVersionValue;
 
     public async Task<PurchaseRequestVerificationResponse> VerifyAsync(
         PurchaseRequestVerificationRequest request,

@@ -280,6 +280,9 @@ public sealed class ReferenceCatalogE2ETests
                              services.AddScoped<IPurchaseRequestReferenceOwner>(provider =>
                                  new SpendCategoryReferenceOwner(
                                      provider.GetRequiredService<ProcureToPayDbContext>()));
+                             // A resolvable owner with the wrong contractual identity must be reported
+                             // as unavailable, never accepted as readiness.
+                             services.AddScoped<IPurchaseRequestReferenceOwner>(_ => new WrongContractOwner());
                              services.AddScoped<IPurchaseRequestReferenceOwnerRegistry>(provider =>
                                  new PurchaseRequestReferenceOwnerRegistry(
                                      provider.GetServices<IPurchaseRequestReferenceOwner>()));
@@ -293,6 +296,8 @@ public sealed class ReferenceCatalogE2ETests
             Assert.Contains(
                 "PURCHASE_REQUEST_OWNER_UNAVAILABLE:ACTIVE_IN_ORGANIZATION:LEGAL_ENTITY", code, StringComparison.Ordinal);
             Assert.Contains(
+                "PURCHASE_REQUEST_OWNER_UNAVAILABLE:ACTIVE_IN_ORGANIZATION:COST_CENTER", code, StringComparison.Ordinal);
+            Assert.Contains(
                 "PURCHASE_REQUEST_OWNER_UNAVAILABLE:ACTIVE_IN_ORGANIZATION:SPEND_CATEGORY", code, StringComparison.Ordinal);
             Assert.Contains("POLICY_REFERENCE_CATALOG_UNAVAILABLE:COST_CENTER", code, StringComparison.Ordinal);
             Assert.Contains("POLICY_REFERENCE_CATALOG_UNAVAILABLE:SPEND_CATEGORY", code, StringComparison.Ordinal);
@@ -303,14 +308,20 @@ public sealed class ReferenceCatalogE2ETests
         {
             await using (var corruption = Environment.CreateContext(environment.ConnectionString))
             {
+                // The pointer can move forward but the history cannot be rewritten (append-only
+                // triggers), so corruption is injected as a forward version with a wrong digest.
                 await corruption.CostCenters
                     .Where(record => record.Id == environment.CostCenterId)
                     .ExecuteUpdateAsync(setters => setters.SetProperty(record => record.CurrentVersion, 99), cancellationToken);
-                await corruption.SpendCategoryVersions
-                    .Where(record => record.Version == 1)
-                    .ExecuteUpdateAsync(
-                        setters => setters.SetProperty(record => record.Digest, new string('a', 64)),
-                        cancellationToken);
+                await corruption.Database.ExecuteSqlRawAsync(
+                    "INSERT INTO [ReferenceCatalog].[SpendCategoryVersions] " +
+                    "([SpendCategoryId],[Version],[OrganizationId],[Code],[Name],[Digest],[Status]," +
+                    "[PredecessorVersion],[ActorUserId],[OccurredAt],[Reason]) " +
+                    "SELECT [Id],2,[OrganizationId],'HARDWARE','Hardware'," +
+                    $"'{new string('a', 64)}',1,1,'{Guid.NewGuid()}',SYSDATETIMEOFFSET(),'Corrupt' " +
+                    "FROM [ReferenceCatalog].[SpendCategories] WHERE [Code] = 'HARDWARE';" +
+                    "UPDATE [ReferenceCatalog].[SpendCategories] SET [CurrentVersion] = 2 WHERE [Code] = 'HARDWARE';",
+                    cancellationToken);
             }
 
             using var client = environment.Client("requester");
@@ -476,6 +487,22 @@ public sealed class ReferenceCatalogE2ETests
             factory.Dispose();
             await container.DisposeAsync();
         }
+    }
+
+    private sealed class WrongContractOwner : IPurchaseRequestReferenceOwner
+    {
+        public string AssertionType => "ACTIVE_IN_ORGANIZATION";
+
+        public PurchaseRequestReferenceType ReferenceType => PurchaseRequestReferenceType.CostCenter;
+
+        public string OwnerId => "wrong-domain";
+
+        public string ContractVersion => "wrong/v1";
+
+        public Task<PurchaseRequestVerificationResponse> VerifyAsync(
+            PurchaseRequestVerificationRequest request,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class TestApiFactory(

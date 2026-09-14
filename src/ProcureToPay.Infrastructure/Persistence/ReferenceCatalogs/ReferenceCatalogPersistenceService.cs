@@ -94,7 +94,16 @@ public sealed class ReferenceCatalogPersistenceService(ProcureToPayDbContext dbC
             throw new DomainValidationException("ExpectedVersion is required.");
         }
 
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        // SPEC 07 NFR-03/REQ-04: the deactivation invariant and the creation of a scope that
+        // references this cost center must serialize on the same root row. Serializable isolation
+        // plus a locking read keeps a concurrent assignment from validating a catalog entry that
+        // this transaction is retiring.
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            System.Data.IsolationLevel.Serializable, cancellationToken);
+        // Executes a locking read on the root row; the tracked entity is loaded afterwards.
+        await dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT [Id] FROM [ReferenceCatalog].[CostCenters] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = {costCenterId}",
+            cancellationToken);
         var root = await dbContext.CostCenters.SingleOrDefaultAsync(
                 record => record.Id == costCenterId && record.OrganizationId == organizationId,
                 cancellationToken)
@@ -120,14 +129,25 @@ public sealed class ReferenceCatalogPersistenceService(ProcureToPayDbContext dbC
         var successorStatus = status ?? (EntityStatus)current.Status;
         if (successorStatus == EntityStatus.Inactive && current.Status == (int)EntityStatus.Active)
         {
+            // The check runs after the locking read: a scope committed meanwhile is visible here.
             await EnsureCostCenterHasNoActiveScopesAsync(
                 root.Code, "The cost center has active scopes and cannot be deactivated.", cancellationToken);
         }
 
-        var departmentVersion = await dbContext.Departments
-            .Where(record => record.Id == successorDepartmentId)
-            .Select(record => record.Version)
-            .SingleAsync(cancellationToken);
+        // A Cost Center can only be Active while its owning Department is current and active
+        // (SPEC 07 REQ-02): reactivating after the Department was retired must fail closed.
+        var successorDepartment = await dbContext.Departments
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                record => record.Id == successorDepartmentId && record.OrganizationId == organizationId,
+                cancellationToken)
+            ?? throw new DomainValidationException("The owning department is not active in this organization.");
+        if (successorStatus == EntityStatus.Active && successorDepartment.Status != (int)EntityStatus.Active)
+        {
+            throw new DomainValidationException("The owning department is not active in this organization.");
+        }
+
+        var departmentVersion = successorDepartment.Version;
         var occurredAt = DateTimeOffset.UtcNow;
         var nextVersion = expectedVersion + 1;
         dbContext.CostCenterVersions.Add(new CostCenterVersionRecord

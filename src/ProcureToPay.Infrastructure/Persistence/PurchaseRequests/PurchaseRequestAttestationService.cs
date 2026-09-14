@@ -370,6 +370,9 @@ public sealed class PurchaseRequestAttestationService(
             // relation between the boolean and the contractual status.
             !string.Equals(response.OwnerId, owner.OwnerId, StringComparison.Ordinal) ||
             !string.Equals(response.OwnerContractVersion, owner.ContractVersion, StringComparison.Ordinal) ||
+            // SPEC 07 REQ-07: an unknown status is an invalid answer even when active=false, so it
+            // can never be projected as a plain 422 negative.
+            !PurchaseRequestAssertionCodes.IsKnownStatus(response.Status) ||
             response.Active != string.Equals(
                 response.Status, PurchaseRequestAssertionCodes.StatusActive, StringComparison.Ordinal))
         {

@@ -24,7 +24,10 @@ public sealed class DatabasePolicyReferenceCatalog(
         if (!string.Equals(reference.ReferenceType, CatalogId, StringComparison.Ordinal) ||
             reference.OrganizationId == Guid.Empty ||
             reference.Id is not Guid entityId ||
-            reference.Version is not int entityVersion)
+            reference.Version is not int entityVersion ||
+            reference.Code is not null ||
+            reference.Digest is not null ||
+            reference.ValueKind is not null)
         {
             return false;
         }

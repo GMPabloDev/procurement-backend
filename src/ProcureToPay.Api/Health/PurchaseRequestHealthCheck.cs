@@ -98,15 +98,22 @@ public sealed class PurchaseRequestHealthCheck(
             {
                 try
                 {
-                    _ = owners.ResolveExactlyOne(slot.Assertion, slot.Reference);
+                    var owner = owners.ResolveExactlyOne(slot.Assertion, slot.Reference);
+                    // SPEC 07 REQ-06/REQ-09: readiness also requires the contractual identity and
+                    // version of the slot, not only its cardinality.
+                    var expected = ExpectedOwnerContract(slot.Reference);
+                    if (expected is not null &&
+                        (!string.Equals(owner.OwnerId, expected.Value.OwnerId, StringComparison.Ordinal) ||
+                         !string.Equals(owner.ContractVersion, expected.Value.ContractVersion, StringComparison.Ordinal)))
+                    {
+                        reasons.Add(OwnerUnavailable(slot));
+                    }
                 }
                 catch (DomainException)
                 {
                     // SPEC 07 REQ-09: the grammar distinguishes the two Cost Center slots and never
                     // exposes ids, names or digests.
-                    reasons.Add(
-                        $"PURCHASE_REQUEST_OWNER_UNAVAILABLE:{PurchaseRequestCodes.Code(slot.Assertion)}:" +
-                        $"{PurchaseRequestCodes.Code(slot.Reference)}");
+                    reasons.Add(OwnerUnavailable(slot));
                 }
             }
 
@@ -115,7 +122,16 @@ public sealed class PurchaseRequestHealthCheck(
             {
                 try
                 {
-                    _ = catalogRegistry.Resolve(catalog);
+                    var resolved = catalogRegistry.Resolve(catalog);
+                    var expectedVersion = string.Equals(
+                        catalog, CostCenterPolicyReferenceCatalog.Catalog, StringComparison.Ordinal)
+                        ? CostCenterPolicyReferenceCatalog.Version
+                        : SpendCategoryPolicyReferenceCatalog.Version;
+                    if (string.IsNullOrWhiteSpace(resolved.ContractVersion) ||
+                        !string.Equals(resolved.ContractVersion, expectedVersion, StringComparison.Ordinal))
+                    {
+                        reasons.Add($"POLICY_REFERENCE_CATALOG_UNAVAILABLE:{catalog}");
+                    }
                 }
                 catch (DomainException)
                 {
@@ -193,6 +209,26 @@ public sealed class PurchaseRequestHealthCheck(
     /// Storage access plus current-pointer/digest consistency of both reference catalogs (REQ-09).
     /// An empty catalog is a valid business configuration and never degrades by itself.
     /// </summary>
+    private static string OwnerUnavailable(
+        (PurchaseRequestAssertionType Assertion, PurchaseRequestReferenceType Reference) slot) =>
+        $"PURCHASE_REQUEST_OWNER_UNAVAILABLE:{PurchaseRequestCodes.Code(slot.Assertion)}:" +
+        $"{PurchaseRequestCodes.Code(slot.Reference)}";
+
+    /// <summary>Contractual identity expected for each reference family of the PR boundary.</summary>
+    private static (string OwnerId, string ContractVersion)? ExpectedOwnerContract(
+        PurchaseRequestReferenceType reference) => reference switch
+    {
+        PurchaseRequestReferenceType.CostCenter =>
+            (ReferenceCatalogCodes.CostCenterOwnerId, ReferenceCatalogCodes.CostCenterOwnerContractVersion),
+        PurchaseRequestReferenceType.SpendCategory =>
+            (ReferenceCatalogCodes.SpendCategoryOwnerId, ReferenceCatalogCodes.SpendCategoryOwnerContractVersion),
+        PurchaseRequestReferenceType.LegalEntity or
+        PurchaseRequestReferenceType.User or
+        PurchaseRequestReferenceType.Department =>
+            (OrganizationReferenceOwner.OwnerIdentity, OrganizationReferenceOwner.OwnerContractVersionValue),
+        _ => null
+    };
+
     private static async Task CheckReferenceCatalogStorageAsync(
         ProcureToPayDbContext dbContext,
         List<string> reasons,

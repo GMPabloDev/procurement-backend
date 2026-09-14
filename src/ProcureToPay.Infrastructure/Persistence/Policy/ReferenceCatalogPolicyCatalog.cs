@@ -22,10 +22,14 @@ public sealed class CostCenterPolicyReferenceCatalog(ProcureToPayDbContext dbCon
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(reference);
+        // Exact shape of a COST_CENTER lookup: id/version only, code/digest/value_kind null.
         if (!string.Equals(reference.ReferenceType, Catalog, StringComparison.Ordinal) ||
             reference.OrganizationId == Guid.Empty ||
             reference.Id is not Guid costCenterId ||
-            reference.Version is not int version)
+            reference.Version is not int version ||
+            reference.Code is not null ||
+            reference.Digest is not null ||
+            reference.ValueKind is not null)
         {
             return false;
         }
@@ -66,10 +70,13 @@ public sealed class SpendCategoryPolicyReferenceCatalog(ProcureToPayDbContext db
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(reference);
+        // Exact shape of a SPEND_CATEGORY lookup: code/version/digest only, id/value_kind null.
         if (!string.Equals(reference.ReferenceType, Catalog, StringComparison.Ordinal) ||
             reference.OrganizationId == Guid.Empty ||
             string.IsNullOrWhiteSpace(reference.Code) ||
-            reference.Version is not int version)
+            reference.Version is not int version ||
+            reference.Id is not null ||
+            reference.ValueKind is not null)
         {
             return false;
         }

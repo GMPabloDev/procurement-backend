@@ -157,26 +157,57 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                 table: "SpendCategoryVersions",
                 columns: new[] { "OrganizationId", "Code", "Version" },
                 unique: true);
+
+            // SPEC 07 NFR-01: the history is append-only and versions cannot jump or carry a
+            // wrong predecessor, even for a direct SQL writer.
+            migrationBuilder.Sql(
+                "ALTER TABLE [ReferenceCatalog].[CostCenterVersions] WITH CHECK ADD CONSTRAINT " +
+                "[CK_CostCenterVersions_VersionMonotonic] CHECK (" +
+                "([Version] = 1 AND [PredecessorVersion] IS NULL) OR " +
+                "([Version] > 1 AND [PredecessorVersion] = [Version] - 1));");
+            migrationBuilder.Sql(
+                "ALTER TABLE [ReferenceCatalog].[SpendCategoryVersions] WITH CHECK ADD CONSTRAINT " +
+                "[CK_SpendCategoryVersions_VersionMonotonic] CHECK (" +
+                "([Version] = 1 AND [PredecessorVersion] IS NULL) OR " +
+                "([Version] > 1 AND [PredecessorVersion] = [Version] - 1));");
+            migrationBuilder.Sql(
+                "CREATE TRIGGER [ReferenceCatalog].[TR_CostCenterVersions_AppendOnly] " +
+                "ON [ReferenceCatalog].[CostCenterVersions] AFTER UPDATE, DELETE AS " +
+                "BEGIN SET NOCOUNT ON; " +
+                "IF EXISTS (SELECT 1 FROM deleted) " +
+                "THROW 51000, 'Cost Center versions are append-only.', 1; END");
+            migrationBuilder.Sql(
+                "CREATE TRIGGER [ReferenceCatalog].[TR_SpendCategoryVersions_AppendOnly] " +
+                "ON [ReferenceCatalog].[SpendCategoryVersions] AFTER UPDATE, DELETE AS " +
+                "BEGIN SET NOCOUNT ON; " +
+                "IF EXISTS (SELECT 1 FROM deleted) " +
+                "THROW 51000, 'Spend Category versions are append-only.', 1; END");
+            // The root keeps its identity and the current pointer never moves backwards.
+            migrationBuilder.Sql(
+                "CREATE TRIGGER [ReferenceCatalog].[TR_CostCenters_IdentityStable] " +
+                "ON [ReferenceCatalog].[CostCenters] AFTER UPDATE AS " +
+                "BEGIN SET NOCOUNT ON; " +
+                "IF EXISTS (SELECT 1 FROM inserted i JOIN deleted d ON i.Id = d.Id WHERE " +
+                "i.OrganizationId <> d.OrganizationId OR i.Code <> d.Code OR " +
+                "i.CurrentVersion < d.CurrentVersion) " +
+                "THROW 51001, 'Cost Center identity is stable and the current version never moves backwards.', 1; END");
+            migrationBuilder.Sql(
+                "CREATE TRIGGER [ReferenceCatalog].[TR_SpendCategories_IdentityStable] " +
+                "ON [ReferenceCatalog].[SpendCategories] AFTER UPDATE AS " +
+                "BEGIN SET NOCOUNT ON; " +
+                "IF EXISTS (SELECT 1 FROM inserted i JOIN deleted d ON i.Id = d.Id WHERE " +
+                "i.OrganizationId <> d.OrganizationId OR i.Code <> d.Code OR " +
+                "i.CurrentVersion < d.CurrentVersion) " +
+                "THROW 51001, 'Spend Category identity is stable and the current version never moves backwards.', 1; END");
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "CostCenterVersions",
-                schema: "ReferenceCatalog");
-
-            migrationBuilder.DropTable(
-                name: "SpendCategoryVersions",
-                schema: "ReferenceCatalog");
-
-            migrationBuilder.DropTable(
-                name: "CostCenters",
-                schema: "ReferenceCatalog");
-
-            migrationBuilder.DropTable(
-                name: "SpendCategories",
-                schema: "ReferenceCatalog");
+            // SPEC 07 forbids a destructive down migration: reverting the application keeps the
+            // reference catalogs and their history, so dropping them is not supported.
+            throw new NotSupportedException(
+                "The reference catalog schema has no destructive downgrade; revert the application and keep the schema.");
         }
     }
 }

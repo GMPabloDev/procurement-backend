@@ -55,17 +55,41 @@ public sealed class PurchaseRequestReferenceOwnerRegistryTests
             PurchaseRequestAssertionType.ActiveInOrganization, PurchaseRequestReferenceType.CostCenter));
     }
 
+    [Fact]
+    public void An_owner_without_a_stable_identity_or_contract_is_unavailable()
+    {
+        var noContract = new PurchaseRequestReferenceOwnerRegistry([
+            new StubOwner(
+                PurchaseRequestAssertionType.ActiveInOrganization,
+                PurchaseRequestReferenceType.CostCenter,
+                contractVersion: " ")
+        ]);
+        Assert.Throws<PurchaseRequestDependencyUnavailableException>(() => noContract.ResolveExactlyOne(
+            PurchaseRequestAssertionType.ActiveInOrganization, PurchaseRequestReferenceType.CostCenter));
+
+        var noOwnerId = new PurchaseRequestReferenceOwnerRegistry([
+            new StubOwner(
+                PurchaseRequestAssertionType.ActiveInOrganization,
+                PurchaseRequestReferenceType.CostCenter,
+                ownerId: "")
+        ]);
+        Assert.Throws<PurchaseRequestDependencyUnavailableException>(() => noOwnerId.ResolveExactlyOne(
+            PurchaseRequestAssertionType.ActiveInOrganization, PurchaseRequestReferenceType.CostCenter));
+    }
+
     private sealed class StubOwner(
         PurchaseRequestAssertionType assertion,
-        PurchaseRequestReferenceType reference) : IPurchaseRequestReferenceOwner
+        PurchaseRequestReferenceType reference,
+        string ownerId = "stub",
+        string contractVersion = "stub/v1") : IPurchaseRequestReferenceOwner
     {
         public string AssertionType => PurchaseRequestCodes.Code(assertion);
 
         public PurchaseRequestReferenceType ReferenceType => reference;
 
-        public string OwnerId => "stub";
+        public string OwnerId => ownerId;
 
-        public string ContractVersion => "stub/v1";
+        public string ContractVersion => contractVersion;
 
         public Task<PurchaseRequestVerificationResponse> VerifyAsync(
             PurchaseRequestVerificationRequest request,
