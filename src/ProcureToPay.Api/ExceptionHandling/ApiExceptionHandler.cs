@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence.Policy;
+using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 
 namespace ProcureToPay.Api.ExceptionHandling;
 
@@ -85,6 +86,21 @@ public sealed class ApiExceptionHandler(
                 Type = "/problems/payload-too-large",
                 Detail = approvalTooLargeException.Message
             },
+            // SPEC 06: the Purchase Requests boundary raises its own dependency and size conditions.
+            PurchaseRequestPayloadTooLargeException purchaseRequestTooLargeException => new ProblemDetails
+            {
+                Status = StatusCodes.Status413PayloadTooLarge,
+                Title = "Payload too large",
+                Type = "/problems/payload-too-large",
+                Detail = purchaseRequestTooLargeException.Message
+            },
+            PurchaseRequestDependencyUnavailableException purchaseRequestDependencyException => new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Purchase request dependency unavailable",
+                Type = "/problems/purchase-request-dependency-unavailable",
+                Detail = purchaseRequestDependencyException.Message
+            },
             ApprovalDependencyUnavailableException approvalDependencyException => new ProblemDetails
             {
                 Status = StatusCodes.Status503ServiceUnavailable,
@@ -121,8 +137,7 @@ public sealed class ApiExceptionHandler(
             }
         };
 
-        if (exception is DomainConflictException or PolicyConfigurationUnavailableException or PolicyDependencyUnavailableException)
-        {            using var conflictActivity = PolicyTelemetry.Source.StartActivity("policy.conflict");
+        if (exception is DomainConflictException or PolicyConfigurationUnavailableException or PolicyDependencyUnavailableException)        {            using var conflictActivity = PolicyTelemetry.Source.StartActivity("policy.conflict");
             var conflictStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
             conflictActivity?.SetTag("policy.conflict_type", exception.GetType().Name);
             conflictActivity?.SetTag("policy.result", "CONFLICT");

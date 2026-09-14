@@ -964,6 +964,11 @@ public static class PolicyEvaluator
             return false;
         }
 
+        if (string.Equals(predicate.FactKey, "RISK_ANSWER", StringComparison.Ordinal))
+        {
+            return MatchesRiskAnswer(predicate, actual);
+        }
+
         if (predicate.Operator is PolicyOperator.In or PolicyOperator.NotIn)
         {
             if (predicate.Value.Kind != PolicyValueKind.Set || predicate.Value.Members.IsDefaultOrEmpty ||
@@ -1043,6 +1048,53 @@ public static class PolicyEvaluator
                     "Policy money facts must use the bundle base currency.");
             }
         }
+    }
+
+    /// <summary>
+    /// SPEC 06 matcher for <c>RISK_ANSWER</c>: the fact is a non-empty set of typed answers unique
+    /// per question and schema. The predicate identity selects exactly one answer; a missing
+    /// identity never matches (not even a negative operator), while duplicates or members of
+    /// another kind invalidate the bundle before any evaluation is persisted.
+    /// </summary>
+    private static bool MatchesRiskAnswer(PolicyPredicate predicate, PolicyValue actual)
+    {
+        if (actual.Kind != PolicyValueKind.Set || actual.Members.IsDefaultOrEmpty ||
+            actual.Members.Any(member => member.Kind != PolicyValueKind.TypedAnswer))
+        {
+            throw new DomainValidationException(
+                "Fact 'RISK_ANSWER' requires a non-empty set of typed answers.");
+        }
+
+        var identities = actual.Members
+            .Select(member => (member.QuestionCode, member.SchemaVersion))
+            .ToArray();
+        if (identities.Distinct().Count() != identities.Length)
+        {
+            throw new DomainValidationException(
+                "Fact 'RISK_ANSWER' cannot repeat a question and schema version.");
+        }
+
+        var isSet = predicate.Value.Kind == PolicyValueKind.Set;
+        var question = isSet ? predicate.Value.Members[0].QuestionCode : predicate.Value.QuestionCode;
+        var schema = isSet ? predicate.Value.Members[0].SchemaVersion : predicate.Value.SchemaVersion;
+        var matching = actual.Members
+            .Where(member => string.Equals(member.QuestionCode, question, StringComparison.Ordinal) &&
+                             member.SchemaVersion == schema)
+            .ToArray();
+        if (matching.Length == 0)
+        {
+            return false;
+        }
+
+        var answer = matching[0];
+        return predicate.Operator switch
+        {
+            PolicyOperator.Equal => answer.SameAs(predicate.Value),
+            PolicyOperator.NotEqual => !answer.SameAs(predicate.Value),
+            PolicyOperator.In => predicate.Value.Members.Any(member => answer.SameAs(member)),
+            PolicyOperator.NotIn => !predicate.Value.Members.Any(member => answer.SameAs(member)),
+            _ => throw new DomainValidationException("Fact 'RISK_ANSWER' only accepts EQ/NEQ/IN/NOT_IN.")
+        };
     }
 
     private static PolicyResult ResolveResult(IEnumerable<PolicyGeneratedControl> controls, bool hasAllowEffect)
