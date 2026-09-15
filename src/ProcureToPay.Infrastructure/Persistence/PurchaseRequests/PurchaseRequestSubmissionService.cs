@@ -62,6 +62,7 @@ public sealed class PurchaseRequestSubmissionService(
     ApprovalSupersessionService approvalSupersessions,
     ApprovalWorkflowService approvalWorkflow,
     BudgetLedger.BudgetPrecheckService budgetPrechecks,
+    Budget.BudgetReleaseService budgetReleases,
     ILogger<PurchaseRequestSubmissionService> logger)
 {
     /// <summary>Trusted in-process workload of the purchase request domain (REQ-05, REQ-06).</summary>
@@ -484,6 +485,11 @@ public sealed class PurchaseRequestSubmissionService(
                 cancellationToken);
         if (!replayed && attempt?.ApprovalCaseId is Guid caseId)
         {
+            // SPEC 08 REQ-08: a completed case emits no further Approval event, so the cancellation
+            // itself must free the open reservations before the request becomes terminal. The attempt
+            // row makes the two local transactions recoverable by the cancel key.
+            await ReleaseBudgetBeforeCancellationAsync(
+                requestId, expectedVersion, caseId, attempt, organizationId, reason, correlation, cancellationToken);
             await CancelOpenCaseAsync(caseId, reason, correlation, occurredAt, cancellationToken);
         }
 
@@ -497,6 +503,138 @@ public sealed class PurchaseRequestSubmissionService(
             correlation,
             occurredAt,
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Releases the open budget reservations of a case whose Approval lifecycle already ended, so a
+    /// Purchase Request can reach <c>CANCELLED</c> without holding funds (SPEC 08 REQ-08).
+    /// </summary>
+    private async Task ReleaseBudgetBeforeCancellationAsync(
+        Guid requestId,
+        int requestVersion,
+        Guid caseId,
+        PurchaseRequestSubmissionAttemptRecord attempt,
+        Guid organizationId,
+        string reason,
+        string correlation,
+        CancellationToken cancellationToken)
+    {
+        var prerequisite = await dbContext.ApprovalPrerequisites
+            .AsNoTracking()
+            .Where(record => record.CaseId == caseId &&
+                             record.OwnerAdapterId == Domain.Modules.Budget.BudgetCodes.BudgetOwnerAdapterId &&
+                             record.OwnerAdapterVersion == Domain.Modules.Budget.BudgetCodes.BudgetOwnerAdapterVersion)
+            .Select(record => new { record.Id, record.Status })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (prerequisite is null)
+        {
+            return;
+        }
+
+        _ = attempt;
+        var releaseKey = $"pr-cancel-{requestId:D}-v{requestVersion}";
+        var existing = await dbContext.PurchaseRequestBudgetReleaseAttempts
+            .SingleOrDefaultAsync(
+                record => record.OrganizationId == organizationId &&
+                          record.RequestId == requestId &&
+                          record.RequestVersion == requestVersion,
+                cancellationToken);
+        if (existing is null)
+        {
+            existing = new BudgetLedger.PurchaseRequestBudgetReleaseAttemptRecord
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = organizationId,
+                RequestId = requestId,
+                RequestVersion = requestVersion,
+                CaseId = caseId,
+                ReleaseKey = releaseKey,
+                State = Domain.Modules.Budget.BudgetReleaseAttemptStateCodes.Of(Domain.Modules.Budget.BudgetReleaseAttemptState.Pending),
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            dbContext.PurchaseRequestBudgetReleaseAttempts.Add(existing);
+            try
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException)
+            {
+                dbContext.ChangeTracker.Clear();
+                existing = await dbContext.PurchaseRequestBudgetReleaseAttempts
+                    .SingleAsync(
+                        record => record.OrganizationId == organizationId &&
+                                  record.RequestId == requestId &&
+                                  record.RequestVersion == requestVersion,
+                        cancellationToken);
+            }
+        }
+
+        if (existing.State == Domain.Modules.Budget.BudgetReleaseAttemptStateCodes.Of(Domain.Modules.Budget.BudgetReleaseAttemptState.Released))
+        {
+            return;
+        }
+
+        var targets = await LoadBudgetTargetsAsync(organizationId, requestId, requestVersion, caseId, cancellationToken);
+        if (targets.Count > 0)
+        {
+            var outcome = await budgetReleases.ReleaseAsync(
+                new Budget.BudgetReleaseRequest(
+                    organizationId,
+                    caseId,
+                    requestId,
+                    requestVersion,
+                    releaseKey,
+                    Budget.BudgetReleaseService.PurchaseRequestReleaseReason,
+                    Domain.Modules.Budget.BudgetReleaseTrigger.PurchaseRequestCancelled,
+                    TriggerEvent: null,
+                    targets),
+                Domain.Modules.Budget.BudgetActors.OwnerSystem,
+                correlation,
+                cancellationToken);
+            existing.ReleaseOperationId ??= outcome.OperationId;
+        }
+
+        existing.State = Domain.Modules.Budget.BudgetReleaseAttemptStateCodes.Of(Domain.Modules.Budget.BudgetReleaseAttemptState.Released);
+        existing.ReleasedAt = DateTimeOffset.UtcNow;
+        existing.LastErrorCode = null;
+        await dbContext.SaveChangesAsync(cancellationToken);
+        _ = reason;
+    }
+
+    /// <summary>
+    /// Material targets covered by the budget prerequisite of the case, rebuilt from the confirmed
+    /// material projection of the evaluation that created it (SPEC 08 REQ-05).
+    /// </summary>
+    private async Task<IReadOnlyList<Domain.Modules.Budget.BudgetTarget>> LoadBudgetTargetsAsync(
+        Guid organizationId,
+        Guid requestId,
+        int requestVersion,
+        Guid caseId,
+        CancellationToken cancellationToken)
+    {
+        var prerequisites = await dbContext.ApprovalPrerequisites
+            .AsNoTracking()
+            .Where(record => record.CaseId == caseId &&
+                             record.OwnerAdapterId == Domain.Modules.Budget.BudgetCodes.BudgetOwnerAdapterId &&
+                             record.OwnerAdapterVersion == Domain.Modules.Budget.BudgetCodes.BudgetOwnerAdapterVersion)
+            .Select(record => record.ParametersJson)
+            .ToArrayAsync(cancellationToken);
+        var targets = new List<Domain.Modules.Budget.BudgetTarget>();
+        foreach (var parametersJson in prerequisites)
+        {
+            var parameters = Domain.Modules.Budget.BudgetPrerequisiteParameters.Parse(parametersJson);
+            targets.AddRange(parameters.Demands
+                .Where(demand => demand.Target is not null)
+                .Select(demand => demand.Target!));
+        }
+
+        _ = organizationId;
+        _ = requestId;
+        _ = requestVersion;
+        return targets
+            .GroupBy(target => new { target.Id, target.Version })
+            .Select(group => group.First())
+            .ToArray();
     }
 
     private async Task CancelOpenCaseAsync(

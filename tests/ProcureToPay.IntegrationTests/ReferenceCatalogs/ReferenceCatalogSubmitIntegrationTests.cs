@@ -12,6 +12,7 @@ using ProcureToPay.Domain.Modules.ReferenceCatalogs;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Approval;
+using ProcureToPay.Infrastructure.Persistence.Budget;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
@@ -127,6 +128,59 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
         Assert.Contains("\"spend_category_ref\"", prerequisiteRecord.ParametersJson, StringComparison.Ordinal);
         Assert.Contains(harness.CostCenterId.ToString("D"), prerequisiteRecord.ParametersJson, StringComparison.Ordinal);
         Assert.Contains(harness.SpendCategory.Code, prerequisiteRecord.ParametersJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_rejected_requirement_releases_the_open_reservation()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        _ = await harness.SubmitAsync(requestId, version, "submit-budget-release", cancellationToken);
+        await harness.ProcessBudgetAsync(cancellationToken);
+
+        await using (var before = harness.CreateContext())
+        {
+            var held = await before.BudgetBalances.SingleAsync(cancellationToken);
+            Assert.Equal(100m, held.Reserved);
+        }
+
+        await harness.RejectFirstRequirementAsync(cancellationToken);
+        await harness.DispatchResultsAsync(cancellationToken);
+        // Every recorded result was delivered at least once (the retry backoff is part of the
+        // contract and is exercised by the approval suites).
+        var delivered = await harness.ReadOutboxStatesAsync(cancellationToken);
+        Assert.All(
+            delivered,
+            entry => Assert.False(
+                entry.Result.Length == 0 && entry.State == "PENDING",
+                "A recorded result stayed pending without a payload result."));
+
+        await using var verification = harness.CreateContext();
+        // The rejected target released its reservation exactly once: the hold is back to available.
+        var balance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(0m, balance.Reserved);
+        Assert.Equal(1000m, balance.Allocated - balance.Reserved - balance.Committed - balance.Consumed);
+        var reverses = await verification.BudgetMovements
+            .Where(movement => movement.Type == (int)BudgetMovementType.Reverse)
+            .ToArrayAsync(cancellationToken);
+        Assert.Single(reverses);
+        Assert.Equal(100m, reverses[0].Amount);
+        var releaseOperation = await verification.BudgetOperations
+            .SingleAsync(
+                operation => operation.Kind == (int)BudgetOperationKind.Release, cancellationToken);
+        Assert.Equal("RELEASED", releaseOperation.Result);
+
+        // A redelivery of the same terminal result never releases twice.
+        await harness.DispatchResultsAsync(cancellationToken);
+        await using var replay = harness.CreateContext();
+        Assert.Equal(
+            1,
+            await replay.BudgetMovements.CountAsync(
+                movement => movement.Type == (int)BudgetMovementType.Reverse, cancellationToken));
+        var released = await replay.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(0m, released.Reserved);
     }
 
     [Fact]
@@ -494,6 +548,112 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 cancellationToken);
         }
 
+        /// <summary>
+        /// Rejects the first pending requirement with the real decision service and delivers its
+        /// outbox results, so the SPEC 08 release path runs exactly as in production.
+        /// </summary>
+        public async Task RejectFirstRequirementAsync(CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var decision = await context.ApprovalTasks
+                .AsNoTracking()
+                .Where(record => record.Status == (int)ApprovalTaskStatus.Pending)
+                .OrderBy(record => record.Id)
+                .FirstAsync(cancellationToken);
+            var assignment = await context.ApprovalAssignments
+                .AsNoTracking()
+                .SingleAsync(record => record.TaskId == decision.Id && record.ReleasedAt == null, cancellationToken);
+            using var loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Warning));
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Approval:Workloads:0:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
+                    ["Approval:Workloads:0:ClientId"] = PurchaseRequestSubmissionService.Workload.ClientId
+                })
+                .Build();
+            var allowlist = new ApprovalWorkloadAllowlist(configuration);
+            var engine = new ApprovalAssignmentEngine(
+                context, new OrganizationEligibilityService(context), new ApprovalScopeResolver(context));
+            await new ApprovalDecisionService(
+                    context, engine, loggerFactory.CreateLogger<ApprovalDecisionService>())
+                .DecideAsync(
+                    new ApprovalDecisionCommand(
+                        decision.Id,
+                        ApprovalDecisionAction.Reject,
+                        "Rejected by the budget release test",
+                        $"reject-{Guid.NewGuid():N}",
+                        decision.Version,
+                        assignment.AssigneeUserId,
+                        "corr-reject"),
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
+        }
+
+        /// <summary>
+        /// Delivers every recorded outbox event to the real Purchase Request consumer, which also
+        /// drives the SPEC 08 release of a terminal result.
+        /// </summary>
+        public Task DispatchResultsAsync(CancellationToken cancellationToken) =>
+            DispatchResultsAsync(DateTimeOffset.UtcNow.AddSeconds(1), cancellationToken);
+
+        public async Task DispatchResultsAsync(DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            using var loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Warning));
+            await using var context = CreateContext();
+            var budgetPersistence = new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context);
+            var releases = new BudgetReleaseService(
+                context,
+                new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetLedgerService(
+                    context, budgetPersistence),
+                budgetPersistence);
+            var dispatcher = new ApprovalOutboxDispatcher(
+                context,
+                new ApprovalResultConsumerRegistry(
+                [
+                    new PurchaseRequestApprovalResultConsumer(
+                        context, releases, NullLogger<PurchaseRequestApprovalResultConsumer>.Instance,
+                        "approval-result/v2"),
+                    new PurchaseRequestApprovalResultConsumer(
+                        context, releases, NullLogger<PurchaseRequestApprovalResultConsumer>.Instance,
+                        "approval-result/v3"),
+                    new PurchaseRequestApprovalResultConsumer(
+                        context, releases, NullLogger<PurchaseRequestApprovalResultConsumer>.Instance,
+                        ApprovalEvolutionCodes.LifecycleContractVersion)
+                ]),
+                loggerFactory.CreateLogger<ApprovalOutboxDispatcher>());
+            await dispatcher.DispatchAsync(
+                OrganizationId,
+                "integration-dispatcher",
+                now,
+                100,
+                cancellationToken);
+        }
+
+        /// <summary>State of every recorded outbox event, for the release assertions.</summary>
+        public async Task<IReadOnlyList<(string Contract, string Result, string State, string? Error)>>
+            ReadOutboxStatesAsync(CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var rows = await context.ApprovalOutboxEvents
+                .AsNoTracking()
+                .ToArrayAsync(cancellationToken);
+            return rows
+                .Select(row => (
+                    row.ContractVersion,
+                    Result: ParseResult(row.PayloadJson),
+                    State: ((ApprovalOutboxState)row.State).ToString().ToUpperInvariant(),
+                    Error: row.LastError))
+                .ToArray();
+        }
+
+        private static string ParseResult(string payloadJson)
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(payloadJson);
+            return document.RootElement.TryGetProperty("result", out var result)
+                ? result.GetString() ?? string.Empty
+                : string.Empty;
+        }
+
         /// <summary>Runs the real budget owner processor once, as the durable worker does.</summary>
         public async Task ProcessBudgetAsync(CancellationToken cancellationToken)
         {
@@ -746,6 +906,10 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                         [budgetBuilder]),
                     budgetLedger,
                     attestation),
+                new ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService(
+                    context,
+                    budgetLedger,
+                    budgetPersistence),
                 NullLogger<PurchaseRequestSubmissionService>.Instance);
             return new Services(submissionService);
         }

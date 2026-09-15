@@ -171,14 +171,17 @@ public static class DependencyInjection
         // SPEC 06 REQ-09: one consumer per result contract version plus the SPEC 04 lifecycle.
         services.AddScoped<IApprovalResultConsumer>(provider => new PurchaseRequestApprovalResultConsumer(
             provider.GetRequiredService<ProcureToPayDbContext>(),
+            provider.GetRequiredService<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>(),
             provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
             "approval-result/v2"));
         services.AddScoped<IApprovalResultConsumer>(provider => new PurchaseRequestApprovalResultConsumer(
             provider.GetRequiredService<ProcureToPayDbContext>(),
+            provider.GetRequiredService<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>(),
             provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
             "approval-result/v3"));
         services.AddScoped<IApprovalResultConsumer>(provider => new PurchaseRequestApprovalResultConsumer(
             provider.GetRequiredService<ProcureToPayDbContext>(),
+            provider.GetRequiredService<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>(),
             provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
             "approval-case-lifecycle/v1"));
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestPolicyFactProvider>();

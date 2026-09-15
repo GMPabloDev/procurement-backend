@@ -3,10 +3,12 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.Budget;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence.Approval;
+using ProcureToPay.Infrastructure.Persistence.Budget;
 
 namespace ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 
@@ -19,10 +21,15 @@ namespace ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 /// </summary>
 public sealed class PurchaseRequestApprovalResultConsumer(
     ProcureToPayDbContext dbContext,
+    Budget.BudgetReleaseService budgetReleases,
     ILogger<PurchaseRequestApprovalResultConsumer> logger,
     string contractVersion) : IApprovalResultConsumer
 {
     public string ContractVersion { get; } = contractVersion;
+
+    /// <summary>Results that end a target without approving it release its open reservation (SPEC 08 REQ-08).</summary>
+    private static bool ReleasesReservation(string result) =>
+        result is "REJECTED" or "CHANGES_REQUESTED" or "CANCELLED" or "SUPERSEDED";
 
     public async Task DeliverAsync(
         ApprovalResultDelivery delivery,
@@ -52,6 +59,14 @@ public sealed class PurchaseRequestApprovalResultConsumer(
         }
 
         await VerifyBindingsAsync(eventValue, cancellationToken);
+        // SPEC 08 REQ-08: a terminal negative result or a superseded case releases the reservation of
+        // the target. The release runs before the inbox projection so a crash between them replays
+        // both idempotently.
+        if (ReleasesReservation(eventValue.Result))
+        {
+            await ReleaseBudgetAsync(eventValue, delivery, cancellationToken);
+        }
+
         var existing = await dbContext.PurchaseRequestApprovalResults
             .AsNoTracking()
             .AnyAsync(
@@ -225,6 +240,45 @@ public sealed class PurchaseRequestApprovalResultConsumer(
             throw new PurchaseRequestDependencyUnavailableException(
                 "The obligation of the approval result does not belong to the case.");
         }
+    }
+
+    /// <summary>
+    /// Durable release of the open reservation of one terminal target (SPEC 08 REQ-08). It reuses
+    /// the event identity as the release key, so a redelivery resolves to the same operation.
+    /// </summary>
+    private async Task ReleaseBudgetAsync(
+        ApprovalResultEvent eventValue,
+        ApprovalResultDelivery delivery,
+        CancellationToken cancellationToken)
+    {
+        var trigger = eventValue.IsLifecycle
+            ? BudgetReleaseTrigger.ApprovalSuperseded
+            : BudgetReleaseTrigger.ApprovalResult;
+        await budgetReleases.ReleaseAsync(
+            new BudgetReleaseRequest(
+                eventValue.OrganizationId,
+                eventValue.CaseId,
+                eventValue.SubjectId,
+                eventValue.SubjectVersion,
+                $"release-{eventValue.EventId:D}",
+                BudgetReleaseService.ApprovalReleaseReason,
+                trigger,
+                new BudgetTriggerEvent(eventValue.ContractVersion, eventValue.EventId),
+                [
+                    new BudgetTarget(
+                        eventValue.TargetId,
+                        eventValue.TargetVersion,
+                        eventValue.MaterialSnapshotDigest,
+                        eventValue.TargetType)
+                ]),
+            BudgetActors.OwnerSystem,
+            delivery.CorrelationReference,
+            cancellationToken);
+        logger.LogInformation(
+            "Released the budget reservation of case {CaseId} target {TargetId} after {Result}.",
+            eventValue.CaseId,
+            eventValue.TargetId,
+            eventValue.Result);
     }
 
     /// <summary>

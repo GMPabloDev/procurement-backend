@@ -10,6 +10,8 @@ using ProcureToPay.Domain.Modules.PurchaseRequests;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Approval;
+using ProcureToPay.Infrastructure.Persistence.Budget;
+using ProcureToPay.Infrastructure.Persistence.BudgetLedger;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
@@ -654,11 +656,28 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                 new ApprovalResultConsumerRegistry(
                 [
                     new PurchaseRequestApprovalResultConsumer(
-                        context, NullLogger<PurchaseRequestApprovalResultConsumer>.Instance, "approval-result/v2"),
+                        context,
+                        new BudgetReleaseService(
+                            context,
+                            new BudgetLedgerService(context, new BudgetPersistenceService(context)),
+                            new BudgetPersistenceService(context)),
+                        NullLogger<PurchaseRequestApprovalResultConsumer>.Instance,
+                        "approval-result/v2"),
                     new PurchaseRequestApprovalResultConsumer(
-                        context, NullLogger<PurchaseRequestApprovalResultConsumer>.Instance, "approval-result/v3"),
+                        context,
+                        new BudgetReleaseService(
+                            context,
+                            new BudgetLedgerService(context, new BudgetPersistenceService(context)),
+                            new BudgetPersistenceService(context)),
+                        NullLogger<PurchaseRequestApprovalResultConsumer>.Instance,
+                        "approval-result/v3"),
                     new PurchaseRequestApprovalResultConsumer(
-                        context, NullLogger<PurchaseRequestApprovalResultConsumer>.Instance,
+                        context,
+                        new BudgetReleaseService(
+                            context,
+                            new BudgetLedgerService(context, new BudgetPersistenceService(context)),
+                            new BudgetPersistenceService(context)),
+                        NullLogger<PurchaseRequestApprovalResultConsumer>.Instance,
                         ApprovalEvolutionCodes.LifecycleContractVersion)
                 ]),
                 NullLogger<ApprovalOutboxDispatcher>.Instance);
@@ -684,7 +703,12 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
             }
 
             await new PurchaseRequestApprovalResultConsumer(
-                    context, NullLogger<PurchaseRequestApprovalResultConsumer>.Instance,
+                    context,
+                    new BudgetReleaseService(
+                        context,
+                        new BudgetLedgerService(context, new BudgetPersistenceService(context)),
+                        new BudgetPersistenceService(context)),
+                    NullLogger<PurchaseRequestApprovalResultConsumer>.Instance,
                     ApprovalOutboxPolicy.ContractVersion)
                 .DeliverAsync(
                     new ApprovalResultDelivery(
@@ -778,6 +802,12 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                             context,
                             new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context)),
                         attestation),
+                    new ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService(
+                        context,
+                        new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetLedgerService(
+                            context,
+                            new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context)),
+                        new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context)),
                     NullLogger<PurchaseRequestSubmissionService>.Instance)
             {
                 BeforeApprovalCaseCancel = CancelRaceHook

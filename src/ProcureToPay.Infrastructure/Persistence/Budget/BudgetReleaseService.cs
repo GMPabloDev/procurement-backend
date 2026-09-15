@@ -50,11 +50,23 @@ public sealed class BudgetReleaseService(
         var organizationId = BudgetCodes.RequireIdentity(request.OrganizationId, "Organization");
         var caseId = BudgetCodes.RequireIdentity(request.CaseId, "Case");
         var releaseKey = BudgetCodes.RequireKey(request.ReleaseKey, "release_key");
+        var fingerprint = BudgetCanonicalJson.Digest(BudgetFingerprints.ReleasePreimage(
+            organizationId,
+            caseId,
+            request.RequestId,
+            request.RequestVersion,
+            releaseKey,
+            request.ReasonCode,
+            request.Trigger,
+            request.TriggerEvent,
+            request.Targets));
+        // The release digest is the reproducible identity of the command, so the transition source
+        // and the operation fingerprint carry the same value (REQ-08).
         var source = new BudgetSource(
             BudgetCodes.PurchaseRequestSourceType,
             BudgetCodes.RequireIdentity(request.RequestId, "Request"),
             request.RequestVersion,
-            string.Empty);
+            fingerprint);
         var candidates = await dbContext.BudgetMovements
             .AsNoTracking()
             .Where(movement => movement.OrganizationId == organizationId &&
@@ -115,16 +127,6 @@ public sealed class BudgetReleaseService(
             return new BudgetReleaseResult(null, Released: false, Replayed: true);
         }
 
-        var fingerprint = BudgetCanonicalJson.Digest(BudgetFingerprints.ReleasePreimage(
-            organizationId,
-            caseId,
-            request.RequestId,
-            request.RequestVersion,
-            releaseKey,
-            request.ReasonCode,
-            request.Trigger,
-            request.TriggerEvent,
-            request.Targets));
         // The release key is unique per case scope: an Approval-driven release of one target set and
         // the cancellation release of the same case reuse the same recorded operation.
         var operationKey = $"{releaseKey}:{caseId:D}";
@@ -134,22 +136,7 @@ public sealed class BudgetReleaseService(
                 organizationId,
                 operationKey,
                 fingerprint,
-                new BudgetSource(
-                    BudgetCodes.PurchaseRequestSourceType,
-                    source.Id,
-                    source.Version,
-                    BudgetCodes.RequireDigest(
-                        BudgetCanonicalJson.Digest(BudgetFingerprints.ReleasePreimage(
-                            organizationId,
-                            caseId,
-                            request.RequestId,
-                            request.RequestVersion,
-                            releaseKey,
-                            request.ReasonCode,
-                            request.Trigger,
-                            request.TriggerEvent,
-                            request.Targets)),
-                        "release_digest")),
+                source,
                 actor,
                 request.ReasonCode,
                 "RELEASED",

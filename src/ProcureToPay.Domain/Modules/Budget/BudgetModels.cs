@@ -441,10 +441,15 @@ public sealed record BudgetMovementCommandItem(decimal Amount, Guid? ParentMovem
             : ParentMovementId;
 }
 
-/// <summary>Event that triggered a durable release (REQ-08); null for a Purchase Request cancel.</summary>
+/// <summary>
+/// Event that triggered a durable release (REQ-08); null for a Purchase Request cancel. The
+/// contract version is a published identity like <c>approval-result/v2</c>, so it uses the wider
+/// identity alphabet instead of the key alphabet.
+/// </summary>
 public sealed record BudgetTriggerEvent(string ContractVersion, Guid EventId)
 {
-    public string ContractVersion { get; } = BudgetCodes.RequireKey(ContractVersion, "Trigger contract version");
+    public string ContractVersion { get; } =
+        BudgetCodes.RequireBoundedToken(ContractVersion, "Trigger contract version");
 
     public Guid EventId { get; } = BudgetCodes.RequireIdentity(EventId, "Trigger event id");
 }

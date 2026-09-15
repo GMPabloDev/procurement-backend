@@ -366,3 +366,10 @@ public static class BudgetMovementCalculator
         }
     }
 }
+
+/// <summary>Published actors of the automatic Budget effects (SPEC 08 REQ-10).</summary>
+public static class BudgetActors
+{
+    /// <summary>The Budget owner acts as SYSTEM on its own releases and compensations.</summary>
+    public static BudgetActor OwnerSystem { get; } = BudgetActor.ForSystem(BudgetCodes.BudgetOwnerSystemId);
+}
