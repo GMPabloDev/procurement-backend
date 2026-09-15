@@ -1,7 +1,7 @@
 # RUN SPEC 08 — Budgets y movimientos presupuestarios por posición
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** En implementación
+> **Estado del run:** Bloqueado
 > **Spec:** specs/08-budgets-movimientos-presupuestarios.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 534a7c83b42f2727a143298d77b2a2fd47d0536d
@@ -105,7 +105,15 @@ Ejecutada sobre el commit base `534a7c8` antes de cualquier edición, con el ár
 
 ## Desviaciones y bloqueos
 
-- **Correcciones exigidas por la revisión independiente (ronda 1, BLOCK).** Los hallazgos R8–R11
+- **Residual de R9: lease heartbeat independiente (revisión final BLOCK).** El fence transaccional del
+  ledger impide que un worker obsoleto confirme cualquier movimiento o checkpoint, y la renovación
+  cooperativa mantiene el lease fresco antes de cada efecto; un efecto bloqueado más de 30 s puede
+  ser reclamado y reejecutado de forma idempotente, pero la revisión exige además una renovación
+  periódica ≤10 s con conexión independiente. Se implementó con un segundo `DbContext` y se
+descartó antes de commit por fallos de transporte intermitentes en este entorno; queda como el
+  único hallazgo abierto y el run permanece `Bloqueado` hasta que el usuario decida entre
+  completarlo o integrar con el residual documentado.
+- **Correcciones exigidas por la revisión independiente (rondas 1–4).** Los hallazgos R8–R11
   señalaron: un attempt podía quedar `SIGNALLING` para siempre si el proceso moría tras confirmar
   la señal; el lease de 30 s no se renovaba cada ≤10 s ni se comprobaba antes de escribir; health
   comparaba con el snapshot del último movimiento en lugar de la reconstrucción contractual (falso
@@ -124,9 +132,9 @@ Ejecutada sobre el commit base `534a7c8` antes de cualquier edición, con el ár
 
 ## Verificación independiente
 
-> **Resultado:** BLOCK (rondas 1–3); correcciones de las tres rondas aplicadas, verificación final pendiente de autorización.
-> **Rondas:** 3/3
-> **Triaje:** R8 (recuperación de señal confirmada) y R10 (health falso corrupto) resueltos en la ronda 2. R9 evolucionó: primero claim concurrente y lease hasta terminal, luego falta de renovación/fencing, después retornos sin fence, checkpoint sin validar y artefactos de replay perdidos: todo corregido con fence transaccional en todos los retornos, validación antes del checkpoint, renovación cooperativa ≤10 s y replay con request operation y movimientos REQUESTED. R11: CA-02/CA-03/CA-07 demostrados; CA-01 completado con reducción, refs inválidas y organización ajena. Ningún hallazgo descartado.
-> **Modelo efectivo:** `openai-codex/gpt-5.6-sol` (subagente `sdd-implementation-reviewer`, effort high; 8 + 6 + 7 turnos).
-> **Método:** revisión full base `534a7c83b42f2727a143298d77b2a2fd47d0536d` → `329e842`, diferencial `329e842` → `013da5f` y diferencial final `013da5f` → `b645b3f`, con las suites completas de cada candidato aportadas por el orquestador.
+> **Resultado:** BLOCK (rondas 1–4). R8, R10 y R11 resueltos; R9 conserva abierto solo el lease heartbeat independiente. El árbol probado `4ab7041` mantiene fence transaccional en todos los retornos, validación del lease antes de cada checkpoint, replay con request operation y movimientos REQUESTED, y renovación cooperativa ≤10 s. Se implementó y descartó un heartbeat con conexión independiente por inestabilidad del transporte en este entorno, sin llegar a commit; queda como residual documentado.
+> **Rondas:** 4/4
+> **Triaje:** R8 (recuperación de señal confirmada) resuelto en ronda 2; R10 (health falso corrupto) resuelto en ronda 2; R11 (CA-01/02/03/07 sin evidencia) resuelto en rondas 2–4; R9 corregido en ronda 4 salvo la renovación periódica independiente, que la ronda 4 mantiene abierta. Ningún hallazgo descartado; la última ronda fue autorizada explícitamente por el usuario.
+> **Modelo efectivo:** `openai-codex/gpt-5.6-sol` (subagente `sdd-implementation-reviewer`, effort high; 8 + 6 + 7 + 9 turnos).
+> **Método:** revisión full base `534a7c83b42f2727a143298d77b2a2fd47d0536d` → `329e842` y diferenciales `329e842` → `013da5f`, `013da5f` → `b645b3f` y `b645b3f` → `4ab7041`, con las suites completas de cada candidato aportadas por el orquestador.
 > **Fecha:** 2026-09-15
