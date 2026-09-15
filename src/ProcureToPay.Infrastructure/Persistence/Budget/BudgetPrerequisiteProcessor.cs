@@ -644,17 +644,27 @@ public sealed class BudgetPrerequisiteProcessor(
                     await using var connection = new SqlConnection(connectionString);
                     await connection.OpenAsync(cancellation.Token);
                     await using var command = connection.CreateCommand();
-                    var now = DateTimeOffset.UtcNow;
+                    // The attempt row is locked by its own statement first, so the clock of the
+                    // following UPDATE is read after the wait: an UPDATE delayed behind a lock can
+                    // never revive a lease that already expired.
                     command.CommandText =
-                        "UPDATE [Budget].[PrerequisiteAttempts] SET [LeaseUntil] = @until " +
+                        "SET XACT_ABORT ON; BEGIN TRANSACTION; " +
+                        "DECLARE @seen int; " +
+                        "SELECT @seen = 1 FROM [Budget].[PrerequisiteAttempts] " +
+                        "WITH (UPDLOCK, ROWLOCK) WHERE [Id] = @id; " +
+                        "UPDATE [Budget].[PrerequisiteAttempts] " +
+                        "SET [LeaseUntil] = DATEADD(SECOND, @seconds, SYSUTCDATETIME()) " +
                         "WHERE [Id] = @id AND [LeaseOwner] = @owner AND [FencingToken] = @token " +
-                        "AND [LeaseUntil] > @now";
-                    command.Parameters.AddWithValue("@until", now + duration);
-                    command.Parameters.AddWithValue("@now", now);
+                        "AND [LeaseUntil] > SYSUTCDATETIME(); " +
+                        "SET @affected = @@ROWCOUNT; COMMIT TRANSACTION;";
+                    command.Parameters.AddWithValue("@seconds", (int)duration.TotalSeconds);
                     command.Parameters.AddWithValue("@id", attemptId);
                     command.Parameters.AddWithValue("@owner", owner);
                     command.Parameters.AddWithValue("@token", fencingToken);
-                    var affected = await command.ExecuteNonQueryAsync(cancellation.Token);
+                    var affectedParameter = command.Parameters.Add("@affected", SqlDbType.Int);
+                    affectedParameter.Direction = ParameterDirection.Output;
+                    await command.ExecuteNonQueryAsync(cancellation.Token);
+                    var affected = affectedParameter.Value is int value ? value : 0;
                     if (affected == 0)
                     {
                         return;

@@ -484,6 +484,89 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
     }
 
     [Fact]
+    public async Task The_heartbeat_does_not_revive_an_expired_lease()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        _ = await harness.SubmitAsync(requestId, version, "submit-expiry", cancellationToken);
+        Assert.Empty(await harness.ProcessBudgetInstanceAsync(
+            "expiry-seed-worker", cancellationToken, DateTimeOffset.UtcNow.AddHours(-1)));
+        harness.UseCommandTimeout(120);
+        Guid attemptId;
+        Guid positionId;
+        await using (var seeded = harness.CreateContext())
+        {
+            attemptId = (await seeded.BudgetPrerequisiteAttempts.SingleAsync(cancellationToken)).Id;
+            positionId = await seeded.BudgetPositions
+                .AsNoTracking()
+                .Select(record => record.Id)
+                .SingleAsync(cancellationToken);
+        }
+
+        // The balance row keeps the worker before its posting transaction while the attempt row keeps
+        // the heartbeat from renewing until after the lease expires.
+        await using var balanceBlockerContext = harness.CreateContext();
+        await using var balanceBlocker = await balanceBlockerContext.Database.BeginTransactionAsync(cancellationToken);
+        await balanceBlockerContext.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE [Budget].[Balances] SET [BalanceVersion] = [BalanceVersion] WHERE [PositionId] = {positionId}",
+            cancellationToken);
+        var balanceBlockerSessionId = await balanceBlockerContext.Database
+            .SqlQueryRaw<int>("SELECT CAST(@@SPID AS int) AS [Value]")
+            .SingleAsync(cancellationToken);
+        var worker = Task.Run(
+            async () => await harness.ProcessBudgetInstanceAsync("expiry-worker", cancellationToken),
+            cancellationToken);
+        await harness.WaitForLeaseOwnerAsync(attemptId, "expiry-worker", cancellationToken);
+        // Only lock the attempt row once the worker is blocked before its transaction, so the
+        // heartbeat (not the worker) is the one waiting to renew.
+        await harness.WaitForBlockedRequestAsync(balanceBlockerSessionId, cancellationToken);
+        DateTimeOffset initialLease;
+        await using (var before = harness.CreateContext())
+        {
+            initialLease = (await before.BudgetPrerequisiteAttempts
+                .AsNoTracking()
+                .Where(record => record.Id == attemptId)
+                .SingleAsync(cancellationToken)).LeaseUntil!.Value;
+        }
+
+        await using var attemptBlockerContext = harness.CreateContext();
+        await using var attemptBlocker = await attemptBlockerContext.Database.BeginTransactionAsync(cancellationToken);
+        await attemptBlockerContext.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE [Budget].[PrerequisiteAttempts] SET [Attempts] = [Attempts] WHERE [Id] = {attemptId}",
+            cancellationToken);
+        await Task.Delay(initialLease + TimeSpan.FromSeconds(3) - DateTimeOffset.UtcNow, cancellationToken);
+        await attemptBlocker.CommitAsync(cancellationToken);
+        await balanceBlocker.CommitAsync(cancellationToken);
+        try
+        {
+            _ = await worker;
+        }
+        catch (BudgetDependencyUnavailableException)
+        {
+            // The stale worker aborts when the transactional fence rejects the expired lease.
+        }
+
+        // The delayed renewal must not resurrect the lease: the server clock rejects the stale tick
+        // and the worker aborts without confirming anything (REQ-07).
+        await using var verification = harness.CreateContext();
+        var expired = await verification.BudgetPrerequisiteAttempts
+            .SingleAsync(record => record.Id == attemptId, cancellationToken);
+        Assert.True(
+            expired.LeaseUntil <= DateTimeOffset.UtcNow,
+            $"The heartbeat revived an expired lease: {expired.LeaseUntil:o} at {DateTimeOffset.UtcNow:o}");
+        Assert.Equal(
+            0,
+            await verification.BudgetMovements.CountAsync(
+                movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+        Assert.Equal(
+            0,
+            await verification.ApprovalPrerequisiteSignals
+                .CountAsync(record => record.PrerequisiteId == expired.PrerequisiteId, cancellationToken));
+    }
+
+    [Fact]
     public async Task A_rejected_requirement_releases_the_open_reservation()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -768,6 +851,7 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
     {
         private MsSqlContainer container = null!;
         private string connectionString = string.Empty;
+        private int commandTimeoutSeconds = 30;
         private PolicySetVersion policy = null!;
         private DateTimeOffset activationAt;
 
@@ -839,9 +923,12 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
             return harness;
         }
 
+        /// <summary>Extends the command timeout for tests that hold a lock past the lease deadline.</summary>
+        public void UseCommandTimeout(int seconds) => commandTimeoutSeconds = seconds;
+
         public ProcureToPayDbContext CreateContext() => new(
             new DbContextOptionsBuilder<ProcureToPayDbContext>()
-                .UseSqlServer(connectionString)
+                .UseSqlServer(connectionString, options => options.CommandTimeout(commandTimeoutSeconds))
                 .Options);
 
         private void Seed(ProcureToPayDbContext context)
