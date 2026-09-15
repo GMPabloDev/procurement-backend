@@ -13,7 +13,7 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-14 18:50 -0500
-> **Actualizado:** 2026-09-15 02:20 -0500
+> **Actualizado:** 2026-09-15 09:04 -0500
 > **HEAD verificado:** Pendiente
 > **Commit de integración:** Pendiente
 
@@ -40,9 +40,18 @@ Ejecutada sobre el commit base `534a7c8` antes de cualquier edición, con el ár
 | T-05 | Verificada | Owner real `budget-check-owner/v1`: `BudgetPrerequisiteProcessor` con attempt durable, keys deterministas, lease/fencing, reserva all-or-nothing y señal con `budget-check-evidence/v1`; prerequisito `FAILED` sin reserva cuando falta saldo. Evidencia: `Budget_control_reserves_all_or_nothing_and_signals_the_prerequisite` y `A_budget_without_funds_fails_the_owner_prerequisite_without_reserving`. | working-tree / CP-01 |
 | T-06 | Verificada | Compensación terminal en el processor (case `CANCELLED|SUPERSEDED` → `REVERSE` → `COMPENSATED`), `BudgetReleaseService` con takeover `409`, release automático en `PurchaseRequestApprovalResultConsumer` para `REJECTED|CHANGES_REQUESTED|CANCELLED|SUPERSEDED` (los tres contratos registrados) y release antes de confirmar la cancelación de PR con fila durable `PurchaseRequestBudgetReleaseAttempt`. Evidencia: `A_rejected_requirement_releases_the_open_reservation` (reserva 100 → rechazo real por `ApprovalDecisionService` → dispatch real del outbox → `REVERSE` de 100, `RELEASE` con resultado `RELEASED`, redelivery idempotente). La transferencia atómica está implementada como `BudgetLedgerService.TransferReserveAsync`: bajo los locks ordenados de todas las posiciones involucradas evalúa primero contando el hold del predecessor como disponible y, solo si el set nuevo cabe entero, revierte y reserva en la misma transacción; si no cabe no revierte ni reserva. Evidencia: `A_superseded_hold_transfers_to_the_replacement_all_or_nothing`, `A_transfer_that_cannot_cover_the_whole_set_reverses_nothing` y `Cancelling_an_approved_request_releases_its_reservation_before_completing` (cancelación real con `PurchaseRequestBudgetReleaseAttempt` en `RELEASED`, un solo `REVERSE` y replay idempotente). | working-tree / CP-03 |
 | T-07 | Verificada | `BudgetMovementProducerRegistry` (exact-one por operación+contrato+fuente, workload completo, 0/2/deshabilitado fail-closed), `BudgetTransitionService` (COMMIT/CONSUME/REVERSE con matching de fuente en REVERSE) y superficie workload-only `POST /api/v1/budgets/movements` con `budget-transition-command/v1` y respuesta `budget-transition-response/v1`. Evidencia: `BudgetTransitionIntegrationTests` (6, SQL real): remanente de RESERVED consumido por COMMIT, replay idéntico por key y `409` con otra preimagen, CONSUME sobre COMMITTED, 0 y 2 producers fail-closed, workload ajeno `403` sin movimiento, REVERSE solo del delta no avanzado de su propia fuente y REVERSE de otra fuente prohibido. Sin registros productivos, como exige el contrato. | working-tree / CP-02 |
-| T-08 | Verificada | `BudgetHealthCheck` (`BUDGET_OK`/`BUDGET_PROCESSOR_*`/`BUDGET_PRODUCER_*`/`BUDGET_ATTEMPT_OVERDUE`/`BUDGET_LEDGER_CORRUPTED`), endpoint `/health/budget`, processor integrado en el worker productivo, `docs/budget-operations.md` y el recorrido E2E real PR→Policy→precheck→Approval→owner. Evidencia operativa añadida: redelivery de una reserva confirmada con las mismas keys no duplica movimientos ni saldo (`A_redelivered_reservation_reuses_its_operations_without_double_booking`) y la reconstrucción append-only iguala exactamente los cuatro buckets proyectados (`Rebuilding_a_balance_matches_the_posted_movements_exactly`). La matriz de fault injection ya existente en la suite de submit (crash entre reserva y señal con attempt recuperable, insuficiencia, rechazo, cancelación) sigue verde. **Pendiente declarado**: el transporte HTTP de transiciones no tiene prueba E2E con tokens de workload (la autorización se cubre por la integración del service y el registry) y la carrera de dos instancias sobre un mismo attempt budget no tiene prueba dedicada: el processor reclama con lease y el invariante está cubierto por el claim condicional del dispatcher de Approval. | working-tree / CP-03 |
+| T-08 | Verificada | `BudgetHealthCheck` (`BUDGET_OK`/`BUDGET_PROCESSOR_*`/`BUDGET_PRODUCER_*`/`BUDGET_ATTEMPT_OVERDUE`/`BUDGET_LEDGER_CORRUPTED`), endpoint `/health/budget`, processor integrado en el worker productivo, `docs/budget-operations.md` y el recorrido E2E real PR→Policy→precheck→Approval→owner. Evidencia operativa: redelivery de una reserva confirmada con las mismas keys no duplica movimientos ni saldo (`A_redelivered_reservation_reuses_its_operations_without_double_booking`), la reconstrucción append-only iguala exactamente los cuatro buckets proyectados (`Rebuilding_a_balance_matches_the_posted_movements_exactly`) y la matriz de fault injection de la suite de submit (insuficiencia, rechazo, cancelación) sigue verde. Los dos huecos declarados quedan cerrados: (a) transporte HTTP de transiciones con tokens de workload: `BudgetTransitionE2ETests` (2, HTTP real + SQL real) prueba COMMIT de un producer registrado con respuesta canónica y buckets, replay por key, `409` por preimagen divergente, `403` de workload ajeno y de token de usuario sin identidad de workload, `400` de versión de contrato no reconocida, y `503` de producer ausente o deshabilitado, siempre sin movimiento; (b) carrera dedicada de dos instancias sobre un mismo attempt: `Two_instances_racing_the_same_attempt_reserve_and_signal_once` fuerza con un lock compartido que ambas lean la misma fila y compitan por el claim, y verifica un único outcome, `FencingToken`/`Attempts` = 1, una sola reserva y una sola señal. | working-tree / CP-04 |
 
 ## Checkpoints
+
+### CP-04 — 2026-09-15 09:04 -0500 — Huecos de T-08 cerrados: transporte HTTP y carrera de dos instancias
+
+- Tareas: T-01–T-08 verificadas; sin pendientes declarados.
+- Cambios: `BudgetTransitionE2ETests` (nuevo, `tests/ProcureToPay.ApiE2ETests/Budget/`): factory con la tabla cerrada `Budget:MovementProducers`, token de workload y token de usuario administrativo, y seed de posición 1000 PEN + hold real de 100 PEN para ejercer COMMIT/REVERSE por HTTP. `Two_instances_racing_the_same_attempt_reserve_and_signal_once` en la suite de catálogos, con `ProcessBudgetInstanceAsync` (contexto y lease por instancia) y orquestación determinista del claim. Arreglos internos en `BudgetPrerequisiteProcessor`: `ClaimAsync` trata `DbUpdateConcurrencyException` como un claim perdido (devuelve `false` en lugar de abortar el barrido) y `RecordReserveAsync` conserva el lease hasta el estado terminal, de modo que solo un lease vencido es reclamable.
+- Tests y checks: build 0 errores; Unit `199/199`; Integración `97/97`; API/E2E `26/26`; `git diff --check` limpio. Suite completa ejecutada una vez sobre el árbol estable de este checkpoint; el test de carrera se repitió tres veces con resultado estable.
+- Evidencia: `A_registered_workload_commits_over_http_and_replays_by_key`, `An_absent_disabled_or_stale_transition_fails_closed_over_http`, `Two_instances_racing_the_same_attempt_reserve_and_signal_once`.
+- HEAD: `8ceec72` (código probado commiteado; el transporte en `7a529a8`).
+- Próximo paso: revisión independiente sobre este árbol.
 
 ### CP-03 — 2026-09-15 02:10 -0500 — Transferencia atómica y cancelación probada
 
@@ -82,15 +91,17 @@ Ejecutada sobre el commit base `534a7c8` antes de cualquier edición, con el ár
 | CA-05 | Cumplido | Reserva all-or-nothing + SATISFIED con evidencia; insuficiencia → FAILED sin RESERVED; precheck insuficiente → `422` sin caso. | Revisión pendiente |
 | CA-06 | Cumplido | Release automático probado end-to-end (rechazo → REVERSE → RELEASE idempotente) y release previa a la cancelación de PR implementada con attempt durable. Transferencia atómica, release automático, compensación y cancelación de PR probados sobre SQL real. | Revisión pendiente |
 | CA-07 | Cumplido | Los cinco vectores publicados se reproducen; el registry 0/1/2 y la idempotencia de COMMIT/CONSUME/REVERSE están probados sobre SQL. Falta el golden de `release_fingerprint`. | Automática pendiente |
-| CA-08 | Parcial | Health, runbook, visibilidad base, superficie workload-only de transiciones, prohibiciones de rol, redelivery sin doble reserva y reconstrucción de saldos implementados y probados. Faltan la prueba E2E del transporte HTTP de transiciones y la carrera dedicada de dos instancias. | Automática pendiente |
+| CA-08 | Cumplido | Health, runbook, visibilidad base, superficie workload-only de transiciones, prohibiciones de rol, redelivery sin doble reserva y reconstrucción de saldos implementados y probados. El transporte HTTP de transiciones se prueba con tokens de workload reales (`BudgetTransitionE2ETests`: COMMIT canónico, replay, `409`, `403` de workload ajeno y de usuario sin identidad de workload, `400` de contrato y `503` de producer ausente/deshabilitado, sin movimientos) y la carrera dedicada de dos instancias sobre un mismo attempt reserva y señala una sola vez. | Revisión pendiente |
 
 ## Desviaciones y bloqueos
 
-- **T-08 con dos huecos declarados.** El ledger, el precheck, el adapter v3, el owner real, el release
-  automático de reservas y la superficie workload-only de transiciones están implementados y
-  probados. Quedan dos huecos en la operación certificada: el transporte HTTP de transiciones sin
-  prueba E2E de tokens de workload y la carrera dedicada de dos instancias sobre un mismo attempt.
-  El contrato no se relaja: ambos están trazados a T-08/CA-08 y no se declaran verificados.
+- **Dos defectos internos corregidos al cerrar la carrera de T-08.** La prueba dedicada de dos
+  instancias reprodujo que el perdedor del claim abortaba con `DbUpdateConcurrencyException` en
+  lugar de omitir el attempt, y mostró que el lease se liberaba antes de la señal, dejando el
+  attempt en vuelo reclamable por otra instancia. Ambos son corregidos dentro del contrato (el
+  request HTTP no cambia): el claim perdido devuelve sin postear y el lease cubre claim→terminal.
+  La recuperación de un worker muerto sigue siendo por vencimiento de lease (30 s, dentro del
+  presupuesto de 60 s del processor).
 - **Runner `dotnet test`.** Igual que en SPEC 06/07, el wrapper de Microsoft.Testing.Platform
   reporta 0 pruebas en este entorno; toda la evidencia usa las asambleas compiladas directamente.
 
