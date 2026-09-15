@@ -120,7 +120,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 subjectId = SubjectId,
                 subjectVersion = 1,
                 operation = PolicyApprovalAdapter.Operation,
-                contractVersion = PolicyApprovalAdapter.ContractVersion,
+                contractVersion = PolicyApprovalAdapter.ContractVersionV3,
                 submissionKey = "contract-submission",
                 requesterId = RequesterId,
                 originatorId = OriginatorId
@@ -142,7 +142,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 subjectId = SubjectId,
                 subjectVersion = 1,
                 operation = PolicyApprovalAdapter.Operation,
-                contractVersion = PolicyApprovalAdapter.ContractVersion,
+                contractVersion = PolicyApprovalAdapter.ContractVersionV3,
                 submissionKey = "contract-submission",
                 requesterId = RequesterId,
                 originatorId = OriginatorId
@@ -164,7 +164,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 subjectId = SubjectId,
                 subjectVersion = 1,
                 operation = PolicyApprovalAdapter.Operation,
-                contractVersion = PolicyApprovalAdapter.ContractVersion,
+                contractVersion = PolicyApprovalAdapter.ContractVersionV3,
                 submissionKey = "contract-submission",
                 // SPEC 06 REQ-07: another requester is another command for the same key.
                 requesterId = Guid.Parse("77777777-7777-7777-7777-777777777778"),
@@ -478,7 +478,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 subjectId = SubjectId,
                 subjectVersion = 1,
                 operation = PolicyApprovalAdapter.Operation,
-                contractVersion = PolicyApprovalAdapter.ContractVersion,
+                contractVersion = PolicyApprovalAdapter.ContractVersionV3,
                 submissionKey = "ownerless-submission",
                 requesterId = RequesterId,
                 originatorId = OriginatorId
@@ -529,7 +529,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 subjectId = SubjectId,
                 subjectVersion = 1,
                 operation = PolicyApprovalAdapter.Operation,
-                contractVersion = PolicyApprovalAdapter.ContractVersion,
+                contractVersion = PolicyApprovalAdapter.ContractVersionV3,
                 submissionKey = "tampered-submission",
                 requesterId = RequesterId,
                 originatorId = OriginatorId

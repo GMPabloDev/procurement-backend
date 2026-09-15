@@ -37,9 +37,14 @@ public sealed record PurchaseRequestSupersessionPlan(
     IReadOnlySet<string> VerifiedMaterialityIdentities);
 
 /// <summary>A blocked Policy evaluation is a contract violation of the request, not a dependency (REQ-11).</summary>
-public sealed class PurchaseRequestPolicyBlockedException(string message) : DomainException(message)
-{
-}
+public sealed class PurchaseRequestPolicyBlockedException(string message) : DomainException(message);
+
+/// <summary>
+/// The confirmed budget precheck of a <c>REQUIRE_BUDGET_CHECK</c> control could not cover the
+/// request version (SPEC 08 REQ-06). It maps to <c>422 /problems/budget-insufficient</c> and the
+/// confirmed evaluation plus the audited precheck stay available for a retry.
+/// </summary>
+public sealed class PurchaseRequestBudgetInsufficientException(string message) : DomainException(message);
 
 /// <summary>
 /// Durable presentation orchestration (REQ-06, DEC-05): attestation, Policy evaluation by
@@ -56,13 +61,19 @@ public sealed class PurchaseRequestSubmissionService(
     ApprovalSubmissionService approvalSubmissions,
     ApprovalSupersessionService approvalSupersessions,
     ApprovalWorkflowService approvalWorkflow,
+    BudgetLedger.BudgetPrecheckService budgetPrechecks,
     ILogger<PurchaseRequestSubmissionService> logger)
 {
     /// <summary>Trusted in-process workload of the purchase request domain (REQ-05, REQ-06).</summary>
     public static readonly ApprovalWorkloadIdentity Workload =
         new("internal://procure-to-pay", PurchaseRequestCodes.ProviderId);
 
-    public const string AdapterContractVersion = PolicyApprovalAdapter.ContractVersion;
+    /// <summary>
+    /// SPEC 08 REQ-05, DEC-08: new Purchase Request submissions use the v3 contract, whose budget
+    /// projection keeps Fiscal Year, Spend Category and the amount of every covered target. An
+    /// attempt already persisted with v2 resumes v2 because the version travels in the command.
+    /// </summary>
+    public const string AdapterContractVersion = PolicyApprovalAdapter.ContractVersionV3;
 
     /// <summary>
     /// Fault-injection seam of the cancellation race (T-08): runs after the case version is read
@@ -245,6 +256,37 @@ public sealed class PurchaseRequestSubmissionService(
 
             throw new DomainConflictException(
                 "The purchase request presentation raced with another command; reload and retry.");
+        }
+
+        // (2b) A REQUIRE_BUDGET_CHECK control must pass its auditable precheck before any case
+        // exists (SPEC 08 REQ-06). The precheck is idempotent, so a retry reuses its recorded
+        // outcome instead of adding a second operation.
+        var budgetControl = bundle.Controls.FirstOrDefault(
+            control => control.Type == PolicyEffectType.RequireBudgetCheck);
+        if (budgetControl is not null)
+        {
+            var precheck = await budgetPrechecks.PrecheckAsync(
+                command.OrganizationId,
+                request.Id,
+                request.CurrentVersion,
+                $"pr-submit-{request.Id:D}-v{request.CurrentVersion}-budget",
+                correlation,
+                cancellationToken);
+            attempt = await dbContext.PurchaseRequestSubmissionAttempts
+                .SingleAsync(record => record.Id == attempt.Id, cancellationToken);
+            if (!string.Equals(precheck.Result, "AVAILABLE", StringComparison.Ordinal))
+            {
+                await MarkFailureAsync(
+                    attempt, PurchaseRequestSubmissionStatus.DependencyFailed,
+                    PurchaseRequestSubmissionCodes.ErrorBudgetInsufficient, utcNow, cancellationToken);
+                throw new PurchaseRequestBudgetInsufficientException(
+                    "The purchase request has no available budget for its confirmed positions.");
+            }
+
+            attempt.Status = (int)PurchaseRequestSubmissionStatus.BudgetPrecheckConfirmed;
+            attempt.ErrorCode = null;
+            attempt.UpdatedAt = utcNow;
+            await dbContext.SaveChangesAsync(cancellationToken);
         }
 
         // (3) Open, or supersede the previous case, through the trusted in-process adapter v2.

@@ -64,8 +64,15 @@ public sealed class ApprovalWorkflowWorker(
         var dispatcher = scope.ServiceProvider.GetRequiredService<ApprovalOutboxDispatcher>();
         var reconciliation = scope.ServiceProvider.GetRequiredService<ApprovalReconciliationService>();
         var delegations = scope.ServiceProvider.GetRequiredService<ApprovalDelegationTransitionProcessor>();
+        // SPEC 08 REQ-07: the real budget owner advances its due prerequisites in the same sweep, so a
+        // reservation and its signal land inside the 60-second budget instead of waiting for an
+        // administrative call.
+        var budgetPrerequisites = scope.ServiceProvider
+            .GetRequiredService<ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPrerequisiteProcessor>();
         var identity = scope.ServiceProvider.GetRequiredService<ApprovalInstanceIdentity>();
         var utcNow = DateTimeOffset.UtcNow;
+
+        await budgetPrerequisites.ProcessDueAsync(utcNow, cancellationToken);
 
         await RequestOrganizationChangeRunsAsync(dbContext, reconciliation, utcNow, cancellationToken);
 

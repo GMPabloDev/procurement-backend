@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using Microsoft.EntityFrameworkCore;
 using ProcureToPay.Application.Abstractions;
+using ProcureToPay.Domain.Modules.Budget;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
@@ -20,22 +21,32 @@ namespace ProcureToPay.Infrastructure.Persistence.Approval;
 /// and no node for effects the owning domain applies. Unknown controls, missing projections or
 /// corrupt digests fail closed before any case exists.
 /// </summary>
-public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IApprovalSubmissionAdapter
+public sealed class PolicyApprovalAdapter(
+    ProcureToPayDbContext dbContext,
+    string contractVersion = PolicyApprovalAdapter.ContractVersion,
+    IBudgetDemandBuilder? budgetDemandBuilder = null) : IApprovalSubmissionAdapter
 {
     public const string AdapterId = "policy-approval-adapter";
-    /// <summary>Adapter contract version; the submission command carries this exact value.</summary>
+    /// <summary>The v2 contract: budget parameters remain the SPEC 05 projection.</summary>
     public const string ContractVersion = "v2";
+    /// <summary>
+    /// SPEC 08 DEC-08: the v3 contract adds Fiscal Year, Spend Category and one demand per covered
+    /// target by delegating to the server-side demand builder. The DAG, actions, actors and snapshot
+    /// contract are unchanged, so only the budget projection differs from v2.
+    /// </summary>
+    public const string ContractVersionV3 = "v3";
     /// <summary>
     /// SPEC 06 REQ-07: the v2 contract declares its requester, admits requester=originator for the
     /// Purchase Request flow and offers <c>REQUEST_CHANGES</c> beside APPROVE and REJECT.
     /// </summary>
     public const string AdapterIdentity = "policy-approval-adapter/v2";
+    public const string AdapterIdentityV3 = "policy-approval-adapter/v3";
     public const string SubjectType = "PURCHASE_REQUEST";
     public const string Operation = "SUBMIT_PURCHASE_REQUEST";
     public const string SnapshotContractVersion = "policy-evaluation-snapshot/v1";
 
-    private static readonly ApprovalAdapterDescriptor DescriptorValue = new(
-        AdapterId, SubjectType, Operation, ContractVersion, RequesterRequired: true,
+    private readonly ApprovalAdapterDescriptor descriptorValue = new(
+        AdapterId, SubjectType, Operation, contractVersion, RequesterRequired: true,
         AllowsRequesterAsOriginator: true, SupersessionDeltaSupported: true);
 
     private static readonly IReadOnlyDictionary<PolicyEffectType, string> OwnerAdapters =
@@ -57,7 +68,7 @@ public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IAp
         ["PRE_PO"] = 4
     };
 
-    public ApprovalAdapterDescriptor Descriptor => DescriptorValue;
+    public ApprovalAdapterDescriptor Descriptor => descriptorValue;
 
     public async Task<ApprovalSubmission> BuildAsync(
         ApprovalSubmissionRequest request,
@@ -91,7 +102,7 @@ public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IAp
         }
 
         var material = MaterialTargets(bundle);
-        return Map(bundle, material, record, request);
+        return await MapAsync(bundle, material, record, request, cancellationToken);
     }
 
     /// <summary>
@@ -103,7 +114,36 @@ public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IAp
         PolicyEvaluationBundle bundle,
         IReadOnlyDictionary<Guid, ApprovalTarget> material,
         PolicyEvaluationBundleRecord record,
-        ApprovalSubmissionRequest request)
+        ApprovalSubmissionRequest request) =>
+        MapCore(
+                dbContext: null,
+                bundle,
+                material,
+                record,
+                request,
+                budgetDemandBuilder: null,
+                CancellationToken.None).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Version-aware mapping: every control keeps its projection, and a budget control uses the
+    /// server-side demand builder only when the adapter runs the v3 contract (SPEC 08 REQ-05).
+    /// </summary>
+    public Task<ApprovalSubmission> MapAsync(
+        PolicyEvaluationBundle bundle,
+        IReadOnlyDictionary<Guid, ApprovalTarget> material,
+        PolicyEvaluationBundleRecord record,
+        ApprovalSubmissionRequest request,
+        CancellationToken cancellationToken) =>
+        MapCore(dbContext, bundle, material, record, request, budgetDemandBuilder, cancellationToken);
+
+    private static async Task<ApprovalSubmission> MapCore(
+        ProcureToPayDbContext? dbContext,
+        PolicyEvaluationBundle bundle,
+        IReadOnlyDictionary<Guid, ApprovalTarget> material,
+        PolicyEvaluationBundleRecord record,
+        ApprovalSubmissionRequest request,
+        IBudgetDemandBuilder? budgetDemandBuilder,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(bundle);
         ArgumentNullException.ThrowIfNull(material);
@@ -127,7 +167,8 @@ public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IAp
                     nodes.Add(RequirementNode(control, material, request));
                     break;
                 default:
-                    nodes.Add(PrerequisiteNode(control, material, request, bundle.RequestSnapshotJson!));
+                    nodes.Add(await PrerequisiteNodeAsync(
+                        dbContext, control, material, request, bundle, budgetDemandBuilder, cancellationToken));
                     break;
             }
         }
@@ -300,6 +341,97 @@ public sealed class PolicyApprovalAdapter(ProcureToPayDbContext dbContext) : IAp
             control.Phase,
             targets);
     }
+
+    private static async Task<Node> PrerequisiteNodeAsync(
+        ProcureToPayDbContext? dbContext,
+        PolicyGeneratedControl control,
+        IReadOnlyDictionary<Guid, ApprovalTarget> material,
+        ApprovalSubmissionRequest request,
+        PolicyEvaluationBundle bundle,
+        IBudgetDemandBuilder? budgetDemandBuilder,
+        CancellationToken cancellationToken)
+    {
+        if (control.Type == PolicyEffectType.RequireBudgetCheck && budgetDemandBuilder is not null)
+        {
+            if (dbContext is null)
+            {
+                throw new ApprovalDependencyUnavailableException(
+                    "The v3 budget projection requires the persisted organization identity.");
+            }
+
+            return await BudgetPrerequisiteNodeAsync(
+                dbContext, control, material, request, bundle, budgetDemandBuilder, cancellationToken);
+        }
+
+        return PrerequisiteNode(control, material, request, bundle.RequestSnapshotJson!);
+    }
+
+    /// <summary>
+    /// Budget projection of the v3 contract (SPEC 08 REQ-05): the parameters are rebuilt from the
+    /// confirmed Purchase Request version, so Fiscal Year, Spend Category and the amount of every
+    /// covered target survive the control grouping of the policy engine.
+    /// </summary>
+    private static async Task<Node> BudgetPrerequisiteNodeAsync(
+        ProcureToPayDbContext dbContext,
+        PolicyGeneratedControl control,
+        IReadOnlyDictionary<Guid, ApprovalTarget> material,
+        ApprovalSubmissionRequest request,
+        PolicyEvaluationBundle bundle,
+        IBudgetDemandBuilder budgetDemandBuilder,
+        CancellationToken cancellationToken)
+    {
+        var targets = Targets(control, material).ToImmutableArray();
+        if (targets.Length == 0)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                $"The budget control '{control.RequirementKey}' has no confirmed target.");
+        }
+
+        var manifest = bundle.ManifestDigest
+            ?? throw new ApprovalDependencyUnavailableException(
+                "The evaluation has no confirmed completeness manifest digest.");
+        var (requestId, requestVersion) = PolicyApprovalBudgetProjection.ResolveSubject(
+            request.SubjectType, request.SubjectId, request.SubjectVersion);
+        var baseCurrency = await BaseCurrencyAsync(
+            dbContext,
+            request.OrganizationId,
+            cancellationToken);
+        var parameters = await PolicyApprovalBudgetProjection.BuildParametersAsync(
+            budgetDemandBuilder,
+            request.OrganizationId,
+            requestId,
+            requestVersion,
+            requestContentDigest: null,
+            manifest,
+            targets,
+            baseCurrency,
+            cancellationToken);
+        var prerequisite = new ExternalPrerequisiteDefinition(
+            control.RequirementKey,
+            "budget-check-owner",
+            "v1",
+            BudgetCodes.RequireBudgetCheckType,
+            ApprovalCanonicalJson.Digest(ApprovalCanonicalJson.Object(
+                ("parameters", ApprovalCanonicalJson.String(parameters)),
+                ("phase", ApprovalCanonicalJson.String(control.Phase)),
+                ("requirement_key", ApprovalCanonicalJson.String(control.RequirementKey)),
+                ("targets", ApprovalRequirementDefinition.TargetsValue(targets)),
+                ("type", ApprovalCanonicalJson.String(BudgetCodes.RequireBudgetCheckType)))),
+            parameters,
+            targets);
+        return Node.ForPrerequisite(prerequisite, control.Phase, targets);
+    }
+
+    private static async Task<string> BaseCurrencyAsync(
+        ProcureToPayDbContext dbContext,
+        Guid organizationId,
+        CancellationToken cancellationToken) =>
+        await dbContext.Organizations
+            .AsNoTracking()
+            .Where(organization => organization.Id == organizationId)
+            .Select(organization => organization.BaseCurrency)
+            .SingleOrDefaultAsync(cancellationToken)
+        ?? throw new ApprovalDependencyUnavailableException("The organization base currency is unavailable.");
 
     private static Node PrerequisiteNode(
         PolicyGeneratedControl control,

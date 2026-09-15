@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc;
 using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.Budget;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence.Policy;
@@ -95,6 +96,15 @@ public sealed class ApiExceptionHandler(
                 Type = "/problems/payload-too-large",
                 Detail = purchaseRequestTooLargeException.Message
             },
+            // SPEC 08: the budget precheck of a REQUIRE_BUDGET_CHECK control is a business outcome,
+            // not a dependency failure, and it keeps its audited evidence for a retry (REQ-06).
+            PurchaseRequestBudgetInsufficientException budgetInsufficientException => new ProblemDetails
+            {
+                Status = StatusCodes.Status422UnprocessableEntity,
+                Title = "Budget insufficient",
+                Type = "/problems/budget-insufficient",
+                Detail = budgetInsufficientException.Message
+            },
             PurchaseRequestDependencyUnavailableException purchaseRequestDependencyException => new ProblemDetails
             {
                 Status = StatusCodes.Status503ServiceUnavailable,
@@ -108,6 +118,29 @@ public sealed class ApiExceptionHandler(
                 Title = "Approval dependency unavailable",
                 Type = "/problems/approval-dependency-unavailable",
                 Detail = approvalDependencyException.Message
+            },
+            // SPEC 08: an absent, ambiguous or corrupted budget owner, catalog, producer or payload
+            // never enables Approval or a balance change (REQ-10, NFR-04).
+            BudgetDependencyUnavailableException budgetDependencyException => new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Budget dependency unavailable",
+                Type = "/problems/budget-dependency-unavailable",
+                Detail = budgetDependencyException.Message
+            },
+            BudgetInsufficientException budgetInsufficient => new ProblemDetails
+            {
+                Status = StatusCodes.Status422UnprocessableEntity,
+                Title = "Budget insufficient",
+                Type = "/problems/budget-insufficient",
+                Detail = budgetInsufficient.Message
+            },
+            BudgetReferenceInvalidException budgetReference => new ProblemDetails
+            {
+                Status = StatusCodes.Status422UnprocessableEntity,
+                Title = "Budget reference invalid",
+                Type = "/problems/budget-reference-invalid",
+                Detail = budgetReference.Message
             },
             PolicyDependencyUnavailableException dependencyException => new ProblemDetails
             {

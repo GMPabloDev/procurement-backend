@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using ProcureToPay.Infrastructure.Persistence.Approval;
+using ProcureToPay.Infrastructure.Persistence.BudgetLedger;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
@@ -71,6 +72,20 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<CostCenterVersionRecord> CostCenterVersions => Set<CostCenterVersionRecord>();
     public DbSet<SpendCategoryRecord> SpendCategories => Set<SpendCategoryRecord>();
     public DbSet<SpendCategoryVersionRecord> SpendCategoryVersions => Set<SpendCategoryVersionRecord>();
+    public DbSet<BudgetPositionRecord> BudgetPositions => Set<BudgetPositionRecord>();
+    public DbSet<BudgetAllocationVersionRecord> BudgetAllocationVersions => Set<BudgetAllocationVersionRecord>();
+    public DbSet<BudgetBalanceRecord> BudgetBalances => Set<BudgetBalanceRecord>();
+    public DbSet<BudgetOperationRecord> BudgetOperations => Set<BudgetOperationRecord>();
+    public DbSet<BudgetMovementRecord> BudgetMovements => Set<BudgetMovementRecord>();
+    public DbSet<BudgetPrerequisiteAttemptRecord> BudgetPrerequisiteAttempts =>
+        Set<BudgetPrerequisiteAttemptRecord>();
+    public DbSet<PurchaseRequestBudgetReleaseAttemptRecord> PurchaseRequestBudgetReleaseAttempts =>
+        Set<PurchaseRequestBudgetReleaseAttemptRecord>();
+    public DbSet<BudgetMovementProducerRegistrationRecord> BudgetMovementProducerRegistrations =>
+        Set<BudgetMovementProducerRegistrationRecord>();
+    public DbSet<BudgetPrerequisiteProcessorRegistrationRecord> BudgetPrerequisiteProcessorRegistrations =>
+        Set<BudgetPrerequisiteProcessorRegistrationRecord>();
+    public DbSet<BudgetAuditRecord> BudgetAuditRecords => Set<BudgetAuditRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -125,6 +140,16 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigureCostCenterVersion(modelBuilder);
         ConfigureSpendCategory(modelBuilder);
         ConfigureSpendCategoryVersion(modelBuilder);
+        ConfigureBudgetPosition(modelBuilder);
+        ConfigureBudgetAllocationVersion(modelBuilder);
+        ConfigureBudgetBalance(modelBuilder);
+        ConfigureBudgetOperation(modelBuilder);
+        ConfigureBudgetMovement(modelBuilder);
+        ConfigureBudgetPrerequisiteAttempt(modelBuilder);
+        ConfigurePurchaseRequestBudgetReleaseAttempt(modelBuilder);
+        ConfigureBudgetMovementProducerRegistration(modelBuilder);
+        ConfigureBudgetPrerequisiteProcessorRegistration(modelBuilder);
+        ConfigureBudgetAudit(modelBuilder);
         base.OnModelCreating(modelBuilder);
     }
 
@@ -1087,5 +1112,177 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
             .WithMany(record => record.Versions)
             .HasForeignKey(record => record.SpendCategoryId)
             .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureBudgetPosition(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<BudgetPositionRecord>();
+        // SPEC 08 NFR-01: the root has an identity/current-pointer trigger, so no OUTPUT clause.
+        entity.ToTable("Positions", "Budget", table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.SpendCategoryCode).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.PositionKeyDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.OrganizationId, record.PositionKeyDigest }).IsUnique();
+        entity.HasIndex(record => new { record.OrganizationId, record.CostCenterId, record.FiscalYear });
+    }
+
+    private static void ConfigureBudgetAllocationVersion(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<BudgetAllocationVersionRecord>();
+        entity.ToTable("AllocationVersions", "Budget");
+        entity.HasKey(record => new { record.PositionId, record.Version });
+        entity.Property(record => record.SpendCategoryCode).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.SpendCategoryDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.AllocatedAmount).HasPrecision(38, 12);
+        entity.Property(record => record.Currency).HasMaxLength(3).IsRequired();
+        entity.Property(record => record.AllocationKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Fingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Reason).HasMaxLength(4000).IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.PositionId, record.AllocationKey }).IsUnique();
+        entity.HasOne(record => record.Position)
+            .WithMany()
+            .HasForeignKey(record => record.PositionId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureBudgetBalance(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<BudgetBalanceRecord>();
+        entity.ToTable("Balances", "Budget");
+        entity.HasKey(record => record.PositionId);
+        entity.Property(record => record.Allocated).HasPrecision(38, 12);
+        entity.Property(record => record.Reserved).HasPrecision(38, 12);
+        entity.Property(record => record.Committed).HasPrecision(38, 12);
+        entity.Property(record => record.Consumed).HasPrecision(38, 12);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasOne<BudgetPositionRecord>()
+            .WithMany()
+            .HasForeignKey(record => record.PositionId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureBudgetOperation(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<BudgetOperationRecord>();
+        entity.ToTable("Operations", "Budget");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.OperationKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Fingerprint).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.SourceType).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.SourceDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ActorJson).HasMaxLength(1000).IsRequired();
+        entity.Property(record => record.CauseStream).HasMaxLength(32);
+        entity.Property(record => record.ReasonCode).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Result).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.CorrelationReference).HasMaxLength(120).IsRequired();
+        entity.HasIndex(record => record.OrganizationId);
+        entity.HasIndex(record => new { record.OrganizationId, record.SourceType, record.SourceId });
+    }
+
+    private static void ConfigureBudgetMovement(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<BudgetMovementRecord>();
+        entity.ToTable("Movements", "Budget");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Amount).HasPrecision(38, 12);
+        entity.Property(record => record.Currency).HasMaxLength(3).IsRequired();
+        entity.Property(record => record.TargetMaterialSnapshotDigest).HasMaxLength(64);
+        entity.Property(record => record.TargetType).HasMaxLength(64);
+        entity.Property(record => record.AllocatedBefore).HasPrecision(38, 12);
+        entity.Property(record => record.ReservedBefore).HasPrecision(38, 12);
+        entity.Property(record => record.CommittedBefore).HasPrecision(38, 12);
+        entity.Property(record => record.ConsumedBefore).HasPrecision(38, 12);
+        entity.Property(record => record.AllocatedAfter).HasPrecision(38, 12);
+        entity.Property(record => record.ReservedAfter).HasPrecision(38, 12);
+        entity.Property(record => record.CommittedAfter).HasPrecision(38, 12);
+        entity.Property(record => record.ConsumedAfter).HasPrecision(38, 12);
+        entity.HasIndex(record => new { record.OrganizationId, record.PositionId });
+        entity.HasIndex(record => new { record.OperationId });
+        entity.HasIndex(record => new { record.ParentMovementId });
+        entity.HasIndex(record => new { record.OrganizationId, record.TargetId });
+        entity.HasOne(record => record.Operation)
+            .WithMany()
+            .HasForeignKey(record => record.OperationId)
+            .OnDelete(DeleteBehavior.Restrict);
+        entity.HasOne(record => record.Position)
+            .WithMany()
+            .HasForeignKey(record => record.PositionId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureBudgetPrerequisiteAttempt(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<BudgetPrerequisiteAttemptRecord>();
+        entity.ToTable("PrerequisiteAttempts", "Budget", table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.PrerequisiteKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.ParametersJson).HasMaxLength(4000).IsRequired();
+        entity.Property(record => record.ParametersDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.SourceControlDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.RequestKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.ReserveKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.SignalKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.CompensateKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.State).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.SignalResult).HasMaxLength(16);
+        entity.Property(record => record.EvidenceDigest).HasMaxLength(64);
+        entity.Property(record => record.LastErrorCode).HasMaxLength(64);
+        entity.Property(record => record.LeaseOwner).HasMaxLength(120);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => record.PrerequisiteId).IsUnique();
+        entity.HasIndex(record => new { record.State, record.NextAttemptAt });
+    }
+
+    private static void ConfigurePurchaseRequestBudgetReleaseAttempt(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<PurchaseRequestBudgetReleaseAttemptRecord>();
+        entity.ToTable("PurchaseRequestReleaseAttempts", "Budget", table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.ReleaseKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.State).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.LastErrorCode).HasMaxLength(64);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.OrganizationId, record.RequestId, record.RequestVersion }).IsUnique();
+        entity.HasIndex(record => new { record.OrganizationId, record.ReleaseKey }).IsUnique();
+    }
+
+    private static void ConfigureBudgetMovementProducerRegistration(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<BudgetMovementProducerRegistrationRecord>();
+        entity.ToTable("MovementProducerRegistrations", "Budget");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Operation).HasMaxLength(32).IsRequired();
+        entity.Property(record => record.ContractVersion).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.SourceType).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ProducerId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.WorkloadIssuer).HasMaxLength(320).IsRequired();
+        entity.Property(record => record.WorkloadClientId).HasMaxLength(128).IsRequired();
+        entity.HasIndex(record => new { record.Operation, record.ContractVersion, record.SourceType }).IsUnique();
+    }
+
+    private static void ConfigureBudgetPrerequisiteProcessorRegistration(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<BudgetPrerequisiteProcessorRegistrationRecord>();
+        entity.ToTable("PrerequisiteProcessorRegistrations", "Budget");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.AdapterId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.AdapterVersion).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ProcessorId).HasMaxLength(128).IsRequired();
+        entity.HasIndex(record => new { record.AdapterId, record.AdapterVersion }).IsUnique();
+    }
+
+    private static void ConfigureBudgetAudit(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<BudgetAuditRecord>();
+        entity.ToTable("AuditRecords", "Budget");
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.ActorJson).HasMaxLength(1000).IsRequired();
+        entity.Property(record => record.CauseStream).HasMaxLength(32);
+        entity.Property(record => record.Action).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.TargetType).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.DeltasJson).HasMaxLength(4000).IsRequired();
+        entity.Property(record => record.CorrelationReference).HasMaxLength(120).IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.TargetType, record.TargetId });
     }
 }

@@ -737,8 +737,18 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                 ]),
                 NullLogger<PolicyEvaluationService>.Instance);
             var allowlist = new ApprovalWorkloadAllowlist(configuration);
+            // SPEC 08: new submissions use the v3 contract, so the harness registers it beside the
+            // historical v2 adapter (which stays resolvable for an attempt already persisted).
             var registry = new ApprovalSubmissionAdapterRegistry(
-                [new FaultInjectingAdapter(new PolicyApprovalAdapter(context), fault)]);
+            [
+                new FaultInjectingAdapter(new PolicyApprovalAdapter(context), fault),
+                new FaultInjectingAdapter(
+                    new PolicyApprovalAdapter(
+                        context,
+                        PolicyApprovalAdapter.ContractVersionV3,
+                        new PurchaseRequestBudgetDemandBuilder(context)),
+                    fault)
+            ]);
             var assignmentEngine = new ApprovalAssignmentEngine(
                 context,
                 new OrganizationEligibilityService(context),
@@ -760,6 +770,14 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                     submissions,
                     supersessions,
                     workflow,
+                    new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPrecheckService(
+                        context,
+                        new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.BudgetDemandBuilderRegistry(
+                            [new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestBudgetDemandBuilder(context)]),
+                        new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetLedgerService(
+                            context,
+                            new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context)),
+                        attestation),
                     NullLogger<PurchaseRequestSubmissionService>.Instance)
             {
                 BeforeApprovalCaseCancel = CancelRaceHook

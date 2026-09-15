@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.Budget;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
@@ -69,6 +70,93 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
         await using var verification = harness.CreateContext();
         Assert.Equal(1, await verification.PurchaseRequestReferenceAttestations.CountAsync(cancellationToken));
         Assert.Equal(1, await verification.ApprovalCases.CountAsync(cancellationToken));
+    }
+
+    [Fact]
+    public async Task Budget_control_reserves_all_or_nothing_and_signals_the_prerequisite()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+
+        var submitted = await harness.SubmitAsync(requestId, version, "submit-budget-1", cancellationToken);
+
+        await using var context = harness.CreateContext();
+        // The precheck confirmed availability before any case existed (SPEC 08 REQ-06).
+        var attempt = await context.PurchaseRequestSubmissionAttempts.SingleAsync(
+            record => record.RequestId == requestId && record.RequestVersion == version, cancellationToken);
+        Assert.Equal((int)PurchaseRequestSubmissionStatus.ApprovalConfirmed, attempt.Status);
+
+        // The owner reserved the full amount and then signalled the prerequisite.
+        await harness.ProcessBudgetAsync(cancellationToken);
+        await using var verification = harness.CreateContext();
+        var prerequisite = await verification.ApprovalPrerequisites.SingleAsync(
+            record => record.CaseId == submitted.ApprovalCaseId, cancellationToken);
+        Assert.Equal((int)PrerequisiteStatus.Satisfied, prerequisite.Status);
+        Assert.Equal(BudgetCodes.BudgetOwnerAdapterId, prerequisite.OwnerAdapterId);
+        Assert.Equal(BudgetCodes.BudgetOwnerAdapterVersion, prerequisite.OwnerAdapterVersion);
+        Assert.Equal("budget-check-owner", prerequisite.OwnerWorkloadClientId);
+
+        var budgetAttempt = await verification.BudgetPrerequisiteAttempts.SingleAsync(
+            record => record.PrerequisiteId == prerequisite.Id, cancellationToken);
+        Assert.Equal("COMPLETED", budgetAttempt.State);
+        Assert.Equal("SATISFIED", budgetAttempt.SignalResult);
+        Assert.NotNull(budgetAttempt.ReserveOperationId);
+        Assert.Equal(64, budgetAttempt.EvidenceDigest!.Length);
+
+        var movements = await verification.BudgetMovements
+            .Where(movement => movement.PositionId == budgetAttempt.Id)
+            .ToArrayAsync(cancellationToken);
+        _ = movements;
+        var reserved = await verification.BudgetMovements
+            .Where(movement => movement.Type == (int)BudgetMovementType.Reserved)
+            .ToArrayAsync(cancellationToken);
+        Assert.Single(reserved);
+        Assert.Equal(100m, reserved[0].Amount);
+        var balance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(1000m, balance.Allocated);
+        Assert.Equal(100m, balance.Reserved);
+        Assert.Equal(900m, balance.Allocated - balance.Reserved);
+
+        // The parameters carry Fiscal Year and Spend Category per covered target (REQ-05).
+        var prerequisiteRecord = await verification.ApprovalPrerequisites
+            .AsNoTracking()
+            .SingleAsync(record => record.Id == prerequisite.Id, cancellationToken);
+        Assert.Contains("\"fiscal_year\":2026", prerequisiteRecord.ParametersJson, StringComparison.Ordinal);
+        Assert.Contains("\"spend_category_ref\"", prerequisiteRecord.ParametersJson, StringComparison.Ordinal);
+        Assert.Contains(harness.CostCenterId.ToString("D"), prerequisiteRecord.ParametersJson, StringComparison.Ordinal);
+        Assert.Contains(harness.SpendCategory.Code, prerequisiteRecord.ParametersJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_budget_without_funds_fails_the_owner_prerequisite_without_reserving()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        // The position exists but only covers half of the line.
+        await harness.FundBudgetAsync(40m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+
+        await Assert.ThrowsAsync<PurchaseRequestBudgetInsufficientException>(() =>
+            harness.SubmitAsync(requestId, version, "submit-budget-2", cancellationToken));
+
+        await using var context = harness.CreateContext();
+        Assert.Empty(await context.ApprovalCases.ToArrayAsync(cancellationToken));
+        var attempt = await context.PurchaseRequestSubmissionAttempts.SingleAsync(
+            record => record.RequestId == requestId && record.RequestVersion == version, cancellationToken);
+        Assert.Equal(PurchaseRequestSubmissionCodes.ErrorBudgetInsufficient, attempt.ErrorCode);
+
+        // The audited precheck is preserved for the retry, and it never reserved anything.
+        var operations = await context.BudgetOperations
+            .Where(operation => operation.Kind == (int)BudgetOperationKind.Precheck)
+            .ToArrayAsync(cancellationToken);
+        Assert.Single(operations);
+        // The position exists but cannot cover the line: the business outcome is insufficient.
+        Assert.Equal("INSUFFICIENT", operations[0].Result);
+        var balance = await context.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(0m, balance.Reserved);
+        Assert.Equal(0m, balance.Committed);
     }
 
     [Fact]
@@ -234,7 +322,12 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
         public SpendCategoryReference SpendCategory { get; private set; } = null!;
         public ReferenceCatalogPersistenceService Service { get; private set; } = null!;
 
-        public static async Task<Harness> StartAsync(CancellationToken cancellationToken)
+        public static Task<Harness> StartAsync(CancellationToken cancellationToken) =>
+            StartAsync(cancellationToken, withBudgetCheck: false);
+
+        public static async Task<Harness> StartAsync(
+            CancellationToken cancellationToken,
+            bool withBudgetCheck)
         {
             var container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-latest")
                 .WithPassword("ProcureToPay_test_2026!")
@@ -281,7 +374,7 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 "Initial category",
                 "corr-sc",
                 cancellationToken);
-            await harness.ActivatePolicyAsync(cancellationToken);
+            await harness.ActivatePolicyAsync(cancellationToken, withBudgetCheck);
             return harness;
         }
 
@@ -381,6 +474,59 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
             return (creation.RequestId, creation.Version);
         }
 
+        /// <summary>Funds the budget position of the test line through the real allocation path.</summary>
+        public async Task FundBudgetAsync(decimal amount, CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var budgets = new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context);
+            await budgets.SetAllocationAsync(
+                OrganizationId,
+                ActorId,
+                CostCenterId,
+                2026,
+                SpendCategory.Code,
+                amount,
+                "PEN",
+                expectedVersion: null,
+                allocationKey: $"alloc-{Guid.NewGuid():N}",
+                reason: "Integration test funding",
+                correlationReference: "corr-budget-fund",
+                cancellationToken);
+        }
+
+        /// <summary>Runs the real budget owner processor once, as the durable worker does.</summary>
+        public async Task ProcessBudgetAsync(CancellationToken cancellationToken)
+        {
+            using var loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Warning));
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Approval:Workloads:0:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
+                    ["Approval:Workloads:0:ClientId"] = PurchaseRequestSubmissionService.Workload.ClientId,
+                    ["Approval:Workloads:1:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
+                    ["Approval:Workloads:1:ClientId"] = BudgetCodes.BudgetOwnerAdapterId
+                })
+                .Build();
+            await using var context = CreateContext();
+            var allowlist = new ApprovalWorkloadAllowlist(configuration);
+            var assignmentEngine = new ApprovalAssignmentEngine(
+                context,
+                new OrganizationEligibilityService(context),
+                new ApprovalScopeResolver(context));
+            var processor = new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPrerequisiteProcessor(
+                context,
+                new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context),
+                new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetLedgerService(
+                    context,
+                    new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context)),
+                new PurchaseRequestBudgetDemandBuilder(context),
+                new ApprovalWorkflowService(
+                    context, allowlist, assignmentEngine,
+                    loggerFactory.CreateLogger<ApprovalWorkflowService>()),
+                new ApprovalInstanceIdentity(configuration));
+            await processor.ProcessDueAsync(DateTimeOffset.UtcNow, cancellationToken);
+        }
+
         public async Task<PurchaseRequestSubmissionOutcome> SubmitAsync(
             Guid requestId,
             int version,
@@ -434,7 +580,11 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 [],
                 null);
 
-        private async Task ActivatePolicyAsync(CancellationToken cancellationToken)
+        /// <summary>
+        /// Activates the test policy. <paramref name="withBudgetCheck"/> adds the
+        /// <c>REQUIRE_BUDGET_CHECK</c> control that SPEC 08 turns into a real reservation.
+        /// </summary>
+        private async Task ActivatePolicyAsync(CancellationToken cancellationToken, bool withBudgetCheck = false)
         {
             policy = new PolicySetVersion(
                 Guid.NewGuid(), OrganizationId, 1, [PolicyScope.Line, PolicyScope.Request]);
@@ -457,6 +607,15 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                             baseCurrency: null,
                             decisionScope))
                 ]));
+            if (withBudgetCheck)
+            {
+                policy.AddRule(new PolicyRule(
+                    "LINE_BUDGET",
+                    PolicyScope.Line,
+                    [],
+                    [new PolicyEffect(PolicyEffectType.RequireBudgetCheck, "BUDGET_CHECK")]));
+            }
+
             policy.AddRule(new PolicyRule(
                 "LINE_ALLOW",
                 PolicyScope.Line,
@@ -499,7 +658,15 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                     ["Policy:Workloads:0:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
                     ["Policy:Workloads:0:ClientId"] = PurchaseRequestSubmissionService.Workload.ClientId,
                     ["Approval:Workloads:0:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
-                    ["Approval:Workloads:0:ClientId"] = PurchaseRequestSubmissionService.Workload.ClientId
+                    ["Approval:Workloads:0:ClientId"] = PurchaseRequestSubmissionService.Workload.ClientId,
+                    // SPEC 08: the real budget owner is an allowlisted workload and its adapter/version
+                    // resolves exactly one owner (REQ-05, REQ-09).
+                    ["Approval:Workloads:1:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
+                    ["Approval:Workloads:1:ClientId"] = BudgetCodes.BudgetOwnerAdapterId,
+                    ["Approval:OwnerWorkloads:0:AdapterId"] = BudgetCodes.BudgetOwnerAdapterId,
+                    ["Approval:OwnerWorkloads:0:AdapterVersion"] = BudgetCodes.BudgetOwnerAdapterVersion,
+                    ["Approval:OwnerWorkloads:0:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
+                    ["Approval:OwnerWorkloads:0:ClientId"] = BudgetCodes.BudgetOwnerAdapterId
                 })
                 .Build();
             var context = CreateContext();
@@ -542,7 +709,16 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 ]),
                 NullLogger<PolicyEvaluationService>.Instance);
             var allowlist = new ApprovalWorkloadAllowlist(configuration);
-            var registry = new ApprovalSubmissionAdapterRegistry([new PolicyApprovalAdapter(context)]);
+            var budgetPersistence = new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context);
+            var budgetLedger = new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetLedgerService(
+                context, budgetPersistence);
+            var budgetBuilder = new PurchaseRequestBudgetDemandBuilder(context);
+            var registry = new ApprovalSubmissionAdapterRegistry(
+            [
+                new PolicyApprovalAdapter(context),
+                new PolicyApprovalAdapter(
+                    context, PolicyApprovalAdapter.ContractVersionV3, budgetBuilder)
+            ]);
             var assignmentEngine = new ApprovalAssignmentEngine(
                 context,
                 new OrganizationEligibilityService(context),
@@ -564,6 +740,12 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 submissions,
                 supersessions,
                 workflow,
+                new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPrecheckService(
+                    context,
+                    new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.BudgetDemandBuilderRegistry(
+                        [budgetBuilder]),
+                    budgetLedger,
+                    attestation),
                 NullLogger<PurchaseRequestSubmissionService>.Instance);
             return new Services(submissionService);
         }

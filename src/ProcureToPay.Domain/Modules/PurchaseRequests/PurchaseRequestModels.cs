@@ -75,7 +75,12 @@ public enum PurchaseRequestSubmissionStatus
     PolicyConfirmed = 2,
     ApprovalConfirmed = 3,
     Blocked = 4,
-    DependencyFailed = 5
+    DependencyFailed = 5,
+
+    /// <summary>
+    /// The precheck of a <c>REQUIRE_BUDGET_CHECK</c> control allowed the case (SPEC 08 REQ-06).
+    /// </summary>
+    BudgetPrecheckConfirmed = 6
 }
 
 /// <summary>
@@ -97,6 +102,9 @@ public static class PurchaseRequestSubmissionCodes
     public const string ErrorPolicyBlocked = "POLICY_BLOCKED";
     public const string ErrorPolicyDependency = "POLICY_DEPENDENCY_UNAVAILABLE";
     public const string ErrorApprovalDependency = "APPROVAL_DEPENDENCY_UNAVAILABLE";
+
+    /// <summary>SPEC 08: the confirmed budget precheck did not cover the request version.</summary>
+    public const string ErrorBudgetInsufficient = "BUDGET_INSUFFICIENT";
 }
 
 public static class PurchaseRequestCodes
