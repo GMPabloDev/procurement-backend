@@ -86,7 +86,14 @@ public sealed record BudgetOperationSpec(
     string Result,
     IReadOnlyList<BudgetOperationMovement> Movements,
     Guid? CauseAuditId = null,
-    string? CauseStream = null);
+    string? CauseStream = null,
+    BudgetLeaseFence? LeaseFence = null);
+
+/// <summary>
+/// Exact lease an attempt held when it submitted an operation (REQ-07). The ledger verifies it
+/// inside the posting transaction, so a stale worker whose lease was reclaimed confirms nothing.
+/// </summary>
+public sealed record BudgetLeaseFence(Guid AttemptId, int FencingToken, string LeaseOwner);
 
 /// <summary>
 /// Ledger operations of the Budget module (SPEC 08 REQ-02, REQ-03, REQ-04, REQ-06, REQ-09). Every
@@ -95,6 +102,30 @@ public sealed record BudgetOperationSpec(
 /// </summary>
 public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetPersistenceService positions)
 {
+    /// <summary>
+    /// Verifies inside the posting transaction that the attempt still holds the exact lease the
+    /// operation was authorized with (REQ-07). The attempt row stays locked until the transaction
+    /// resolves, so a concurrent reclaim cannot interleave: a stale worker aborts without
+    /// confirming any movement or checkpoint.
+    /// </summary>
+    private async Task EnsureLeaseFenceAsync(BudgetLeaseFence fence, CancellationToken cancellationToken)
+    {
+        var attempt = await dbContext.BudgetPrerequisiteAttempts
+            .FromSqlInterpolated(
+                $"SELECT * FROM [Budget].[PrerequisiteAttempts] WITH (UPDLOCK, ROWLOCK) WHERE [Id] = {fence.AttemptId}")
+            .AsNoTracking()
+            .SingleOrDefaultAsync(cancellationToken);
+        if (attempt is null ||
+            attempt.FencingToken != fence.FencingToken ||
+            !string.Equals(attempt.LeaseOwner, fence.LeaseOwner, StringComparison.Ordinal) ||
+            attempt.LeaseUntil is not DateTimeOffset until ||
+            until <= DateTimeOffset.UtcNow)
+        {
+            throw new DomainConflictException(
+                "The budget attempt lease was lost before the operation was confirmed.");
+        }
+    }
+
     /// <summary>
     /// Auditable, non-binding availability check (REQ-04). It persists one REQUESTED movement per
     /// covered line and never touches a bucket, so two concurrent prechecks can both report
@@ -234,7 +265,8 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
         string correlationReference,
         Guid? causeAuditId = null,
         string? causeStream = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        BudgetLeaseFence? leaseFence = null)
     {
         ArgumentNullException.ThrowIfNull(demands);
         if (demands.Count is < 1 or > BudgetCodes.MaxDemandCount)
@@ -308,6 +340,11 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
         {
             await BudgetPersistenceService.AcquirePositionLockAsync(
                 dbContext, organizationId, state.PositionKeyDigest, cancellationToken);
+        }
+
+        if (leaseFence is not null)
+        {
+            await EnsureLeaseFenceAsync(leaseFence, cancellationToken);
         }
 
         var occurredAt = DateTimeOffset.UtcNow;
@@ -464,6 +501,11 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
         {
             await BudgetPersistenceService.AcquirePositionLockAsync(
                 dbContext, spec.OrganizationId, state.PositionKeyDigest, cancellationToken);
+        }
+
+        if (spec.LeaseFence is not null)
+        {
+            await EnsureLeaseFenceAsync(spec.LeaseFence, cancellationToken);
         }
 
         var occurredAt = DateTimeOffset.UtcNow;
@@ -852,7 +894,8 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
         IReadOnlyList<BudgetDemand> demands,
         IReadOnlyList<BudgetPredecessorReservation> predecessors,
         string correlationReference,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        BudgetLeaseFence? leaseFence = null)
     {
         ArgumentNullException.ThrowIfNull(demands);
         ArgumentNullException.ThrowIfNull(predecessors);
@@ -933,6 +976,11 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
         {
             await BudgetPersistenceService.AcquirePositionLockAsync(
                 dbContext, organizationId, state.PositionKeyDigest, cancellationToken);
+        }
+
+        if (leaseFence is not null)
+        {
+            await EnsureLeaseFenceAsync(leaseFence, cancellationToken);
         }
 
         var stateByKey = locked.ToDictionary(state => state.Payload.Position, state => state);

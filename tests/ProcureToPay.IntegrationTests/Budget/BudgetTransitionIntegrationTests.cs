@@ -269,6 +269,40 @@ public sealed class BudgetTransitionIntegrationTests
     }
 
     [Fact]
+    public async Task A_stale_fence_cannot_confirm_a_movement()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken);
+        var (_, parent) = await harness.ReserveAsync(100m, cancellationToken);
+        var attemptId = await harness.CreateAttemptAsync(
+            fencingToken: 5,
+            leaseOwner: "live-worker",
+            leaseUntil: DateTimeOffset.UtcNow.AddSeconds(30),
+            cancellationToken);
+
+        // A worker whose lease was reclaimed holds an obsolete fencing token: the posting
+        // transaction rejects it without confirming the movement (REQ-07, CA-06).
+        await Assert.ThrowsAsync<DomainConflictException>(() => harness.FencedCommitAsync(
+            parent, 50m, attemptId, fencingToken: 4, "live-worker", cancellationToken));
+        await using (var afterStale = harness.CreateContext())
+        {
+            Assert.Equal(
+                0,
+                await afterStale.BudgetMovements.CountAsync(
+                    movement => movement.Type == (int)BudgetMovementType.Committed, cancellationToken));
+        }
+
+        // The exact current fence confirms the same movement.
+        await harness.FencedCommitAsync(
+            parent, 50m, attemptId, fencingToken: 5, "live-worker", cancellationToken);
+        await using var verification = harness.CreateContext();
+        Assert.Equal(
+            1,
+            await verification.BudgetMovements.CountAsync(
+                movement => movement.Type == (int)BudgetMovementType.Committed, cancellationToken));
+    }
+
+    [Fact]
     public async Task Two_concurrent_allocation_revisions_leave_one_current_version()
     {
         await using var harness = await Harness.StartAsync(TestContext.Current.CancellationToken);
@@ -337,6 +371,16 @@ public sealed class BudgetTransitionIntegrationTests
             harness.ReviseAllocationRawAsync(1800, "PEN", 900m, "alloc-year", cancellationToken));
         await Assert.ThrowsAsync<DomainValidationException>(() =>
             harness.ReviseAllocationRawAsync(2026, "USD", 900m, "alloc-currency", cancellationToken));
+
+        // An inexistent Spend Category, a deactivated one and a Cost Center that is not an active
+        // position of the organization are rejected too (REQ-01).
+        var inactiveCode = await harness.CreateInactiveSpendCategoryAsync("LEGACY", cancellationToken);
+        await Assert.ThrowsAsync<DomainValidationException>(() =>
+            harness.ReviseAllocationWithSpendCategoryAsync("GHOST", 900m, "alloc-ghost", cancellationToken));
+        await Assert.ThrowsAsync<DomainValidationException>(() =>
+            harness.ReviseAllocationWithSpendCategoryAsync(inactiveCode, 900m, "alloc-inactive", cancellationToken));
+        await Assert.ThrowsAsync<DomainValidationException>(() =>
+            harness.ReviseAllocationForCostCenterAsync(Guid.NewGuid(), 900m, "alloc-foreign", cancellationToken));
 
         await using var verification = harness.CreateContext();
         Assert.Single(await verification.BudgetAllocationVersions.ToArrayAsync(cancellationToken));
@@ -443,6 +487,19 @@ public sealed class BudgetTransitionIntegrationTests
             1,
             await afterInsufficient.BudgetMovements.CountAsync(
                 movement => movement.OperationId == insufficient.OperationId, cancellationToken));
+
+        // Two lines that are individually affordable but whose sum exceeds the position must fail:
+        // the evaluation aggregates by position instead of checking line by line (REQ-04, CA-03).
+        var splitInsufficient = await harness.PrecheckAsync(
+            [(Guid.NewGuid(), 600m, "HARDWARE"), (Guid.NewGuid(), 600m, "HARDWARE")],
+            "precheck-split-insufficient",
+            cancellationToken);
+        Assert.NotEqual("AVAILABLE", splitInsufficient.Result);
+        await using var afterSplit = harness.CreateContext();
+        Assert.Equal(
+            2,
+            await afterSplit.BudgetMovements.CountAsync(
+                movement => movement.OperationId == splitInsufficient.OperationId, cancellationToken));
     }
 
     private sealed class Harness : IAsyncDisposable
@@ -563,6 +620,77 @@ public sealed class BudgetTransitionIntegrationTests
             return (position, outcome.ReservedMovements.Single().Id);
         }
 
+        /// <summary>Inserts one durable attempt row with a known lease, for the fence negatives (REQ-07).</summary>
+        public async Task<Guid> CreateAttemptAsync(
+            int fencingToken,
+            string leaseOwner,
+            DateTimeOffset leaseUntil,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var attempt = new BudgetPrerequisiteAttemptRecord
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = OrganizationId,
+                CaseId = Guid.NewGuid(),
+                PrerequisiteId = Guid.NewGuid(),
+                PrerequisiteKey = "BUDGET_CHECK",
+                RequestId = Guid.NewGuid(),
+                RequestVersion = 1,
+                ParametersJson = "{}",
+                ParametersDigest = new string('a', 64),
+                SourceControlDigest = new string('b', 64),
+                RequestKey = "budget:test:request",
+                ReserveKey = "budget:test:reserve",
+                SignalKey = "budget:test:signal",
+                CompensateKey = "budget:test:compensate",
+                State = BudgetAttemptStateCodes.Of(BudgetAttemptState.Pending),
+                DueAt = DateTimeOffset.UtcNow,
+                NextAttemptAt = DateTimeOffset.UtcNow,
+                Attempts = 1,
+                FencingToken = fencingToken,
+                LeaseOwner = leaseOwner,
+                LeaseUntil = leaseUntil
+            };
+            context.BudgetPrerequisiteAttempts.Add(attempt);
+            await context.SaveChangesAsync(cancellationToken);
+            return attempt.Id;
+        }
+
+        /// <summary>Applies one fenced COMMIT as a processor effect would (REQ-07).</summary>
+        public async Task FencedCommitAsync(
+            Guid parentMovementId,
+            decimal amount,
+            Guid attemptId,
+            int fencingToken,
+            string leaseOwner,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var budgets = new BudgetPersistenceService(context);
+            var ledger = new BudgetLedgerService(context, budgets);
+            var payload = await budgets.ResolvePositionAsync(
+                OrganizationId, CostCenterId, 2026, SpendCategoryCode, "PEN", cancellationToken);
+            var spec = new BudgetOperationSpec(
+                BudgetOperationKind.Commit,
+                OrganizationId,
+                $"fence-op-{Guid.NewGuid():N}",
+                new string('f', 64),
+                new BudgetSource(BudgetCodes.PurchaseOrderSourceType, Guid.NewGuid(), 1, new string('d', 64)),
+                BudgetActor.ForWorkload(ProducerIssuer, ProducerClientId),
+                "PO_ISSUED",
+                "COMMITTED",
+                [new BudgetOperationMovement(
+                    payload.Position,
+                    new BudgetMovementRequest(BudgetMovementType.Committed, amount, parentMovementId, null))],
+                LeaseFence: new BudgetLeaseFence(attemptId, fencingToken, leaseOwner));
+            await ledger.ApplyOperationAsync(
+                spec,
+                new Dictionary<BudgetPositionKey, BudgetPositionPayload> { [payload.Position] = payload },
+                "corr-fence",
+                cancellationToken);
+        }
+
         /// <summary>Second funded position (another spend category) for multi-position batches (REQ-02).</summary>
         public async Task<(Guid CostCenterId, string SpendCategoryCode)> CreateSecondPositionAsync(
             decimal allocation,
@@ -628,6 +756,80 @@ public sealed class BudgetTransitionIntegrationTests
                 allocationKey,
                 reason: "Concurrent allocation revision",
                 correlationReference: "corr-alloc-race",
+                cancellationToken);
+        }
+
+        /// <summary>Creates and deactivates a Spend Category for the invalid-reference negatives (REQ-01).</summary>
+        public async Task<string> CreateInactiveSpendCategoryAsync(string code, CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var catalogs = new ReferenceCatalogPersistenceService(context);
+            var created = await catalogs.CreateSpendCategoryAsync(
+                OrganizationId,
+                ActorId,
+                code,
+                "Legacy",
+                "Inactive reference for the ledger tests",
+                "corr-transition-inactive",
+                cancellationToken);
+            await catalogs.UpdateSpendCategoryAsync(
+                OrganizationId,
+                ActorId,
+                code,
+                created.Version,
+                "Legacy",
+                EntityStatus.Inactive,
+                "Deactivated for the ledger tests",
+                "corr-transition-inactive-update",
+                cancellationToken);
+            return code;
+        }
+
+        /// <summary>One allocation revision naming an explicit Spend Category (REQ-01 negatives).</summary>
+        public async Task<BudgetPositionView> ReviseAllocationWithSpendCategoryAsync(
+            string spendCategoryCode,
+            decimal amount,
+            string allocationKey,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var budgets = new BudgetPersistenceService(context);
+            return await budgets.SetAllocationAsync(
+                OrganizationId,
+                ActorId,
+                CostCenterId,
+                2026,
+                spendCategoryCode,
+                amount,
+                "PEN",
+                expectedVersion: 1,
+                allocationKey,
+                reason: "Invalid reference revision",
+                correlationReference: "corr-alloc-invalid",
+                cancellationToken);
+        }
+
+        /// <summary>One allocation revision naming an explicit Cost Center (REQ-01 negatives).</summary>
+        public async Task<BudgetPositionView> ReviseAllocationForCostCenterAsync(
+            Guid costCenterId,
+            decimal amount,
+            string allocationKey,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var budgets = new BudgetPersistenceService(context);
+            return await budgets.SetAllocationAsync(
+                OrganizationId,
+                ActorId,
+                costCenterId,
+                2026,
+                SpendCategoryCode,
+                amount,
+                "PEN",
+                expectedVersion: 1,
+                allocationKey,
+                reason: "Foreign cost center revision",
+                correlationReference: "corr-alloc-foreign",
                 cancellationToken);
         }
 

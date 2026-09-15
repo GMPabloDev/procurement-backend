@@ -44,9 +44,6 @@ public sealed class BudgetPrerequisiteProcessor(
     /// <summary>Readiness budget of one due attempt (REQ-07, NFR-05).</summary>
     public static readonly TimeSpan DueBudget = TimeSpan.FromSeconds(60);
 
-    /// <summary>Maximum age of a lease renewal while an attempt is in flight (REQ-07).</summary>
-    public static readonly TimeSpan LeaseRenewalInterval = TimeSpan.FromSeconds(10);
-
     /// <summary>Claims every processable budget attempt and advances it once (REQ-07).</summary>
     public async Task<IReadOnlyList<BudgetProcessorOutcome>> ProcessDueAsync(
         DateTimeOffset now,
@@ -209,7 +206,8 @@ public sealed class BudgetPrerequisiteProcessor(
                         .Select(hold => new BudgetPredecessorReservation(hold.CaseId, hold.ReservedMovementIds))
                         .ToArray(),
                     attempt.SignalKey,
-                    cancellationToken);
+                    cancellationToken,
+                    LeaseFenceOf(attempt));
                 reserve = new BudgetReserveOutcome(
                     transfer.Result,
                     transfer.RequestOperationId,
@@ -231,7 +229,8 @@ public sealed class BudgetPrerequisiteProcessor(
                     attempt.SignalKey,
                     causeAuditId: null,
                     causeStream: null,
-                    cancellationToken);
+                    cancellationToken,
+                    LeaseFenceOf(attempt));
             }
         }
         catch (Exception exception) when (exception is BudgetDependencyUnavailableException or
@@ -242,7 +241,23 @@ public sealed class BudgetPrerequisiteProcessor(
                 $"{ErrorCode(exception)}: {exception.Message}", exception);
         }
 
-        await RecordReserveAsync(attempt, reserve, now, cancellationToken);
+        try
+        {
+            await RecordReserveAsync(attempt, reserve, now, cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // The lease was reclaimed while the checkpoint was saved: the new holder decides.
+            dbContext.ChangeTracker.Clear();
+            return null;
+        }
+        catch (Exception exception) when (exception is DomainException or DbUpdateException)
+        {
+            await MarkRetryAsync(attempt, ErrorCode(exception), now, cancellationToken);
+            throw new BudgetDependencyUnavailableException(
+                $"{ErrorCode(exception)}: {exception.Message}", exception);
+        }
+
         if (!await HoldLeaseAsync(attempt, cancellationToken))
         {
             return null;
@@ -498,11 +513,8 @@ public sealed class BudgetPrerequisiteProcessor(
             return false;
         }
 
-        if (until - now > LeaseDuration - LeaseRenewalInterval)
-        {
-            return true;
-        }
-
+        // If the lease is still ours, it is extended to a full lease before the next effect, so the
+        // following operation never starts already close to expiry (REQ-07).
         attempt.LeaseUntil = now + LeaseDuration;
         try
         {
@@ -519,6 +531,10 @@ public sealed class BudgetPrerequisiteProcessor(
         return true;
     }
 
+    /// <summary>The exact lease this instance holds for one attempt, verified transactionally (REQ-07).</summary>
+    private BudgetLeaseFence LeaseFenceOf(BudgetPrerequisiteAttemptRecord attempt) =>
+        new(attempt.Id, attempt.FencingToken, attempt.LeaseOwner ?? instanceIdentity.Owner);
+
     /// <summary>
     /// Records a failure after the operation was confirmed: the attempt keeps its state, the error
     /// and the next retry are recorded and the lease is released without clearing the ids. The next
@@ -534,7 +550,26 @@ public sealed class BudgetPrerequisiteProcessor(
         attempt.NextAttemptAt = now.AddSeconds(1);
         attempt.LeaseOwner = null;
         attempt.LeaseUntil = null;
-        await positions.SaveAsync(cancellationToken);
+        await SaveRetryAsync(attempt, cancellationToken);
+    }
+
+    /// <summary>
+    /// Persists a retry checkpoint; a concurrent reclaim simply wins, because the new holder owns
+    /// the next decision and the stale worker must not overwrite it (REQ-07).
+    /// </summary>
+    private async Task SaveRetryAsync(
+        BudgetPrerequisiteAttemptRecord attempt,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await positions.SaveAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is DomainConflictException or
+                                              DbUpdateConcurrencyException)
+        {
+            dbContext.ChangeTracker.Clear();
+        }
     }
 
     /// <summary>
@@ -718,7 +753,8 @@ public sealed class BudgetPrerequisiteProcessor(
                 actor,
                 "BUDGET_RELEASE",
                 "RELEASED",
-                movements),
+                movements,
+                LeaseFence: LeaseFenceOf(attempt)),
             payloads,
             correlation,
             cancellationToken);
@@ -797,7 +833,7 @@ public sealed class BudgetPrerequisiteProcessor(
         attempt.NextAttemptAt = now.AddSeconds(1);
         attempt.LeaseOwner = null;
         attempt.LeaseUntil = null;
-        await positions.SaveAsync(cancellationToken);
+        await SaveRetryAsync(attempt, cancellationToken);
     }
 
     private Task<string> BaseCurrencyAsync(Guid organizationId, CancellationToken cancellationToken) =>
