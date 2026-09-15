@@ -37,9 +37,14 @@ public sealed record PurchaseRequestSupersessionPlan(
     IReadOnlySet<string> VerifiedMaterialityIdentities);
 
 /// <summary>A blocked Policy evaluation is a contract violation of the request, not a dependency (REQ-11).</summary>
-public sealed class PurchaseRequestPolicyBlockedException(string message) : DomainException(message)
-{
-}
+public sealed class PurchaseRequestPolicyBlockedException(string message) : DomainException(message);
+
+/// <summary>
+/// The confirmed budget precheck of a <c>REQUIRE_BUDGET_CHECK</c> control could not cover the
+/// request version (SPEC 08 REQ-06). It maps to <c>422 /problems/budget-insufficient</c> and the
+/// confirmed evaluation plus the audited precheck stay available for a retry.
+/// </summary>
+public sealed class PurchaseRequestBudgetInsufficientException(string message) : DomainException(message);
 
 /// <summary>
 /// Durable presentation orchestration (REQ-06, DEC-05): attestation, Policy evaluation by
@@ -56,13 +61,20 @@ public sealed class PurchaseRequestSubmissionService(
     ApprovalSubmissionService approvalSubmissions,
     ApprovalSupersessionService approvalSupersessions,
     ApprovalWorkflowService approvalWorkflow,
+    BudgetLedger.BudgetPrecheckService budgetPrechecks,
+    Budget.BudgetReleaseService budgetReleases,
     ILogger<PurchaseRequestSubmissionService> logger)
 {
     /// <summary>Trusted in-process workload of the purchase request domain (REQ-05, REQ-06).</summary>
     public static readonly ApprovalWorkloadIdentity Workload =
         new("internal://procure-to-pay", PurchaseRequestCodes.ProviderId);
 
-    public const string AdapterContractVersion = PolicyApprovalAdapter.ContractVersion;
+    /// <summary>
+    /// SPEC 08 REQ-05, DEC-08: new Purchase Request submissions use the v3 contract, whose budget
+    /// projection keeps Fiscal Year, Spend Category and the amount of every covered target. An
+    /// attempt already persisted with v2 resumes v2 because the version travels in the command.
+    /// </summary>
+    public const string AdapterContractVersion = PolicyApprovalAdapter.ContractVersionV3;
 
     /// <summary>
     /// Fault-injection seam of the cancellation race (T-08): runs after the case version is read
@@ -245,6 +257,37 @@ public sealed class PurchaseRequestSubmissionService(
 
             throw new DomainConflictException(
                 "The purchase request presentation raced with another command; reload and retry.");
+        }
+
+        // (2b) A REQUIRE_BUDGET_CHECK control must pass its auditable precheck before any case
+        // exists (SPEC 08 REQ-06). The precheck is idempotent, so a retry reuses its recorded
+        // outcome instead of adding a second operation.
+        var budgetControl = bundle.Controls.FirstOrDefault(
+            control => control.Type == PolicyEffectType.RequireBudgetCheck);
+        if (budgetControl is not null)
+        {
+            var precheck = await budgetPrechecks.PrecheckAsync(
+                command.OrganizationId,
+                request.Id,
+                request.CurrentVersion,
+                $"pr-submit-{request.Id:D}-v{request.CurrentVersion}-budget",
+                correlation,
+                cancellationToken);
+            attempt = await dbContext.PurchaseRequestSubmissionAttempts
+                .SingleAsync(record => record.Id == attempt.Id, cancellationToken);
+            if (!string.Equals(precheck.Result, "AVAILABLE", StringComparison.Ordinal))
+            {
+                await MarkFailureAsync(
+                    attempt, PurchaseRequestSubmissionStatus.DependencyFailed,
+                    PurchaseRequestSubmissionCodes.ErrorBudgetInsufficient, utcNow, cancellationToken);
+                throw new PurchaseRequestBudgetInsufficientException(
+                    "The purchase request has no available budget for its confirmed positions.");
+            }
+
+            attempt.Status = (int)PurchaseRequestSubmissionStatus.BudgetPrecheckConfirmed;
+            attempt.ErrorCode = null;
+            attempt.UpdatedAt = utcNow;
+            await dbContext.SaveChangesAsync(cancellationToken);
         }
 
         // (3) Open, or supersede the previous case, through the trusted in-process adapter v2.
@@ -442,6 +485,11 @@ public sealed class PurchaseRequestSubmissionService(
                 cancellationToken);
         if (!replayed && attempt?.ApprovalCaseId is Guid caseId)
         {
+            // SPEC 08 REQ-08: a completed case emits no further Approval event, so the cancellation
+            // itself must free the open reservations before the request becomes terminal. The attempt
+            // row makes the two local transactions recoverable by the cancel key.
+            await ReleaseBudgetBeforeCancellationAsync(
+                requestId, expectedVersion, caseId, attempt, organizationId, reason, correlation, cancellationToken);
             await CancelOpenCaseAsync(caseId, reason, correlation, occurredAt, cancellationToken);
         }
 
@@ -455,6 +503,138 @@ public sealed class PurchaseRequestSubmissionService(
             correlation,
             occurredAt,
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Releases the open budget reservations of a case whose Approval lifecycle already ended, so a
+    /// Purchase Request can reach <c>CANCELLED</c> without holding funds (SPEC 08 REQ-08).
+    /// </summary>
+    private async Task ReleaseBudgetBeforeCancellationAsync(
+        Guid requestId,
+        int requestVersion,
+        Guid caseId,
+        PurchaseRequestSubmissionAttemptRecord attempt,
+        Guid organizationId,
+        string reason,
+        string correlation,
+        CancellationToken cancellationToken)
+    {
+        var prerequisite = await dbContext.ApprovalPrerequisites
+            .AsNoTracking()
+            .Where(record => record.CaseId == caseId &&
+                             record.OwnerAdapterId == Domain.Modules.Budget.BudgetCodes.BudgetOwnerAdapterId &&
+                             record.OwnerAdapterVersion == Domain.Modules.Budget.BudgetCodes.BudgetOwnerAdapterVersion)
+            .Select(record => new { record.Id, record.Status })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (prerequisite is null)
+        {
+            return;
+        }
+
+        _ = attempt;
+        var releaseKey = $"pr-cancel-{requestId:D}-v{requestVersion}";
+        var existing = await dbContext.PurchaseRequestBudgetReleaseAttempts
+            .SingleOrDefaultAsync(
+                record => record.OrganizationId == organizationId &&
+                          record.RequestId == requestId &&
+                          record.RequestVersion == requestVersion,
+                cancellationToken);
+        if (existing is null)
+        {
+            existing = new BudgetLedger.PurchaseRequestBudgetReleaseAttemptRecord
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = organizationId,
+                RequestId = requestId,
+                RequestVersion = requestVersion,
+                CaseId = caseId,
+                ReleaseKey = releaseKey,
+                State = Domain.Modules.Budget.BudgetReleaseAttemptStateCodes.Of(Domain.Modules.Budget.BudgetReleaseAttemptState.Pending),
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            dbContext.PurchaseRequestBudgetReleaseAttempts.Add(existing);
+            try
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException)
+            {
+                dbContext.ChangeTracker.Clear();
+                existing = await dbContext.PurchaseRequestBudgetReleaseAttempts
+                    .SingleAsync(
+                        record => record.OrganizationId == organizationId &&
+                                  record.RequestId == requestId &&
+                                  record.RequestVersion == requestVersion,
+                        cancellationToken);
+            }
+        }
+
+        if (existing.State == Domain.Modules.Budget.BudgetReleaseAttemptStateCodes.Of(Domain.Modules.Budget.BudgetReleaseAttemptState.Released))
+        {
+            return;
+        }
+
+        var targets = await LoadBudgetTargetsAsync(organizationId, requestId, requestVersion, caseId, cancellationToken);
+        if (targets.Count > 0)
+        {
+            var outcome = await budgetReleases.ReleaseAsync(
+                new Budget.BudgetReleaseRequest(
+                    organizationId,
+                    caseId,
+                    requestId,
+                    requestVersion,
+                    releaseKey,
+                    Budget.BudgetReleaseService.PurchaseRequestReleaseReason,
+                    Domain.Modules.Budget.BudgetReleaseTrigger.PurchaseRequestCancelled,
+                    TriggerEvent: null,
+                    targets),
+                Domain.Modules.Budget.BudgetActors.OwnerSystem,
+                correlation,
+                cancellationToken);
+            existing.ReleaseOperationId ??= outcome.OperationId;
+        }
+
+        existing.State = Domain.Modules.Budget.BudgetReleaseAttemptStateCodes.Of(Domain.Modules.Budget.BudgetReleaseAttemptState.Released);
+        existing.ReleasedAt = DateTimeOffset.UtcNow;
+        existing.LastErrorCode = null;
+        await dbContext.SaveChangesAsync(cancellationToken);
+        _ = reason;
+    }
+
+    /// <summary>
+    /// Material targets covered by the budget prerequisite of the case, rebuilt from the confirmed
+    /// material projection of the evaluation that created it (SPEC 08 REQ-05).
+    /// </summary>
+    private async Task<IReadOnlyList<Domain.Modules.Budget.BudgetTarget>> LoadBudgetTargetsAsync(
+        Guid organizationId,
+        Guid requestId,
+        int requestVersion,
+        Guid caseId,
+        CancellationToken cancellationToken)
+    {
+        var prerequisites = await dbContext.ApprovalPrerequisites
+            .AsNoTracking()
+            .Where(record => record.CaseId == caseId &&
+                             record.OwnerAdapterId == Domain.Modules.Budget.BudgetCodes.BudgetOwnerAdapterId &&
+                             record.OwnerAdapterVersion == Domain.Modules.Budget.BudgetCodes.BudgetOwnerAdapterVersion)
+            .Select(record => record.ParametersJson)
+            .ToArrayAsync(cancellationToken);
+        var targets = new List<Domain.Modules.Budget.BudgetTarget>();
+        foreach (var parametersJson in prerequisites)
+        {
+            var parameters = Domain.Modules.Budget.BudgetPrerequisiteParameters.Parse(parametersJson);
+            targets.AddRange(parameters.Demands
+                .Where(demand => demand.Target is not null)
+                .Select(demand => demand.Target!));
+        }
+
+        _ = organizationId;
+        _ = requestId;
+        _ = requestVersion;
+        return targets
+            .GroupBy(target => new { target.Id, target.Version })
+            .Select(group => group.First())
+            .ToArray();
     }
 
     private async Task CancelOpenCaseAsync(

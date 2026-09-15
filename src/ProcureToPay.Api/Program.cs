@@ -130,7 +130,8 @@ builder.Services
     .AddCheck<PolicyConfigurationHealthCheck>("policy-configuration", tags: ["ready"])
     .AddCheck<ApprovalHealthCheck>("approval", tags: ["ready"])
     .AddCheck<PolicyExceptionHealthCheck>("policy-exception", tags: ["ready"])
-    .AddCheck<PurchaseRequestHealthCheck>("purchase-request", tags: ["ready"]);
+    .AddCheck<PurchaseRequestHealthCheck>("purchase-request", tags: ["ready"])
+    .AddCheck<BudgetHealthCheck>("budget", tags: ["ready"]);
 
 var telemetryServiceName = builder.Configuration["OpenTelemetry:ServiceName"]
     ?? builder.Environment.ApplicationName;
@@ -247,6 +248,23 @@ app.MapHealthChecks("/health/purchase-request", new HealthCheckOptions
             : entry.Exception is not null
                 ? "PURCHASE_REQUEST_UNAVAILABLE"
                 : entry.Description ?? "PURCHASE_REQUEST_DEGRADED";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            status = report.Status.ToString().ToUpperInvariant(),
+            code
+        });
+    }
+});
+
+app.MapHealthChecks("/health/budget", new HealthCheckOptions
+{
+    Predicate = registration => registration.Name == "budget",
+    ResponseWriter = async (context, report) =>
+    {
+        var entry = report.Entries.Values.Single();
+        var code = report.Status == HealthStatus.Healthy
+            ? "BUDGET_OK"
+            : entry.Description ?? "BUDGET_DEGRADED";
         await context.Response.WriteAsJsonAsync(new
         {
             status = report.Status.ToString().ToUpperInvariant(),

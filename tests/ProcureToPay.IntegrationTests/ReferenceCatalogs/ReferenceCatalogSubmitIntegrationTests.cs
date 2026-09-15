@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.Budget;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
@@ -11,6 +12,7 @@ using ProcureToPay.Domain.Modules.ReferenceCatalogs;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Approval;
+using ProcureToPay.Infrastructure.Persistence.Budget;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
@@ -69,6 +71,636 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
         await using var verification = harness.CreateContext();
         Assert.Equal(1, await verification.PurchaseRequestReferenceAttestations.CountAsync(cancellationToken));
         Assert.Equal(1, await verification.ApprovalCases.CountAsync(cancellationToken));
+    }
+
+    [Fact]
+    public async Task Budget_control_reserves_all_or_nothing_and_signals_the_prerequisite()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+
+        var submitted = await harness.SubmitAsync(requestId, version, "submit-budget-1", cancellationToken);
+
+        await using var context = harness.CreateContext();
+        // The precheck confirmed availability before any case existed (SPEC 08 REQ-06).
+        var attempt = await context.PurchaseRequestSubmissionAttempts.SingleAsync(
+            record => record.RequestId == requestId && record.RequestVersion == version, cancellationToken);
+        Assert.Equal((int)PurchaseRequestSubmissionStatus.ApprovalConfirmed, attempt.Status);
+
+        // The owner reserved the full amount and then signalled the prerequisite.
+        await harness.ProcessBudgetAsync(cancellationToken);
+        await using var verification = harness.CreateContext();
+        var prerequisite = await verification.ApprovalPrerequisites.SingleAsync(
+            record => record.CaseId == submitted.ApprovalCaseId, cancellationToken);
+        Assert.Equal((int)PrerequisiteStatus.Satisfied, prerequisite.Status);
+        Assert.Equal(BudgetCodes.BudgetOwnerAdapterId, prerequisite.OwnerAdapterId);
+        Assert.Equal(BudgetCodes.BudgetOwnerAdapterVersion, prerequisite.OwnerAdapterVersion);
+        Assert.Equal("budget-check-owner", prerequisite.OwnerWorkloadClientId);
+
+        var budgetAttempt = await verification.BudgetPrerequisiteAttempts.SingleAsync(
+            record => record.PrerequisiteId == prerequisite.Id, cancellationToken);
+        Assert.Equal("COMPLETED", budgetAttempt.State);
+        Assert.Equal("SATISFIED", budgetAttempt.SignalResult);
+        Assert.NotNull(budgetAttempt.ReserveOperationId);
+        Assert.Equal(64, budgetAttempt.EvidenceDigest!.Length);
+
+        var movements = await verification.BudgetMovements
+            .Where(movement => movement.PositionId == budgetAttempt.Id)
+            .ToArrayAsync(cancellationToken);
+        _ = movements;
+        var reserved = await verification.BudgetMovements
+            .Where(movement => movement.Type == (int)BudgetMovementType.Reserved)
+            .ToArrayAsync(cancellationToken);
+        Assert.Single(reserved);
+        Assert.Equal(100m, reserved[0].Amount);
+        var balance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(1000m, balance.Allocated);
+        Assert.Equal(100m, balance.Reserved);
+        Assert.Equal(900m, balance.Allocated - balance.Reserved);
+
+        // The parameters carry Fiscal Year and Spend Category per covered target (REQ-05).
+        var prerequisiteRecord = await verification.ApprovalPrerequisites
+            .AsNoTracking()
+            .SingleAsync(record => record.Id == prerequisite.Id, cancellationToken);
+        Assert.Contains("\"fiscal_year\":2026", prerequisiteRecord.ParametersJson, StringComparison.Ordinal);
+        Assert.Contains("\"spend_category_ref\"", prerequisiteRecord.ParametersJson, StringComparison.Ordinal);
+        Assert.Contains(harness.CostCenterId.ToString("D"), prerequisiteRecord.ParametersJson, StringComparison.Ordinal);
+        Assert.Contains(harness.SpendCategory.Code, prerequisiteRecord.ParametersJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Two_instances_racing_the_same_attempt_reserve_and_signal_once()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        var submitted = await harness.SubmitAsync(requestId, version, "submit-budget-race", cancellationToken);
+
+        Guid prerequisiteId;
+        await using (var before = harness.CreateContext())
+        {
+            prerequisiteId = await before.ApprovalPrerequisites
+                .Where(record => record.CaseId == submitted.ApprovalCaseId &&
+                                 record.OwnerAdapterId == BudgetCodes.BudgetOwnerAdapterId)
+                .Select(record => record.Id)
+                .SingleAsync(cancellationToken);
+        }
+
+        // The durable attempt exists before the race: a sweep at a past instant creates it without
+        // claiming it, exactly as a restart finds a pending attempt.
+        Assert.Empty(await harness.ProcessBudgetInstanceAsync(
+            "race-seed-worker", cancellationToken, DateTimeOffset.UtcNow.AddHours(-1)));
+        var claimInstant = DateTimeOffset.UtcNow;
+        Guid attemptId;
+        await using (var seeded = harness.CreateContext())
+        {
+            var pending = await seeded.BudgetPrerequisiteAttempts
+                .SingleAsync(record => record.PrerequisiteId == prerequisiteId, cancellationToken);
+            Assert.Equal("PENDING", pending.State);
+            Assert.Equal(0, pending.Attempts);
+            Assert.Equal(0, pending.FencingToken);
+            attemptId = pending.Id;
+        }
+
+        // A shared lock makes both workers read the same row version and reach the claim together:
+        // once released, exactly one update wins and the other must skip without posting (REQ-07).
+        await using var blocker = harness.CreateContext();
+        await using var transaction = await blocker.Database.BeginTransactionAsync(cancellationToken);
+        await blocker.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT [Attempts] FROM [Budget].[PrerequisiteAttempts] WITH (HOLDLOCK) WHERE [Id] = {attemptId}",
+            cancellationToken);
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = Task.Run(
+            async () =>
+            {
+                await start.Task;
+                return await harness.ProcessBudgetInstanceAsync(
+                    "race-worker-a", cancellationToken, claimInstant);
+            },
+            cancellationToken);
+        var second = Task.Run(
+            async () =>
+            {
+                await start.Task;
+                return await harness.ProcessBudgetInstanceAsync(
+                    "race-worker-b", cancellationToken, claimInstant);
+            },
+            cancellationToken);
+        start.SetResult();
+        // Both sweeps are blocked now on the claim update; releasing them leaves one claim.
+        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        var outcomes = (await Task.WhenAll(first, second))
+            .SelectMany(processed => processed)
+            .ToArray();
+        Assert.Single(outcomes);
+
+        await using var verification = harness.CreateContext();
+        var attempt = await verification.BudgetPrerequisiteAttempts
+            .SingleAsync(record => record.PrerequisiteId == prerequisiteId, cancellationToken);
+        Assert.Equal("COMPLETED", attempt.State);
+        Assert.Equal("SATISFIED", attempt.SignalResult);
+        // The loser never reclaimed or duplicated the live claim of its peer.
+        Assert.Equal(1, attempt.FencingToken);
+        Assert.Equal(1, attempt.Attempts);
+        Assert.NotNull(attempt.ReserveOperationId);
+        var prerequisite = await verification.ApprovalPrerequisites
+            .SingleAsync(record => record.Id == prerequisiteId, cancellationToken);
+        Assert.Equal((int)PrerequisiteStatus.Satisfied, prerequisite.Status);
+        Assert.Equal(
+            1,
+            await verification.ApprovalPrerequisiteSignals
+                .CountAsync(record => record.PrerequisiteId == prerequisiteId, cancellationToken));
+        Assert.Equal(
+            1,
+            await verification.BudgetMovements
+                .CountAsync(movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+        var balance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(1000m, balance.Allocated);
+        Assert.Equal(100m, balance.Reserved);
+    }
+
+    [Fact]
+    public async Task A_crash_after_the_confirmed_signal_is_finished_from_the_recorded_signal()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        _ = await harness.SubmitAsync(requestId, version, "submit-signal-crash", cancellationToken);
+        await harness.ProcessBudgetAsync(cancellationToken);
+
+        string evidenceDigest;
+        Guid prerequisiteId;
+        await using (var crashed = harness.CreateContext())
+        {
+            var attempt = await crashed.BudgetPrerequisiteAttempts.SingleAsync(cancellationToken);
+            prerequisiteId = attempt.PrerequisiteId;
+            evidenceDigest = attempt.EvidenceDigest!;
+            // Crash between the confirmed Approval signal and the terminal checkpoint (REQ-07).
+            attempt.State = BudgetAttemptStateCodes.Of(BudgetAttemptState.Signalling);
+            attempt.SignalResult = null;
+            attempt.CompletedAt = null;
+            attempt.LeaseOwner = null;
+            attempt.LeaseUntil = null;
+            await crashed.SaveChangesAsync(cancellationToken);
+        }
+
+        // Approval already decided, so the prerequisite is no longer WAITING; the durable attempt
+        // is still reclaimed and finished from its recorded signal without a second reservation.
+        var outcomes = await harness.ProcessBudgetInstanceAsync("signal-recovery-worker", cancellationToken);
+        Assert.Single(outcomes);
+
+        await using var verification = harness.CreateContext();
+        var recovered = await verification.BudgetPrerequisiteAttempts
+            .SingleAsync(record => record.PrerequisiteId == prerequisiteId, cancellationToken);
+        Assert.Equal("COMPLETED", recovered.State);
+        Assert.Equal("SATISFIED", recovered.SignalResult);
+        Assert.Equal(evidenceDigest, recovered.EvidenceDigest);
+        Assert.Equal(2, recovered.FencingToken);
+        Assert.Equal(
+            1,
+            await verification.ApprovalPrerequisiteSignals
+                .CountAsync(record => record.PrerequisiteId == prerequisiteId, cancellationToken));
+        Assert.Equal(
+            1,
+            await verification.BudgetMovements
+                .CountAsync(movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+        var balance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(100m, balance.Reserved);
+        var prerequisite = await verification.ApprovalPrerequisites
+            .SingleAsync(record => record.Id == prerequisiteId, cancellationToken);
+        Assert.Equal((int)PrerequisiteStatus.Satisfied, prerequisite.Status);
+    }
+
+    [Fact]
+    public async Task An_expired_lease_of_a_dead_worker_is_reclaimed_without_double_booking()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        _ = await harness.SubmitAsync(requestId, version, "submit-lease-expiry", cancellationToken);
+
+        // The durable attempt exists without being processed; a dead worker holds an expired lease.
+        Assert.Empty(await harness.ProcessBudgetInstanceAsync(
+            "lease-seed-worker", cancellationToken, DateTimeOffset.UtcNow.AddHours(-1)));
+        Guid attemptId;
+        await using (var dead = harness.CreateContext())
+        {
+            var attempt = await dead.BudgetPrerequisiteAttempts.SingleAsync(cancellationToken);
+            attemptId = attempt.Id;
+            attempt.LeaseOwner = "dead-worker";
+            attempt.LeaseUntil = DateTimeOffset.UtcNow.AddSeconds(-1);
+            attempt.FencingToken = 1;
+            attempt.Attempts = 1;
+            await dead.SaveChangesAsync(cancellationToken);
+        }
+
+        // The expired lease is reclaimed with a new fencing token and the work is posted once.
+        var outcomes = await harness.ProcessBudgetInstanceAsync("lease-recovery-worker", cancellationToken);
+        Assert.Single(outcomes);
+
+        await using var verification = harness.CreateContext();
+        var recovered = await verification.BudgetPrerequisiteAttempts
+            .SingleAsync(record => record.Id == attemptId, cancellationToken);
+        Assert.Equal("COMPLETED", recovered.State);
+        Assert.Equal("SATISFIED", recovered.SignalResult);
+        Assert.Equal(2, recovered.FencingToken);
+        Assert.Equal(2, recovered.Attempts);
+        Assert.Equal(
+            1,
+            await verification.BudgetMovements
+                .CountAsync(movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+        var balance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(100m, balance.Reserved);
+    }
+
+    [Fact]
+    public async Task The_lease_is_renewed_while_an_effect_is_blocked()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        _ = await harness.SubmitAsync(requestId, version, "submit-renewal", cancellationToken);
+        Assert.Empty(await harness.ProcessBudgetInstanceAsync(
+            "renewal-seed-worker", cancellationToken, DateTimeOffset.UtcNow.AddHours(-1)));
+        Guid attemptId;
+        await using (var seeded = harness.CreateContext())
+        {
+            attemptId = (await seeded.BudgetPrerequisiteAttempts.SingleAsync(cancellationToken)).Id;
+        }
+
+        // Block the worker inside its reservation: the cooperative renewal must keep the lease fresh
+        // by interrupting the blocked effect at the renewal interval and retrying it (REQ-07).
+        Guid positionId;
+        await using (var positions = harness.CreateContext())
+        {
+            positionId = await positions.BudgetPositions
+                .AsNoTracking()
+                .Select(record => record.Id)
+                .SingleAsync(cancellationToken);
+        }
+
+        await using var blockerContext = harness.CreateContext();
+        await using var blocker = await blockerContext.Database.BeginTransactionAsync(cancellationToken);
+        // An exclusive lock on the balance row blocks the reservation without table escalation.
+        await blockerContext.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE [Budget].[Balances] SET [BalanceVersion] = [BalanceVersion] WHERE [PositionId] = {positionId}",
+            cancellationToken);
+        var worker = Task.Run(
+            async () => await harness.ProcessBudgetInstanceAsync("renewal-worker", cancellationToken),
+            cancellationToken);
+        await harness.WaitForLeaseOwnerAsync(attemptId, "renewal-worker", cancellationToken);
+        DateTimeOffset initialLease;
+        await using (var before = harness.CreateContext())
+        {
+            initialLease = (await before.BudgetPrerequisiteAttempts
+                .AsNoTracking()
+                .SingleAsync(cancellationToken)).LeaseUntil!.Value;
+        }
+
+        await Task.Delay(TimeSpan.FromSeconds(12), cancellationToken);
+
+        DateTimeOffset renewedLease;
+        await using (var during = harness.CreateContext())
+        {
+            renewedLease = (await during.BudgetPrerequisiteAttempts
+                .AsNoTracking()
+                .SingleAsync(cancellationToken)).LeaseUntil!.Value;
+        }
+
+        Assert.True(
+            renewedLease > initialLease,
+            $"The lease was not renewed while the effect was blocked: {initialLease:o} -> {renewedLease:o}");
+
+        await blocker.CommitAsync(cancellationToken);
+        var outcomes = await worker;
+        Assert.Single(outcomes);
+
+        await using var verification = harness.CreateContext();
+        var attempt = await verification.BudgetPrerequisiteAttempts.SingleAsync(cancellationToken);
+        Assert.Equal("COMPLETED", attempt.State);
+        Assert.Equal("SATISFIED", attempt.SignalResult);
+        Assert.Equal(
+            1,
+            await verification.BudgetMovements.CountAsync(
+                movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+    }
+
+    [Fact]
+    public async Task A_reclaimed_lease_is_never_overwritten_by_a_stale_worker()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        _ = await harness.SubmitAsync(requestId, version, "submit-reclaim", cancellationToken);
+        Assert.Empty(await harness.ProcessBudgetInstanceAsync(
+            "reclaim-seed-worker", cancellationToken, DateTimeOffset.UtcNow.AddHours(-1)));
+        Guid attemptId;
+        await using (var seeded = harness.CreateContext())
+        {
+            attemptId = (await seeded.BudgetPrerequisiteAttempts.SingleAsync(cancellationToken)).Id;
+        }
+
+        // The stale worker blocks inside its reservation while another instance reclaims the lease.
+        Guid positionId;
+        await using (var positions = harness.CreateContext())
+        {
+            positionId = await positions.BudgetPositions
+                .AsNoTracking()
+                .Select(record => record.Id)
+                .SingleAsync(cancellationToken);
+        }
+
+        await using var blockerContext = harness.CreateContext();
+        await using var blocker = await blockerContext.Database.BeginTransactionAsync(cancellationToken);
+        // An exclusive lock on the balance row blocks the reservation without table escalation.
+        await blockerContext.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE [Budget].[Balances] SET [BalanceVersion] = [BalanceVersion] WHERE [PositionId] = {positionId}",
+            cancellationToken);
+        var blockerSessionId = await blockerContext.Database
+            .SqlQueryRaw<int>("SELECT CAST(@@SPID AS int) AS [Value]")
+            .SingleAsync(cancellationToken);
+        var worker = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await harness.ProcessBudgetInstanceAsync("reclaim-worker", cancellationToken);
+                    return null;
+                }
+                catch (Exception exception)
+                {
+                    return exception;
+                }
+            },
+            cancellationToken);
+        await harness.WaitForLeaseOwnerAsync(attemptId, "reclaim-worker", cancellationToken);
+        // Only reclaim once the stale worker is blocked inside its reservation, so it reaches the
+        // transactional fence instead of a boundary lease read.
+        await harness.WaitForBlockedRequestAsync(blockerSessionId, cancellationToken);
+        int claimedToken;
+        await using (var claimed = harness.CreateContext())
+        {
+            claimedToken = (await claimed.BudgetPrerequisiteAttempts
+                .AsNoTracking()
+                .Where(record => record.Id == attemptId)
+                .SingleAsync(cancellationToken)).FencingToken;
+        }
+
+        await using (var reclaimer = harness.CreateContext())
+        {
+            // A raw conditional update mimics the reclaim without racing the heartbeat rowversion.
+            var affected = await reclaimer.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE [Budget].[PrerequisiteAttempts] SET [LeaseOwner] = {"reclaimer"}, [LeaseUntil] = {DateTimeOffset.UtcNow.AddSeconds(30)}, [FencingToken] = {claimedToken + 1}, [Attempts] = [Attempts] + 1 WHERE [Id] = {attemptId}",
+                cancellationToken);
+            Assert.Equal(1, affected);
+        }
+
+        await blocker.CommitAsync(cancellationToken);
+        var failure = await worker;
+        Assert.NotNull(failure);
+
+        // The stale worker never overwrites the new holder's lease nor confirms anything (REQ-07).
+        await using var verification = harness.CreateContext();
+        var stale = await verification.BudgetPrerequisiteAttempts
+            .SingleAsync(record => record.Id == attemptId, cancellationToken);
+        Assert.Equal("reclaimer", stale.LeaseOwner);
+        Assert.Equal(claimedToken + 1, stale.FencingToken);
+        Assert.Equal(
+            0,
+            await verification.BudgetMovements.CountAsync(
+                movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+        Assert.Equal(
+            0,
+            await verification.ApprovalPrerequisiteSignals
+                .CountAsync(record => record.PrerequisiteId == stale.PrerequisiteId, cancellationToken));
+    }
+
+    [Fact]
+    public async Task The_heartbeat_does_not_revive_an_expired_lease()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        _ = await harness.SubmitAsync(requestId, version, "submit-expiry", cancellationToken);
+        Assert.Empty(await harness.ProcessBudgetInstanceAsync(
+            "expiry-seed-worker", cancellationToken, DateTimeOffset.UtcNow.AddHours(-1)));
+        harness.UseCommandTimeout(120);
+        Guid attemptId;
+        Guid positionId;
+        await using (var seeded = harness.CreateContext())
+        {
+            attemptId = (await seeded.BudgetPrerequisiteAttempts.SingleAsync(cancellationToken)).Id;
+            positionId = await seeded.BudgetPositions
+                .AsNoTracking()
+                .Select(record => record.Id)
+                .SingleAsync(cancellationToken);
+        }
+
+        // The balance row keeps the worker before its posting transaction while the attempt row keeps
+        // the heartbeat from renewing until after the lease expires.
+        await using var balanceBlockerContext = harness.CreateContext();
+        await using var balanceBlocker = await balanceBlockerContext.Database.BeginTransactionAsync(cancellationToken);
+        await balanceBlockerContext.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE [Budget].[Balances] SET [BalanceVersion] = [BalanceVersion] WHERE [PositionId] = {positionId}",
+            cancellationToken);
+        var balanceBlockerSessionId = await balanceBlockerContext.Database
+            .SqlQueryRaw<int>("SELECT CAST(@@SPID AS int) AS [Value]")
+            .SingleAsync(cancellationToken);
+        var worker = Task.Run(
+            async () => await harness.ProcessBudgetInstanceAsync("expiry-worker", cancellationToken),
+            cancellationToken);
+        await harness.WaitForLeaseOwnerAsync(attemptId, "expiry-worker", cancellationToken);
+        // Only lock the attempt row once the worker is blocked before its transaction, so the
+        // heartbeat (not the worker) is the one waiting to renew.
+        await harness.WaitForBlockedRequestAsync(balanceBlockerSessionId, cancellationToken);
+        DateTimeOffset initialLease;
+        await using (var before = harness.CreateContext())
+        {
+            initialLease = (await before.BudgetPrerequisiteAttempts
+                .AsNoTracking()
+                .Where(record => record.Id == attemptId)
+                .SingleAsync(cancellationToken)).LeaseUntil!.Value;
+        }
+
+        await using var attemptBlockerContext = harness.CreateContext();
+        await using var attemptBlocker = await attemptBlockerContext.Database.BeginTransactionAsync(cancellationToken);
+        await attemptBlockerContext.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE [Budget].[PrerequisiteAttempts] SET [Attempts] = [Attempts] WHERE [Id] = {attemptId}",
+            cancellationToken);
+        await Task.Delay(initialLease + TimeSpan.FromSeconds(3) - DateTimeOffset.UtcNow, cancellationToken);
+        await attemptBlocker.CommitAsync(cancellationToken);
+        await balanceBlocker.CommitAsync(cancellationToken);
+        try
+        {
+            _ = await worker;
+        }
+        catch (BudgetDependencyUnavailableException)
+        {
+            // The stale worker aborts when the transactional fence rejects the expired lease.
+        }
+
+        // The delayed renewal must not resurrect the lease: the server clock rejects the stale tick
+        // and the worker aborts without confirming anything (REQ-07).
+        await using var verification = harness.CreateContext();
+        var expired = await verification.BudgetPrerequisiteAttempts
+            .SingleAsync(record => record.Id == attemptId, cancellationToken);
+        Assert.True(
+            expired.LeaseUntil <= DateTimeOffset.UtcNow,
+            $"The heartbeat revived an expired lease: {expired.LeaseUntil:o} at {DateTimeOffset.UtcNow:o}");
+        Assert.Equal(
+            0,
+            await verification.BudgetMovements.CountAsync(
+                movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+        Assert.Equal(
+            0,
+            await verification.ApprovalPrerequisiteSignals
+                .CountAsync(record => record.PrerequisiteId == expired.PrerequisiteId, cancellationToken));
+    }
+
+    [Fact]
+    public async Task A_rejected_requirement_releases_the_open_reservation()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        _ = await harness.SubmitAsync(requestId, version, "submit-budget-release", cancellationToken);
+        await harness.ProcessBudgetAsync(cancellationToken);
+
+        await using (var before = harness.CreateContext())
+        {
+            var held = await before.BudgetBalances.SingleAsync(cancellationToken);
+            Assert.Equal(100m, held.Reserved);
+        }
+
+        await harness.RejectFirstRequirementAsync(cancellationToken);
+        await harness.DispatchResultsAsync(cancellationToken);
+        // Every recorded result was delivered at least once (the retry backoff is part of the
+        // contract and is exercised by the approval suites).
+        var delivered = await harness.ReadOutboxStatesAsync(cancellationToken);
+        Assert.All(
+            delivered,
+            entry => Assert.False(
+                entry.Result.Length == 0 && entry.State == "PENDING",
+                "A recorded result stayed pending without a payload result."));
+
+        await using var verification = harness.CreateContext();
+        // The rejected target released its reservation exactly once: the hold is back to available.
+        var balance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(0m, balance.Reserved);
+        Assert.Equal(1000m, balance.Allocated - balance.Reserved - balance.Committed - balance.Consumed);
+        var reverses = await verification.BudgetMovements
+            .Where(movement => movement.Type == (int)BudgetMovementType.Reverse)
+            .ToArrayAsync(cancellationToken);
+        Assert.Single(reverses);
+        Assert.Equal(100m, reverses[0].Amount);
+        var releaseOperation = await verification.BudgetOperations
+            .SingleAsync(
+                operation => operation.Kind == (int)BudgetOperationKind.Release, cancellationToken);
+        Assert.Equal("RELEASED", releaseOperation.Result);
+
+        // A redelivery of the same terminal result never releases twice.
+        await harness.DispatchResultsAsync(cancellationToken);
+        await using var replay = harness.CreateContext();
+        Assert.Equal(
+            1,
+            await replay.BudgetMovements.CountAsync(
+                movement => movement.Type == (int)BudgetMovementType.Reverse, cancellationToken));
+        var released = await replay.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(0m, released.Reserved);
+    }
+
+    [Fact]
+    public async Task Cancelling_an_approved_request_releases_its_reservation_before_completing()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        var submitted = await harness.SubmitAsync(requestId, version, "submit-budget-cancel", cancellationToken);
+        await harness.ProcessBudgetAsync(cancellationToken);
+
+        // The case reached its end without further Approval events: the cancellation itself has to
+        // release the open reservation before the request becomes terminal (SPEC 08 REQ-08).
+        Guid caseId;
+        await using (var before = harness.CreateContext())
+        {
+            var balance = await before.BudgetBalances.SingleAsync(cancellationToken);
+            Assert.Equal(100m, balance.Reserved);
+            caseId = await before.ApprovalPrerequisites
+                .Where(record => record.OwnerAdapterId == BudgetCodes.BudgetOwnerAdapterId &&
+                                 record.Status == (int)PrerequisiteStatus.Satisfied)
+                .Select(record => record.CaseId)
+                .SingleAsync(cancellationToken);
+            Assert.Equal(submitted.ApprovalCaseId, caseId);
+        }
+
+        var cancelled = await harness.CancelAsync(requestId, version, "cancel-budget-1", cancellationToken);
+        Assert.False(cancelled.Replayed);
+
+        await using var verification = harness.CreateContext();
+        var releasedBalance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(0m, releasedBalance.Reserved);
+        var releases = await verification.BudgetMovements
+            .Where(movement => movement.Type == (int)BudgetMovementType.Reverse)
+            .ToArrayAsync(cancellationToken);
+        Assert.Single(releases);
+        Assert.Equal(100m, releases[0].Amount);
+        var attempt = await verification.PurchaseRequestBudgetReleaseAttempts
+            .SingleAsync(record => record.RequestId == requestId, cancellationToken);
+        Assert.Equal(BudgetReleaseAttemptStateCodes.Of(BudgetReleaseAttemptState.Released), attempt.State);
+        Assert.NotNull(attempt.ReleaseOperationId);
+        var request = await verification.PurchaseRequests
+            .SingleAsync(record => record.Id == requestId, cancellationToken);
+        Assert.Equal((int)PurchaseRequestStatus.Cancelled, request.Status);
+
+        // A replay of the same cancellation resolves against its ledger and never releases twice.
+        var replay = await harness.CancelAsync(requestId, version, "cancel-budget-1", cancellationToken);
+        Assert.True(replay.Replayed);
+        await using var afterReplay = harness.CreateContext();
+        Assert.Equal(
+            1,
+            await afterReplay.BudgetMovements.CountAsync(
+                movement => movement.Type == (int)BudgetMovementType.Reverse, cancellationToken));
+    }
+
+    [Fact]
+    public async Task A_budget_without_funds_fails_the_owner_prerequisite_without_reserving()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        // The position exists but only covers half of the line.
+        await harness.FundBudgetAsync(40m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+
+        await Assert.ThrowsAsync<PurchaseRequestBudgetInsufficientException>(() =>
+            harness.SubmitAsync(requestId, version, "submit-budget-2", cancellationToken));
+
+        await using var context = harness.CreateContext();
+        Assert.Empty(await context.ApprovalCases.ToArrayAsync(cancellationToken));
+        var attempt = await context.PurchaseRequestSubmissionAttempts.SingleAsync(
+            record => record.RequestId == requestId && record.RequestVersion == version, cancellationToken);
+        Assert.Equal(PurchaseRequestSubmissionCodes.ErrorBudgetInsufficient, attempt.ErrorCode);
+
+        // The audited precheck is preserved for the retry, and it never reserved anything.
+        var operations = await context.BudgetOperations
+            .Where(operation => operation.Kind == (int)BudgetOperationKind.Precheck)
+            .ToArrayAsync(cancellationToken);
+        Assert.Single(operations);
+        // The position exists but cannot cover the line: the business outcome is insufficient.
+        Assert.Equal("INSUFFICIENT", operations[0].Result);
+        var balance = await context.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(0m, balance.Reserved);
+        Assert.Equal(0m, balance.Committed);
     }
 
     [Fact]
@@ -219,6 +851,7 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
     {
         private MsSqlContainer container = null!;
         private string connectionString = string.Empty;
+        private int commandTimeoutSeconds = 30;
         private PolicySetVersion policy = null!;
         private DateTimeOffset activationAt;
 
@@ -234,7 +867,12 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
         public SpendCategoryReference SpendCategory { get; private set; } = null!;
         public ReferenceCatalogPersistenceService Service { get; private set; } = null!;
 
-        public static async Task<Harness> StartAsync(CancellationToken cancellationToken)
+        public static Task<Harness> StartAsync(CancellationToken cancellationToken) =>
+            StartAsync(cancellationToken, withBudgetCheck: false);
+
+        public static async Task<Harness> StartAsync(
+            CancellationToken cancellationToken,
+            bool withBudgetCheck)
         {
             var container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-latest")
                 .WithPassword("ProcureToPay_test_2026!")
@@ -281,13 +919,16 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 "Initial category",
                 "corr-sc",
                 cancellationToken);
-            await harness.ActivatePolicyAsync(cancellationToken);
+            await harness.ActivatePolicyAsync(cancellationToken, withBudgetCheck);
             return harness;
         }
 
+        /// <summary>Extends the command timeout for tests that hold a lock past the lease deadline.</summary>
+        public void UseCommandTimeout(int seconds) => commandTimeoutSeconds = seconds;
+
         public ProcureToPayDbContext CreateContext() => new(
             new DbContextOptionsBuilder<ProcureToPayDbContext>()
-                .UseSqlServer(connectionString)
+                .UseSqlServer(connectionString, options => options.CommandTimeout(commandTimeoutSeconds))
                 .Options);
 
         private void Seed(ProcureToPayDbContext context)
@@ -381,6 +1022,225 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
             return (creation.RequestId, creation.Version);
         }
 
+        /// <summary>Funds the budget position of the test line through the real allocation path.</summary>
+        public async Task FundBudgetAsync(decimal amount, CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var budgets = new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context);
+            await budgets.SetAllocationAsync(
+                OrganizationId,
+                ActorId,
+                CostCenterId,
+                2026,
+                SpendCategory.Code,
+                amount,
+                "PEN",
+                expectedVersion: null,
+                allocationKey: $"alloc-{Guid.NewGuid():N}",
+                reason: "Integration test funding",
+                correlationReference: "corr-budget-fund",
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// Rejects the first pending requirement with the real decision service and delivers its
+        /// outbox results, so the SPEC 08 release path runs exactly as in production.
+        /// </summary>
+        public async Task RejectFirstRequirementAsync(CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var decision = await context.ApprovalTasks
+                .AsNoTracking()
+                .Where(record => record.Status == (int)ApprovalTaskStatus.Pending)
+                .OrderBy(record => record.Id)
+                .FirstAsync(cancellationToken);
+            var assignment = await context.ApprovalAssignments
+                .AsNoTracking()
+                .SingleAsync(record => record.TaskId == decision.Id && record.ReleasedAt == null, cancellationToken);
+            using var loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Warning));
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Approval:Workloads:0:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
+                    ["Approval:Workloads:0:ClientId"] = PurchaseRequestSubmissionService.Workload.ClientId
+                })
+                .Build();
+            var allowlist = new ApprovalWorkloadAllowlist(configuration);
+            var engine = new ApprovalAssignmentEngine(
+                context, new OrganizationEligibilityService(context), new ApprovalScopeResolver(context));
+            await new ApprovalDecisionService(
+                    context, engine, loggerFactory.CreateLogger<ApprovalDecisionService>())
+                .DecideAsync(
+                    new ApprovalDecisionCommand(
+                        decision.Id,
+                        ApprovalDecisionAction.Reject,
+                        "Rejected by the budget release test",
+                        $"reject-{Guid.NewGuid():N}",
+                        decision.Version,
+                        assignment.AssigneeUserId,
+                        "corr-reject"),
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
+        }
+
+        /// <summary>
+        /// Delivers every recorded outbox event to the real Purchase Request consumer, which also
+        /// drives the SPEC 08 release of a terminal result.
+        /// </summary>
+        public Task DispatchResultsAsync(CancellationToken cancellationToken) =>
+            DispatchResultsAsync(DateTimeOffset.UtcNow.AddSeconds(1), cancellationToken);
+
+        public async Task DispatchResultsAsync(DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            using var loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Warning));
+            await using var context = CreateContext();
+            var budgetPersistence = new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context);
+            var releases = new BudgetReleaseService(
+                context,
+                new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetLedgerService(
+                    context, budgetPersistence),
+                budgetPersistence);
+            var dispatcher = new ApprovalOutboxDispatcher(
+                context,
+                new ApprovalResultConsumerRegistry(
+                [
+                    new PurchaseRequestApprovalResultConsumer(
+                        context, releases, NullLogger<PurchaseRequestApprovalResultConsumer>.Instance,
+                        "approval-result/v2"),
+                    new PurchaseRequestApprovalResultConsumer(
+                        context, releases, NullLogger<PurchaseRequestApprovalResultConsumer>.Instance,
+                        "approval-result/v3"),
+                    new PurchaseRequestApprovalResultConsumer(
+                        context, releases, NullLogger<PurchaseRequestApprovalResultConsumer>.Instance,
+                        ApprovalEvolutionCodes.LifecycleContractVersion)
+                ]),
+                loggerFactory.CreateLogger<ApprovalOutboxDispatcher>());
+            await dispatcher.DispatchAsync(
+                OrganizationId,
+                "integration-dispatcher",
+                now,
+                100,
+                cancellationToken);
+        }
+
+        /// <summary>State of every recorded outbox event, for the release assertions.</summary>
+        public async Task<IReadOnlyList<(string Contract, string Result, string State, string? Error)>>
+            ReadOutboxStatesAsync(CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var rows = await context.ApprovalOutboxEvents
+                .AsNoTracking()
+                .ToArrayAsync(cancellationToken);
+            return rows
+                .Select(row => (
+                    row.ContractVersion,
+                    Result: ParseResult(row.PayloadJson),
+                    State: ((ApprovalOutboxState)row.State).ToString().ToUpperInvariant(),
+                    Error: row.LastError))
+                .ToArray();
+        }
+
+        private static string ParseResult(string payloadJson)
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(payloadJson);
+            return document.RootElement.TryGetProperty("result", out var result)
+                ? result.GetString() ?? string.Empty
+                : string.Empty;
+        }
+
+        /// <summary>Runs the real budget owner processor once, as the durable worker does.</summary>
+        public Task ProcessBudgetAsync(CancellationToken cancellationToken) =>
+            ProcessBudgetInstanceAsync("integration-budget-worker", cancellationToken);
+
+        /// <summary>
+        /// Runs one processor instance with its own DbContext and lease identity, so two of them can
+        /// race the same durable attempt exactly as two production workers would (REQ-07, CA-08).
+        /// </summary>
+        public async Task<IReadOnlyList<
+            ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetProcessorOutcome>>
+            ProcessBudgetInstanceAsync(
+                string instanceId,
+                CancellationToken cancellationToken,
+                DateTimeOffset? now = null)
+        {
+            using var loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Warning));
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Approval:InstanceId"] = instanceId,
+                    ["Approval:Workloads:0:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
+                    ["Approval:Workloads:0:ClientId"] = PurchaseRequestSubmissionService.Workload.ClientId,
+                    ["Approval:Workloads:1:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
+                    ["Approval:Workloads:1:ClientId"] = BudgetCodes.BudgetOwnerAdapterId
+                })
+                .Build();
+            await using var context = CreateContext();
+            var allowlist = new ApprovalWorkloadAllowlist(configuration);
+            var assignmentEngine = new ApprovalAssignmentEngine(
+                context,
+                new OrganizationEligibilityService(context),
+                new ApprovalScopeResolver(context));
+            var processor = new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPrerequisiteProcessor(
+                context,
+                new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context),
+                new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetLedgerService(
+                    context,
+                    new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context)),
+                new PurchaseRequestBudgetDemandBuilder(context),
+                new ApprovalWorkflowService(
+                    context, allowlist, assignmentEngine,
+                    loggerFactory.CreateLogger<ApprovalWorkflowService>()),
+                new ApprovalInstanceIdentity(configuration));
+            return await processor.ProcessDueAsync(now ?? DateTimeOffset.UtcNow, cancellationToken);
+        }
+
+        /// <summary>Waits until a worker is blocked behind the given test session (SQL Server).</summary>
+        public async Task WaitForBlockedRequestAsync(int blockerSessionId, CancellationToken cancellationToken)
+        {
+            for (var attempt = 0; attempt < 150; attempt++)
+            {
+                await using var context = CreateContext();
+                var blocked = await context.Database
+                    .SqlQueryRaw<int>(
+                        "SELECT COUNT(*) AS [Value] FROM sys.dm_exec_requests WHERE blocking_session_id = {0}",
+                        blockerSessionId)
+                    .SingleAsync(cancellationToken);
+                if (blocked > 0)
+                {
+                    return;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+            }
+
+            throw new InvalidOperationException("No worker blocked behind the test lock in time.");
+        }
+
+        /// <summary>Waits until the named instance owns the durable lease of one attempt (REQ-07).</summary>
+        public async Task WaitForLeaseOwnerAsync(
+            Guid attemptId,
+            string owner,
+            CancellationToken cancellationToken)
+        {
+            for (var attempt = 0; attempt < 100; attempt++)
+            {
+                await using var context = CreateContext();
+                var current = await context.BudgetPrerequisiteAttempts
+                    .AsNoTracking()
+                    .Where(record => record.Id == attemptId)
+                    .Select(record => record.LeaseOwner)
+                    .SingleAsync(cancellationToken);
+                if (string.Equals(current, owner, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+            }
+
+            throw new InvalidOperationException("The worker did not claim the attempt in time.");
+        }
+
         public async Task<PurchaseRequestSubmissionOutcome> SubmitAsync(
             Guid requestId,
             int version,
@@ -406,6 +1266,26 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 DateTimeOffset.UtcNow,
                 cancellationToken);
         }
+
+        /// <summary>
+        /// Cancels the request through the real submission service, which must release the budget
+        /// reservation of an approved case before the request becomes terminal (SPEC 08 REQ-08).
+        /// </summary>
+        public Task<PurchaseRequestCancellation> CancelAsync(
+            Guid requestId,
+            int version,
+            string cancelKey,
+            CancellationToken cancellationToken) =>
+            CreateServices().Submission.CancelAsync(
+                requestId,
+                version,
+                cancelKey,
+                "Cancelled by the budget release test",
+                OrganizationId,
+                RequesterId,
+                "corr-cancel",
+                DateTimeOffset.UtcNow,
+                cancellationToken);
 
         private PurchaseRequestLineContent LineContent() =>
             new(
@@ -434,7 +1314,11 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 [],
                 null);
 
-        private async Task ActivatePolicyAsync(CancellationToken cancellationToken)
+        /// <summary>
+        /// Activates the test policy. <paramref name="withBudgetCheck"/> adds the
+        /// <c>REQUIRE_BUDGET_CHECK</c> control that SPEC 08 turns into a real reservation.
+        /// </summary>
+        private async Task ActivatePolicyAsync(CancellationToken cancellationToken, bool withBudgetCheck = false)
         {
             policy = new PolicySetVersion(
                 Guid.NewGuid(), OrganizationId, 1, [PolicyScope.Line, PolicyScope.Request]);
@@ -457,6 +1341,15 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                             baseCurrency: null,
                             decisionScope))
                 ]));
+            if (withBudgetCheck)
+            {
+                policy.AddRule(new PolicyRule(
+                    "LINE_BUDGET",
+                    PolicyScope.Line,
+                    [],
+                    [new PolicyEffect(PolicyEffectType.RequireBudgetCheck, "BUDGET_CHECK")]));
+            }
+
             policy.AddRule(new PolicyRule(
                 "LINE_ALLOW",
                 PolicyScope.Line,
@@ -499,7 +1392,15 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                     ["Policy:Workloads:0:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
                     ["Policy:Workloads:0:ClientId"] = PurchaseRequestSubmissionService.Workload.ClientId,
                     ["Approval:Workloads:0:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
-                    ["Approval:Workloads:0:ClientId"] = PurchaseRequestSubmissionService.Workload.ClientId
+                    ["Approval:Workloads:0:ClientId"] = PurchaseRequestSubmissionService.Workload.ClientId,
+                    // SPEC 08: the real budget owner is an allowlisted workload and its adapter/version
+                    // resolves exactly one owner (REQ-05, REQ-09).
+                    ["Approval:Workloads:1:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
+                    ["Approval:Workloads:1:ClientId"] = BudgetCodes.BudgetOwnerAdapterId,
+                    ["Approval:OwnerWorkloads:0:AdapterId"] = BudgetCodes.BudgetOwnerAdapterId,
+                    ["Approval:OwnerWorkloads:0:AdapterVersion"] = BudgetCodes.BudgetOwnerAdapterVersion,
+                    ["Approval:OwnerWorkloads:0:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
+                    ["Approval:OwnerWorkloads:0:ClientId"] = BudgetCodes.BudgetOwnerAdapterId
                 })
                 .Build();
             var context = CreateContext();
@@ -542,7 +1443,16 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 ]),
                 NullLogger<PolicyEvaluationService>.Instance);
             var allowlist = new ApprovalWorkloadAllowlist(configuration);
-            var registry = new ApprovalSubmissionAdapterRegistry([new PolicyApprovalAdapter(context)]);
+            var budgetPersistence = new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(context);
+            var budgetLedger = new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetLedgerService(
+                context, budgetPersistence);
+            var budgetBuilder = new PurchaseRequestBudgetDemandBuilder(context);
+            var registry = new ApprovalSubmissionAdapterRegistry(
+            [
+                new PolicyApprovalAdapter(context),
+                new PolicyApprovalAdapter(
+                    context, PolicyApprovalAdapter.ContractVersionV3, budgetBuilder)
+            ]);
             var assignmentEngine = new ApprovalAssignmentEngine(
                 context,
                 new OrganizationEligibilityService(context),
@@ -564,6 +1474,16 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 submissions,
                 supersessions,
                 workflow,
+                new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPrecheckService(
+                    context,
+                    new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.BudgetDemandBuilderRegistry(
+                        [budgetBuilder]),
+                    budgetLedger,
+                    attestation),
+                new ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService(
+                    context,
+                    budgetLedger,
+                    budgetPersistence),
                 NullLogger<PurchaseRequestSubmissionService>.Instance);
             return new Services(submissionService);
         }

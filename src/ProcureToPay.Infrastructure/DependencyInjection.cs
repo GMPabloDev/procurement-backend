@@ -132,7 +132,17 @@ public static class DependencyInjection
         services.AddScoped<IApprovalSubmissionAdapterRegistry>(provider =>
             new ApprovalSubmissionAdapterRegistry(provider.GetServices<IApprovalSubmissionAdapter>()));
         services.AddScoped<ApprovalSubmissionService>();
-        services.AddScoped<IApprovalSubmissionAdapter, PolicyApprovalAdapter>();
+        services.AddScoped<IApprovalSubmissionAdapter>(provider =>
+            new PolicyApprovalAdapter(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                PolicyApprovalAdapter.ContractVersion));
+        // SPEC 08 DEC-08: the v3 contract projects the complete budget parameters (Fiscal Year,
+        // Spend Category and one demand per covered target) from the confirmed request version.
+        services.AddScoped<IApprovalSubmissionAdapter>(provider =>
+            new PolicyApprovalAdapter(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                PolicyApprovalAdapter.ContractVersionV3,
+                provider.GetRequiredService<ProcureToPay.Application.Abstractions.IBudgetDemandBuilder>()));
         services.AddScoped<PolicyExceptionSubmissionService>();
         services.AddScoped<PolicyExceptionVerificationService>();
         services.AddScoped<ApprovalWorkflowService>();
@@ -161,14 +171,17 @@ public static class DependencyInjection
         // SPEC 06 REQ-09: one consumer per result contract version plus the SPEC 04 lifecycle.
         services.AddScoped<IApprovalResultConsumer>(provider => new PurchaseRequestApprovalResultConsumer(
             provider.GetRequiredService<ProcureToPayDbContext>(),
+            provider.GetRequiredService<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>(),
             provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
             "approval-result/v2"));
         services.AddScoped<IApprovalResultConsumer>(provider => new PurchaseRequestApprovalResultConsumer(
             provider.GetRequiredService<ProcureToPayDbContext>(),
+            provider.GetRequiredService<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>(),
             provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
             "approval-result/v3"));
         services.AddScoped<IApprovalResultConsumer>(provider => new PurchaseRequestApprovalResultConsumer(
             provider.GetRequiredService<ProcureToPayDbContext>(),
+            provider.GetRequiredService<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>(),
             provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
             "approval-case-lifecycle/v1"));
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestPolicyFactProvider>();
@@ -176,6 +189,25 @@ public static class DependencyInjection
             provider.GetRequiredService<
                 ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestPolicyFactProvider>());
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.ReferenceCatalogs.ReferenceCatalogPersistenceService>();
+        // SPEC 08: the budget ledger, its precheck orchestration, the server-side demand builder and
+        // the real owner of the REQUIRE_BUDGET_CHECK prerequisite (REQ-01..REQ-06).
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetLedgerService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPrecheckService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestBudgetDemandBuilder>();
+        services.AddScoped<ProcureToPay.Application.Abstractions.IBudgetDemandBuilder>(provider =>
+            provider.GetRequiredService<
+                ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestBudgetDemandBuilder>());
+        services.AddScoped(provider =>
+            new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.BudgetDemandBuilderRegistry(
+                provider.GetServices<ProcureToPay.Application.Abstractions.IBudgetDemandBuilder>()));
+        // SPEC 08 REQ-07/REQ-09: the real owner processor and the closed producer registry. A
+        // producer only posts with an explicit configuration entry; none ships enabled.
+        services.AddSingleton(provider =>
+            new ProcureToPay.Infrastructure.Persistence.Budget.BudgetMovementProducerRegistry(configuration));
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Budget.BudgetTransitionService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPrerequisiteProcessor>();
         services.AddScoped<IPurchaseRequestReferenceOwner>(provider =>
             new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.OrganizationReferenceOwner(
                 provider.GetRequiredService<ProcureToPayDbContext>(),
