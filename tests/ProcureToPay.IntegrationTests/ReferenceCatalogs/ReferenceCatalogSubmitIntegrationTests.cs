@@ -131,6 +131,99 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
     }
 
     [Fact]
+    public async Task Two_instances_racing_the_same_attempt_reserve_and_signal_once()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        var submitted = await harness.SubmitAsync(requestId, version, "submit-budget-race", cancellationToken);
+
+        Guid prerequisiteId;
+        await using (var before = harness.CreateContext())
+        {
+            prerequisiteId = await before.ApprovalPrerequisites
+                .Where(record => record.CaseId == submitted.ApprovalCaseId &&
+                                 record.OwnerAdapterId == BudgetCodes.BudgetOwnerAdapterId)
+                .Select(record => record.Id)
+                .SingleAsync(cancellationToken);
+        }
+
+        // The durable attempt exists before the race: a sweep at a past instant creates it without
+        // claiming it, exactly as a restart finds a pending attempt.
+        Assert.Empty(await harness.ProcessBudgetInstanceAsync(
+            "race-seed-worker", cancellationToken, DateTimeOffset.UtcNow.AddHours(-1)));
+        var claimInstant = DateTimeOffset.UtcNow;
+        Guid attemptId;
+        await using (var seeded = harness.CreateContext())
+        {
+            var pending = await seeded.BudgetPrerequisiteAttempts
+                .SingleAsync(record => record.PrerequisiteId == prerequisiteId, cancellationToken);
+            Assert.Equal("PENDING", pending.State);
+            Assert.Equal(0, pending.Attempts);
+            Assert.Equal(0, pending.FencingToken);
+            attemptId = pending.Id;
+        }
+
+        // A shared lock makes both workers read the same row version and reach the claim together:
+        // once released, exactly one update wins and the other must skip without posting (REQ-07).
+        await using var blocker = harness.CreateContext();
+        await using var transaction = await blocker.Database.BeginTransactionAsync(cancellationToken);
+        await blocker.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT [Attempts] FROM [Budget].[PrerequisiteAttempts] WITH (HOLDLOCK) WHERE [Id] = {attemptId}",
+            cancellationToken);
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = Task.Run(
+            async () =>
+            {
+                await start.Task;
+                return await harness.ProcessBudgetInstanceAsync(
+                    "race-worker-a", cancellationToken, claimInstant);
+            },
+            cancellationToken);
+        var second = Task.Run(
+            async () =>
+            {
+                await start.Task;
+                return await harness.ProcessBudgetInstanceAsync(
+                    "race-worker-b", cancellationToken, claimInstant);
+            },
+            cancellationToken);
+        start.SetResult();
+        // Both sweeps are blocked now on the claim update; releasing them leaves one claim.
+        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        var outcomes = (await Task.WhenAll(first, second))
+            .SelectMany(processed => processed)
+            .ToArray();
+        Assert.Single(outcomes);
+
+        await using var verification = harness.CreateContext();
+        var attempt = await verification.BudgetPrerequisiteAttempts
+            .SingleAsync(record => record.PrerequisiteId == prerequisiteId, cancellationToken);
+        Assert.Equal("COMPLETED", attempt.State);
+        Assert.Equal("SATISFIED", attempt.SignalResult);
+        // The loser never reclaimed or duplicated the live claim of its peer.
+        Assert.Equal(1, attempt.FencingToken);
+        Assert.Equal(1, attempt.Attempts);
+        Assert.NotNull(attempt.ReserveOperationId);
+        var prerequisite = await verification.ApprovalPrerequisites
+            .SingleAsync(record => record.Id == prerequisiteId, cancellationToken);
+        Assert.Equal((int)PrerequisiteStatus.Satisfied, prerequisite.Status);
+        Assert.Equal(
+            1,
+            await verification.ApprovalPrerequisiteSignals
+                .CountAsync(record => record.PrerequisiteId == prerequisiteId, cancellationToken));
+        Assert.Equal(
+            1,
+            await verification.BudgetMovements
+                .CountAsync(movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+        var balance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(1000m, balance.Allocated);
+        Assert.Equal(100m, balance.Reserved);
+    }
+
+    [Fact]
     public async Task A_rejected_requirement_releases_the_open_reservation()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -709,12 +802,25 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
         }
 
         /// <summary>Runs the real budget owner processor once, as the durable worker does.</summary>
-        public async Task ProcessBudgetAsync(CancellationToken cancellationToken)
+        public Task ProcessBudgetAsync(CancellationToken cancellationToken) =>
+            ProcessBudgetInstanceAsync("integration-budget-worker", cancellationToken);
+
+        /// <summary>
+        /// Runs one processor instance with its own DbContext and lease identity, so two of them can
+        /// race the same durable attempt exactly as two production workers would (REQ-07, CA-08).
+        /// </summary>
+        public async Task<IReadOnlyList<
+            ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetProcessorOutcome>>
+            ProcessBudgetInstanceAsync(
+                string instanceId,
+                CancellationToken cancellationToken,
+                DateTimeOffset? now = null)
         {
             using var loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Warning));
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
+                    ["Approval:InstanceId"] = instanceId,
                     ["Approval:Workloads:0:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
                     ["Approval:Workloads:0:ClientId"] = PurchaseRequestSubmissionService.Workload.ClientId,
                     ["Approval:Workloads:1:Issuer"] = PurchaseRequestSubmissionService.Workload.Issuer,
@@ -738,7 +844,7 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                     context, allowlist, assignmentEngine,
                     loggerFactory.CreateLogger<ApprovalWorkflowService>()),
                 new ApprovalInstanceIdentity(configuration));
-            await processor.ProcessDueAsync(DateTimeOffset.UtcNow, cancellationToken);
+            return await processor.ProcessDueAsync(now ?? DateTimeOffset.UtcNow, cancellationToken);
         }
 
         public async Task<PurchaseRequestSubmissionOutcome> SubmitAsync(

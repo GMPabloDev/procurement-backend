@@ -363,8 +363,11 @@ public sealed class BudgetPrerequisiteProcessor(
         {
             await positions.SaveAsync(cancellationToken);
         }
-        catch (DomainConflictException)
+        catch (Exception exception) when (exception is DomainConflictException or
+                                              DbUpdateConcurrencyException)
         {
+            // Another instance claimed the same attempt first: this one skips it instead of
+            // posting its own reservation (REQ-07).
             dbContext.ChangeTracker.Clear();
             return false;
         }
@@ -372,7 +375,11 @@ public sealed class BudgetPrerequisiteProcessor(
         return true;
     }
 
-    /// <summary>Marks the attempt as reserved, or keeps the post-decision state of an insufficiency.</summary>
+    /// <summary>
+    /// Marks the attempt as reserved, or keeps the post-decision state of an insufficiency. The
+    /// lease stays held until the attempt reaches a terminal state, so no other instance reclaims
+    /// an in-flight attempt; only an expired lease (a dead worker) is reclaimable (REQ-07).
+    /// </summary>
     private async Task RecordReserveAsync(
         BudgetPrerequisiteAttemptRecord attempt,
         BudgetReserveOutcome reserve,
@@ -385,7 +392,6 @@ public sealed class BudgetPrerequisiteProcessor(
             ? BudgetAttemptStateCodes.Of(BudgetAttemptState.Reserved)
             : BudgetAttemptStateCodes.Of(BudgetAttemptState.Insufficient);
         attempt.NextAttemptAt = now;
-        ReleaseLease(attempt);
         await positions.SaveAsync(cancellationToken);
     }
 
@@ -630,12 +636,6 @@ public sealed class BudgetPrerequisiteProcessor(
         attempt.LeaseOwner = null;
         attempt.LeaseUntil = null;
         await positions.SaveAsync(cancellationToken);
-    }
-
-    private static void ReleaseLease(BudgetPrerequisiteAttemptRecord attempt)
-    {
-        attempt.LeaseOwner = null;
-        attempt.LeaseUntil = null;
     }
 
     private Task<string> BaseCurrencyAsync(Guid organizationId, CancellationToken cancellationToken) =>
