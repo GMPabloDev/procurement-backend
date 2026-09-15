@@ -146,13 +146,13 @@ public sealed class BudgetTransitionService(
         return new BudgetTransitionResult(
             outcome.OperationId,
             outcome.Replayed,
-            outcome.EvidenceRows
-                .Select(row => new BudgetTransitionMovement(
-                    row.Id,
-                    null,
-                    row.PositionKeyDigest,
-                    BudgetFingerprints.MovementTypeCode(row.Type),
-                    row.Amount))
+            outcome.Posted
+                .Select(posted => new BudgetTransitionMovement(
+                    posted.Movement.Id,
+                    posted.Movement.ParentMovementId,
+                    outcome.PositionKeys[posted.Position],
+                    BudgetFingerprints.MovementTypeCode((BudgetMovementType)posted.Movement.Type),
+                    posted.Movement.Amount))
                 .ToArray());
     }
 

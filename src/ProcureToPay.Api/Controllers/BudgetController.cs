@@ -2,11 +2,13 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Budget;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence;
+using ProcureToPay.Infrastructure.Persistence.Budget;
 using ProcureToPay.Infrastructure.Persistence.BudgetLedger;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 
@@ -24,7 +26,8 @@ public sealed class BudgetController(
     ProcureToPayDbContext dbContext,
     CurrentUserProvisioningService provisioningService,
     BudgetPersistenceService budgets,
-    BudgetPrecheckService prechecks) : ControllerBase
+    BudgetPrecheckService prechecks,
+    BudgetTransitionService transitions) : ControllerBase
 {
     /// <summary>Creates the position and its first allocation revision (REQ-01).</summary>
     [HttpPut("positions/{costCenterId:guid}/{fiscalYear:int}/{spendCategoryCode}")]
@@ -132,6 +135,78 @@ public sealed class BudgetController(
             HttpContext.TraceIdentifier,
             cancellationToken);
         return Ok(view);
+    }
+
+    /// <summary>
+    /// Workload-only financial transition (REQ-09): COMMIT, CONSUME and REVERSE. The producer is
+    /// resolved exact-one by operation+contract+source plus the full workload identity, so no
+    /// administrative role reaches this surface and a missing, duplicated or disabled producer
+    /// fails closed before any movement exists.
+    /// </summary>
+    [HttpPost("movements")]
+    public async Task<ActionResult<BudgetTransitionResponse>> Transition(
+        BudgetTransitionCommandRequest request,
+        CancellationToken cancellationToken)
+    {
+        var workload = ResolveWorkload();
+        if (!string.Equals(
+                request.ContractVersion,
+                BudgetCodes.TransitionCommandVersion,
+                StringComparison.Ordinal))
+        {
+            throw new DomainValidationException("The transition contract version is not recognized.");
+        }
+
+        var movements = request.Movements.Select(movement => new BudgetTransitionCommandMovement(
+            movement.Amount,
+            movement.ParentMovementId,
+            movement.ParentMovementVersion,
+            movement.Target is null
+                ? null
+                : new BudgetTarget(
+                    movement.Target.Id,
+                    movement.Target.Version,
+                    movement.Target.MaterialSnapshotDigest,
+                    movement.Target.Type))).ToArray();
+        var outcome = await transitions.ApplyAsync(
+            request.OrganizationId,
+            workload,
+            request.Operation ?? string.Empty,
+            request.OperationKey ?? string.Empty,
+            request.ReasonCode ?? string.Empty,
+            new BudgetTransitionSource(
+                request.Source?.Type ?? string.Empty,
+                request.Source?.Id ?? Guid.Empty,
+                request.Source?.Version ?? 0,
+                request.Source?.Digest ?? string.Empty),
+            movements,
+            HttpContext.TraceIdentifier,
+            cancellationToken);
+        return Ok(new BudgetTransitionResponse(
+            BudgetCodes.TransitionResponseVersion,
+            outcome.Movements
+                .Select(movement => new BudgetTransitionMovementResponse(
+                    movement.MovementId,
+                    movement.Amount,
+                    movement.ParentMovementId,
+                    movement.PositionKeyDigest,
+                    movement.Type,
+                    BudgetCodes.ParentMovementVersion))
+                .ToArray(),
+            outcome.OperationId,
+            outcome.Replayed));
+    }
+
+    private ApprovalWorkloadIdentity ResolveWorkload()
+    {
+        var clientId = User.FindFirst("client_id")?.Value ?? User.FindFirst("azp")?.Value;
+        if (string.IsNullOrWhiteSpace(clientId))
+        {
+            throw new DomainForbiddenException("A workload client identity is required.");
+        }
+
+        var issuer = User.FindFirst("iss")?.Value ?? "internal://procure-to-pay";
+        return new ApprovalWorkloadIdentity(issuer, clientId);
     }
 
     private async Task<Guid> RequireBudgetReaderAsync(Guid? costCenterId, CancellationToken cancellationToken)
@@ -265,3 +340,44 @@ public sealed record SetBudgetAllocationRequest(
 public sealed record BudgetPrecheckRequest(
     [property: JsonPropertyName("contract_version")] string? ContractVersion,
     [property: JsonPropertyName("precheck_key")] string? PrecheckKey);
+
+public sealed record BudgetTransitionCommandRequest(
+    [property: JsonPropertyName("command_version")] string? ContractVersion,
+    [property: JsonPropertyName("movements")] IReadOnlyList<BudgetTransitionCommandMovementRequest> Movements,
+    [property: JsonPropertyName("operation")] string? Operation,
+    [property: JsonPropertyName("operation_key")] string? OperationKey,
+    [property: JsonPropertyName("organization_id")] Guid OrganizationId,
+    [property: JsonPropertyName("reason_code")] string? ReasonCode,
+    [property: JsonPropertyName("source")] BudgetTransitionSourceRequest? Source);
+
+public sealed record BudgetTransitionCommandMovementRequest(
+    [property: JsonPropertyName("amount")] decimal Amount,
+    [property: JsonPropertyName("parent_movement_id")] Guid ParentMovementId,
+    [property: JsonPropertyName("parent_movement_version")] int ParentMovementVersion,
+    [property: JsonPropertyName("target")] BudgetTargetRequest? Target);
+
+public sealed record BudgetTransitionSourceRequest(
+    [property: JsonPropertyName("digest")] string? Digest,
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("type")] string? Type,
+    [property: JsonPropertyName("version")] int Version);
+
+public sealed record BudgetTargetRequest(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("material_snapshot_digest")] string? MaterialSnapshotDigest,
+    [property: JsonPropertyName("type")] string? Type,
+    [property: JsonPropertyName("version")] int Version);
+
+public sealed record BudgetTransitionResponse(
+    [property: JsonPropertyName("contract_version")] string ContractVersion,
+    [property: JsonPropertyName("movements")] IReadOnlyList<BudgetTransitionMovementResponse> Movements,
+    [property: JsonPropertyName("operation_id")] Guid OperationId,
+    [property: JsonPropertyName("replayed")] bool Replayed);
+
+public sealed record BudgetTransitionMovementResponse(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("amount")] decimal Amount,
+    [property: JsonPropertyName("parent_movement_id")] Guid? ParentMovementId,
+    [property: JsonPropertyName("position_key_digest")] string PositionKeyDigest,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("version")] int Version);

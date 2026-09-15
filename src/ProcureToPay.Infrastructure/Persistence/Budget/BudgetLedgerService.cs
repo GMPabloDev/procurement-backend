@@ -23,7 +23,15 @@ public sealed record BudgetBatchOutcome(
     bool Replayed,
     IReadOnlyList<Guid> MovementIds,
     IReadOnlyList<BudgetEvidenceMovement> EvidenceRows,
-    IReadOnlyDictionary<BudgetPositionKey, string> PositionKeys);
+    IReadOnlyDictionary<BudgetPositionKey, string> PositionKeys,
+    IReadOnlyList<BudgetLedgerPostedMovement> Posted);
+
+/// <summary>
+/// One posted movement with the position it touched, as the caller's response sees it. It is named
+/// away from the domain's <c>BudgetPostedMovement</c> (the calculator's view) because the two live
+/// in scopes that the ledger resolves together.
+/// </summary>
+public sealed record BudgetLedgerPostedMovement(BudgetPositionKey Position, BudgetMovementRecord Movement);
 
 /// <summary>Outcome of the owner's decision: reserved, or a business insufficiency (REQ-06).</summary>
 public sealed record BudgetReserveOutcome(
@@ -243,6 +251,7 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
 
             var posted = await dbContext.BudgetMovements
                 .AsNoTracking()
+                .Include(movement => movement.Position)
                 .Where(movement => movement.OperationId == existingReserve.Id)
                 .OrderBy(movement => movement.Id)
                 .ToArrayAsync(cancellationToken);
@@ -412,7 +421,10 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
                 true,
                 posted.Select(movement => movement.Id).ToArray(),
                 Evidence(posted, replayedKeys),
-                replayedKeys);
+                replayedKeys,
+                posted.Select(movement => new BudgetLedgerPostedMovement(
+                    spec.Movements.Single(entry => entry.Movement.ParentMovementId == movement.ParentMovementId).Position,
+                    movement)).ToArray());
         }
 
         var states = await LoadStatesAsync(spec.OrganizationId, payloads.Values, cancellationToken);
@@ -491,7 +503,10 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
             false,
             postedMovements.Select(movement => movement.Id).ToArray(),
             Evidence(postedMovements, keyDigests),
-            keyDigests);
+            keyDigests,
+            spec.Movements
+                .Select((entry, index) => new BudgetLedgerPostedMovement(entry.Position, postedMovements[index]))
+                .ToArray());
     }
 
     /// <summary>Evidence rows of one movement set, keyed by the digest of their position (REQ-10).</summary>
@@ -788,11 +803,17 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
         return await Task.FromResult<IReadOnlyDictionary<BudgetPositionKey, string>>(digests);
     }
 
+    /// <summary>
+    /// Movements of one already recorded operation, read for replay. The position is materialized
+    /// explicitly: a replay may run in a context that never tracked the position row, and the
+    /// evidence rows of REQ-10 need the position to rebuild the position key digest.
+    /// </summary>
     private async Task<List<BudgetMovementRecord>> ReadOperationMovementsAsync(
         Guid operationId,
         CancellationToken cancellationToken) =>
         await dbContext.BudgetMovements
             .AsNoTracking()
+            .Include(movement => movement.Position)
             .Where(movement => movement.OperationId == operationId)
             .OrderBy(movement => movement.Id)
             .ToListAsync(cancellationToken);

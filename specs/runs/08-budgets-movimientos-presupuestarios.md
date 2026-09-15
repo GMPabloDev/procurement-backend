@@ -24,7 +24,7 @@ Ejecutada sobre el commit base `534a7c8` antes de cualquier edición, con el ár
 - `dotnet build ProcureToPay.sln --nologo -v q` → 0 errores (14 advertencias preexistentes).
 - `dotnet test --project … --no-restore` (documentado en `AGENTS.md`) no ejecuta pruebas en este
   entorno: se usa la ejecución directa de las asambleas compiladas.
-- Unitarias: `199/199` correctas, 0 con errores.
+- Unitarias: `173/173` correctas, 0 con errores (línea base previa a la implementación).
 - Integración (Testcontainers + Docker): `82/82` correctas, 0 con errores.
 - API/E2E (Testcontainers + Docker): `24/24` correctas, 0 con errores.
 - Fallos preexistentes: ninguno.
@@ -38,11 +38,20 @@ Ejecutada sobre el commit base `534a7c8` antes de cualquier edición, con el ár
 | T-03 | Verificada | Precheck por referencia: `PurchaseRequestBudgetDemandBuilder` (contrato `purchase-request-budget-demand-build/v1`), `BudgetLedgerService.PrecheckAsync` (operación `REQUESTED`, sin tocar buckets, replay por key) y `POST /api/v1/purchase-requests/{id}/versions/{v}/budget-precheck`. Evidencia: E2E real del harness de catálogos. | working-tree / CP-01 |
 | T-04 | Verificada | `policy-approval-adapter/v3` con proyección budget completa (Fiscal Year, Spend Category, importe y target por línea) vía `PolicyApprovalBudgetProjection`; v2 permanece registrado. Evidencia: parámetros persistidos comprobados en el E2E (`fiscal_year`, `spend_category_ref`, Cost Center, categoría). | working-tree / CP-01 |
 | T-05 | Verificada | Owner real `budget-check-owner/v1`: `BudgetPrerequisiteProcessor` con attempt durable, keys deterministas, lease/fencing, reserva all-or-nothing y señal con `budget-check-evidence/v1`; prerequisito `FAILED` sin reserva cuando falta saldo. Evidencia: `Budget_control_reserves_all_or_nothing_and_signals_the_prerequisite` y `A_budget_without_funds_fails_the_owner_prerequisite_without_reserving`. | working-tree / CP-01 |
-| T-06 | Parcial | Compensación terminal implementada en el processor (case `CANCELLED|SUPERSEDED` → `REVERSE` → `COMPENSATED`) y `BudgetReleaseService` disponible con takeover `409`. **Falta**: el consumer automático de `approval-result/v2|v3` y `approval-case-lifecycle/v1` que dispara la release, la transferencia atómica predecessor→replacement en supersesión y el camino de cancelación de PR. No probado end-to-end. | working-tree / CP-01 |
-| T-07 | Parcial | `BudgetMovementProducerRegistry` (exact-one por operación+contrato+fuente, workload completo, 0/2/deshabilitado fail-closed) y `BudgetTransitionService` (COMMIT/CONSUME/REVERSE con matching de fuente en REVERSE) implementados y compilando. **Falta**: la superficie HTTP workload-only y sus pruebas con producers controlados. Sin registros productivos, como exige el contrato. | working-tree / CP-01 |
-| T-08 | Parcial | `BudgetHealthCheck` (`BUDGET_OK`/`BUDGET_PROCESSOR_*`/`BUDGET_PRODUCER_*`/`BUDGET_ATTEMPT_OVERDUE`/`BUDGET_LEDGER_CORRUPTED`), endpoint `/health/budget`, processor integrado en el worker productivo, `docs/budget-operations.md` y el recorrido E2E real PR→Policy→precheck→Approval→owner. **Falta**: fault injection explícita, escenarios de dos instancias/lease expirado y la prueba de rollback. | working-tree / CP-01 |
+| T-06 | Parcial | Compensación terminal en el processor (case `CANCELLED|SUPERSEDED` → `REVERSE` → `COMPENSATED`), `BudgetReleaseService` con takeover `409`, release automático en `PurchaseRequestApprovalResultConsumer` para `REJECTED|CHANGES_REQUESTED|CANCELLED|SUPERSEDED` (los tres contratos registrados) y release antes de confirmar la cancelación de PR con fila durable `PurchaseRequestBudgetReleaseAttempt`. Evidencia: `A_rejected_requirement_releases_the_open_reservation` (reserva 100 → rechazo real por `ApprovalDecisionService` → dispatch real del outbox → `REVERSE` de 100, `RELEASE` con resultado `RELEASED`, redelivery idempotente). **Falta**: la transferencia atómica predecessor→replacement en supersesión y una prueba dedicada del camino de cancelación de PR con presupuesto. | working-tree / CP-02 |
+| T-07 | Verificada | `BudgetMovementProducerRegistry` (exact-one por operación+contrato+fuente, workload completo, 0/2/deshabilitado fail-closed), `BudgetTransitionService` (COMMIT/CONSUME/REVERSE con matching de fuente en REVERSE) y superficie workload-only `POST /api/v1/budgets/movements` con `budget-transition-command/v1` y respuesta `budget-transition-response/v1`. Evidencia: `BudgetTransitionIntegrationTests` (6, SQL real): remanente de RESERVED consumido por COMMIT, replay idéntico por key y `409` con otra preimagen, CONSUME sobre COMMITTED, 0 y 2 producers fail-closed, workload ajeno `403` sin movimiento, REVERSE solo del delta no avanzado de su propia fuente y REVERSE de otra fuente prohibido. Sin registros productivos, como exige el contrato. | working-tree / CP-02 |
+| T-08 | Parcial | `BudgetHealthCheck` (`BUDGET_OK`/`BUDGET_PROCESSOR_*`/`BUDGET_PRODUCER_*`/`BUDGET_ATTEMPT_OVERDUE`/`BUDGET_LEDGER_CORRUPTED`), endpoint `/health/budget`, processor integrado en el worker productivo, `docs/budget-operations.md` y el recorrido E2E real PR→Policy→precheck→Approval→owner. **Falta**: fault injection explícita, escenarios de dos instancias/lease expirado y la prueba de rollback; el transporte HTTP de transiciones no tiene prueba E2E con tokens de workload (la autorización se cubre por integración del service+registry). | working-tree / CP-02 |
 
 ## Checkpoints
+
+### CP-02 — 2026-09-14 23:55 -0500 — Release de reservas y transiciones workload-only
+
+- Tareas: T-01–T-05 y T-07 verificadas; T-06 y T-08 parciales (ver tabla).
+- Cambios: release automático en el consumer de resultados/lifecycle con `ReleaseBudgetAsync`, release previa a la cancelación de PR (`ReleaseBudgetBeforeCancellationAsync` + attempt durable), superficie `POST /api/v1/budgets/movements` con contrato v1, proyección `Posted` en el ledger, `Include(Position)` en las lecturas de replay (bug real: el replay fallaba en un contexto que no trackeaba la posición) y `BudgetTriggerEvent` con alfabeto de identidad.
+- Tests y checks: build 0 errores; Unit `199/199`; Integración `91/91`; API/E2E `24/24`; `git diff --check` limpio.
+- Evidencia: `BudgetTransitionIntegrationTests` (6), `A_rejected_requirement_releases_the_open_reservation`, suites completas sobre el árbol estable de CP-02.
+- HEAD: pendiente de commit (working tree).
+- Próximo paso: transferencia atómica en supersesión y prueba de cancelación de PR con presupuesto; después T-08 (fault injection, dos instancias, rollback).
 
 ### CP-01 — 2026-09-14 21:40 -0500 — Ledger, precheck, adapter v3 y owner real
 
@@ -62,19 +71,19 @@ Ejecutada sobre el commit base `534a7c8` antes de cualquier edición, con el ár
 | CA-03 | Parcial | Builder y precheck minimizado verdes por E2E; faltan los casos de dos líneas en una posición y varias posiciones. | Automática pendiente |
 | CA-04 | Cumplido | Los parámetros persistidos contienen un demand por target con Fiscal Year, Spend Category, Cost Center e importe, y el adapter v3 los construye desde la línea confirmada. | Revisión pendiente |
 | CA-05 | Cumplido | Reserva all-or-nothing + SATISFIED con evidencia; insuficiencia → FAILED sin RESERVED; precheck insuficiente → `422` sin caso. | Revisión pendiente |
-| CA-06 | Pendiente | Falta el release automático (consumer de resultados/lifecycle), la transferencia en supersesión y la cancelación de PR. | Automática pendiente |
-| CA-07 | Parcial | Los cinco vectores publicados se reproducen; falta el registry 0/1/2 de producers y el golden de `release_fingerprint`. | Automática pendiente |
-| CA-08 | Parcial | Health, runbook y visibilidad base implementados; faltan fault injection, dos instancias/lease expirado y rollback. | Automática pendiente |
+| CA-06 | Parcial | Release automático probado end-to-end (rechazo → REVERSE → RELEASE idempotente) y release previa a la cancelación de PR implementada con attempt durable. Falta la transferencia atómica en supersesión y la prueba dedicada de cancelación de PR con presupuesto. | Automática pendiente |
+| CA-07 | Parcial | Los cinco vectores publicados se reproducen; el registry 0/1/2 y la idempotencia de COMMIT/CONSUME/REVERSE están probados sobre SQL. Falta el golden de `release_fingerprint`. | Automática pendiente |
+| CA-08 | Parcial | Health, runbook, visibilidad base, superficie workload-only de transiciones y las prohibiciones de rol implementadas; faltan fault injection, dos instancias/lease expirado y rollback. | Automática pendiente |
 
 ## Desviaciones y bloqueos
 
-- **T-06/T-07/T-08 parciales.** El ledger, el precheck, el adapter v3 y el owner real están
-  implementados y probados end-to-end. Quedan tres bloques de trabajo identificados: el consumer
-  automático de resultados/lifecycle que dispara la release, la transferencia atómica
-  predecessor→replacement en supersesión con el camino de cancelación de PR, y la superficie
-  workload-only de transiciones con sus pruebas de fault injection, dos instancias y rollback.
-  El contrato no se relaja: esas partes están trazadas a T-06/T-07/T-08 y a CA-06/CA-07/CA-08 y no
-  se declaran verificadas.
+- **T-06/T-08 parciales.** El ledger, el precheck, el adapter v3, el owner real, el release
+  automático de reservas y la superficie workload-only de transiciones están implementados y
+  probados. Quedan dos bloques de trabajo identificados: la transferencia atómica
+  predecessor→replacement en supersesión (con la prueba de cancelación de PR con presupuesto) y la
+  operación certificada de T-08 (fault injection, dos instancias/lease expirado y rollback). El
+  contrato no se relaja: esas partes están trazadas a T-06/T-08 y a CA-06/CA-08 y no se declaran
+  verificadas.
 - **Runner `dotnet test`.** Igual que en SPEC 06/07, el wrapper de Microsoft.Testing.Platform
   reporta 0 pruebas en este entorno; toda la evidencia usa las asambleas compiladas directamente.
 
