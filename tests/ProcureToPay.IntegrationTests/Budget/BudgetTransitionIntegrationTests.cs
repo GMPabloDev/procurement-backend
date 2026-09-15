@@ -175,6 +175,11 @@ public sealed class BudgetTransitionIntegrationTests
         var repeated = await harness.ReserveOutcomeAsync(100m, TestContext.Current.CancellationToken);
         Assert.Equal(BudgetCheckResult.Available, repeated.Result);
         Assert.NotNull(repeated.ReserveOperationId);
+        // The replay reuses the request operation and both movement artifacts, so the evidence
+        // digest stays reproducible after a crash before the checkpoint (REQ-07, NFR-01).
+        Assert.NotNull(repeated.RequestOperationId);
+        Assert.Single(repeated.RequestedMovements);
+        Assert.Single(repeated.ReservedMovements);
 
         await using var context = harness.CreateContext();
         var reserves = await context.BudgetOperations
@@ -381,6 +386,8 @@ public sealed class BudgetTransitionIntegrationTests
             harness.ReviseAllocationWithSpendCategoryAsync(inactiveCode, 900m, "alloc-inactive", cancellationToken));
         await Assert.ThrowsAsync<DomainValidationException>(() =>
             harness.ReviseAllocationForCostCenterAsync(Guid.NewGuid(), 900m, "alloc-foreign", cancellationToken));
+        await Assert.ThrowsAsync<DomainValidationException>(() =>
+            harness.ReviseAllocationAsForeignOrganizationAsync(900m, "alloc-foreign-org", cancellationToken));
 
         await using var verification = harness.CreateContext();
         Assert.Single(await verification.BudgetAllocationVersions.ToArrayAsync(cancellationToken));
@@ -830,6 +837,32 @@ public sealed class BudgetTransitionIntegrationTests
                 allocationKey,
                 reason: "Foreign cost center revision",
                 correlationReference: "corr-alloc-foreign",
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// Allocation revision that declares another organization while naming the real Cost Center:
+        /// the single-organization schema makes this the cross-tenant isolation negative (REQ-01).
+        /// </summary>
+        public async Task<BudgetPositionView> ReviseAllocationAsForeignOrganizationAsync(
+            decimal amount,
+            string allocationKey,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var budgets = new BudgetPersistenceService(context);
+            return await budgets.SetAllocationAsync(
+                Guid.NewGuid(),
+                ActorId,
+                CostCenterId,
+                2026,
+                SpendCategoryCode,
+                amount,
+                "PEN",
+                expectedVersion: 1,
+                allocationKey,
+                reason: "Cross-tenant cost center revision",
+                correlationReference: "corr-alloc-foreign-org",
                 cancellationToken);
         }
 

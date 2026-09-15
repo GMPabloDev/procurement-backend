@@ -115,6 +115,23 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
                 $"SELECT * FROM [Budget].[PrerequisiteAttempts] WITH (UPDLOCK, ROWLOCK) WHERE [Id] = {fence.AttemptId}")
             .AsNoTracking()
             .SingleOrDefaultAsync(cancellationToken);
+        ValidateLeaseFence(attempt, fence);
+    }
+
+    /// <summary>
+    /// Read-only lease validation used before any early return of a fenced operation, so a replay
+    /// or a business insufficiency also requires the exact current lease (REQ-07).
+    /// </summary>
+    private async Task VerifyLeaseFenceAsync(BudgetLeaseFence fence, CancellationToken cancellationToken)
+    {
+        var attempt = await dbContext.BudgetPrerequisiteAttempts
+            .AsNoTracking()
+            .SingleOrDefaultAsync(record => record.Id == fence.AttemptId, cancellationToken);
+        ValidateLeaseFence(attempt, fence);
+    }
+
+    private static void ValidateLeaseFence(BudgetPrerequisiteAttemptRecord? attempt, BudgetLeaseFence fence)
+    {
         if (attempt is null ||
             attempt.FencingToken != fence.FencingToken ||
             !string.Equals(attempt.LeaseOwner, fence.LeaseOwner, StringComparison.Ordinal) ||
@@ -298,6 +315,13 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
                 demand.AmountBase, demand.SourceLineId, demand.Target))));
         var payloads = demands.Select(demand => demand.Payload).ToArray();
 
+        // Every return of this method, including the replay and the insufficiency paths, validates
+        // the exact lease first (REQ-07). The posting transaction validates it again under lock.
+        if (leaseFence is not null)
+        {
+            await VerifyLeaseFenceAsync(leaseFence, cancellationToken);
+        }
+
         var existingReserve = await dbContext.BudgetOperations
             .AsNoTracking()
             .SingleOrDefaultAsync(
@@ -311,19 +335,36 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
                 throw new DomainConflictException("The reserve key was already used with different content.");
             }
 
-            var posted = await dbContext.BudgetMovements
+            // A replay reuses every recorded artifact of the original confirmation: the request and
+            // reserve operations and the REQUESTED and RESERVED movements, so the evidence digest is
+            // reproducible after a crash before the checkpoint (REQ-07, NFR-01).
+            var existingRequest = await dbContext.BudgetOperations
+                .AsNoTracking()
+                .SingleOrDefaultAsync(
+                    operation => operation.OrganizationId == organizationId &&
+                                 operation.OperationKey == normalizedRequestKey,
+                    cancellationToken);
+            var reservedPosted = await dbContext.BudgetMovements
                 .AsNoTracking()
                 .Include(movement => movement.Position)
                 .Where(movement => movement.OperationId == existingReserve.Id)
                 .OrderBy(movement => movement.Id)
                 .ToArrayAsync(cancellationToken);
+            var requestedPosted = existingRequest is null
+                ? []
+                : await dbContext.BudgetMovements
+                    .AsNoTracking()
+                    .Include(movement => movement.Position)
+                    .Where(movement => movement.OperationId == existingRequest.Id)
+                    .OrderBy(movement => movement.Id)
+                    .ToArrayAsync(cancellationToken);
             var replayKeys = await PositionKeysAsync(organizationId, payloads, cancellationToken);
             return new BudgetReserveOutcome(
                 existingReserve.Result == "AVAILABLE" ? BudgetCheckResult.Available : BudgetCheckResult.Insufficient,
-                null,
+                existingRequest?.Id,
                 existingReserve.Id,
-                Evidence(posted, replayKeys, BudgetMovementType.Requested),
-                Evidence(posted, replayKeys, BudgetMovementType.Reserved));
+                Evidence(requestedPosted, replayKeys, BudgetMovementType.Requested),
+                Evidence(reservedPosted, replayKeys, BudgetMovementType.Reserved));
         }
 
         var states = await LoadStatesAsync(organizationId, payloads, cancellationToken);
@@ -466,6 +507,11 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
                 throw new DomainValidationException(
                     "The operation movement references a position without its attested payload.");
             }
+        }
+
+        if (spec.LeaseFence is not null)
+        {
+            await VerifyLeaseFenceAsync(spec.LeaseFence, cancellationToken);
         }
 
         var existing = await dbContext.BudgetOperations
@@ -936,6 +982,11 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
             source,
             predecessorParents,
             cancellationToken);
+
+        if (leaseFence is not null)
+        {
+            await VerifyLeaseFenceAsync(leaseFence, cancellationToken);
+        }
 
         var replayed = await ReplayTransferAsync(
             organizationId,

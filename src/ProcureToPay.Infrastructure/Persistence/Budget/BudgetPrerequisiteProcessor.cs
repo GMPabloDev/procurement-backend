@@ -44,6 +44,9 @@ public sealed class BudgetPrerequisiteProcessor(
     /// <summary>Readiness budget of one due attempt (REQ-07, NFR-05).</summary>
     public static readonly TimeSpan DueBudget = TimeSpan.FromSeconds(60);
 
+    /// <summary>Maximum time one effect may run before the lease is renewed again (REQ-07).</summary>
+    public static readonly TimeSpan LeaseRenewalInterval = TimeSpan.FromSeconds(10);
+
     /// <summary>Claims every processable budget attempt and advances it once (REQ-07).</summary>
     public async Task<IReadOnlyList<BudgetProcessorOutcome>> ProcessDueAsync(
         DateTimeOffset now,
@@ -193,21 +196,24 @@ public sealed class BudgetPrerequisiteProcessor(
                 // REQ-08: with a superseded predecessor still holding funds, the replacement is
                 // reserved through the serialized transfer, which counts that hold as available and
                 // reverses it in the same transaction only when the whole new set fits.
-                var transfer = await ledger.TransferReserveAsync(
-                    attempt.OrganizationId,
-                    attempt.RequestKey,
-                    attempt.ReserveKey,
-                    source,
-                    actor,
-                    "BUDGET_CHECK",
-                    attempt.CaseId,
-                    demands,
-                    predecessors
-                        .Select(hold => new BudgetPredecessorReservation(hold.CaseId, hold.ReservedMovementIds))
-                        .ToArray(),
-                    attempt.SignalKey,
-                    cancellationToken,
-                    LeaseFenceOf(attempt));
+                var transfer = await RunRenewingAsync(
+                    attempt,
+                    token => ledger.TransferReserveAsync(
+                        attempt.OrganizationId,
+                        attempt.RequestKey,
+                        attempt.ReserveKey,
+                        source,
+                        actor,
+                        "BUDGET_CHECK",
+                        attempt.CaseId,
+                        demands,
+                        predecessors
+                            .Select(hold => new BudgetPredecessorReservation(hold.CaseId, hold.ReservedMovementIds))
+                            .ToArray(),
+                        attempt.SignalKey,
+                        token,
+                        LeaseFenceOf(attempt)),
+                    cancellationToken);
                 reserve = new BudgetReserveOutcome(
                     transfer.Result,
                     transfer.RequestOperationId,
@@ -217,20 +223,23 @@ public sealed class BudgetPrerequisiteProcessor(
             }
             else
             {
-                reserve = await ledger.ReserveAsync(
-                    attempt.OrganizationId,
-                    attempt.RequestKey,
-                    attempt.ReserveKey,
-                    source,
-                    actor,
-                    "BUDGET_CHECK",
-                    attempt.CaseId,
-                    demands,
-                    attempt.SignalKey,
-                    causeAuditId: null,
-                    causeStream: null,
-                    cancellationToken,
-                    LeaseFenceOf(attempt));
+                reserve = await RunRenewingAsync(
+                    attempt,
+                    token => ledger.ReserveAsync(
+                        attempt.OrganizationId,
+                        attempt.RequestKey,
+                        attempt.ReserveKey,
+                        source,
+                        actor,
+                        "BUDGET_CHECK",
+                        attempt.CaseId,
+                        demands,
+                        attempt.SignalKey,
+                        causeAuditId: null,
+                        causeStream: null,
+                        token,
+                        LeaseFenceOf(attempt)),
+                    cancellationToken);
             }
         }
         catch (Exception exception) when (exception is BudgetDependencyUnavailableException or
@@ -239,6 +248,13 @@ public sealed class BudgetPrerequisiteProcessor(
             await MarkPendingAsync(attempt, ErrorCode(exception), now, cancellationToken);
             throw new BudgetDependencyUnavailableException(
                 $"{ErrorCode(exception)}: {exception.Message}", exception);
+        }
+
+        // The checkpoint that persists the confirmation also requires the exact current lease; an
+        // expired lease never writes RESERVED|INSUFFICIENT (REQ-07).
+        if (!await HoldLeaseAsync(attempt, cancellationToken))
+        {
+            return null;
         }
 
         try
@@ -531,6 +547,39 @@ public sealed class BudgetPrerequisiteProcessor(
         return true;
     }
 
+    /// <summary>
+    /// Runs one recoverable effect under the attempt lease. The lease is renewed before each
+    /// attempt and the effect is bounded to the renewal interval, so a live worker keeps a fresh
+    /// 30-second lease even when an effect blocks; the interrupted attempt is retried with the
+    /// same deterministic keys, which are idempotent (REQ-07). A lost lease aborts the effect.
+    /// </summary>
+    private async Task<T> RunRenewingAsync<T>(
+        BudgetPrerequisiteAttemptRecord attempt,
+        Func<CancellationToken, Task<T>> effect,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            if (!await HoldLeaseAsync(attempt, cancellationToken))
+            {
+                throw new DomainConflictException(
+                    "The budget attempt lease was lost before the operation was confirmed.");
+            }
+
+            using var interval = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            interval.CancelAfter(LeaseRenewalInterval);
+            try
+            {
+                return await effect(interval.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Interrupted only to renew the lease: retry the idempotent effect with the same
+                // keys and a renewed lease.
+            }
+        }
+    }
+
     /// <summary>The exact lease this instance holds for one attempt, verified transactionally (REQ-07).</summary>
     private BudgetLeaseFence LeaseFenceOf(BudgetPrerequisiteAttemptRecord attempt) =>
         new(attempt.Id, attempt.FencingToken, attempt.LeaseOwner ?? instanceIdentity.Owner);
@@ -605,17 +654,20 @@ public sealed class BudgetPrerequisiteProcessor(
         attempt.State = BudgetAttemptStateCodes.Of(BudgetAttemptState.Signalling);
         await positions.SaveAsync(cancellationToken);
         // SPEC 03 owns the signal contract; Budget only supplies its owner identity, key and proof.
-        _ = await workflow.SignalAsync(
-            attempt.PrerequisiteId,
-            new ApprovalSignalCommand(
-                ownerWorkload,
-                satisfied,
-                attempt.SignalKey,
-                prerequisite.Version,
-                evidenceReference,
-                evidenceDigest,
-                attempt.SignalKey),
-            now,
+        _ = await RunRenewingAsync(
+            attempt,
+            token => workflow.SignalAsync(
+                attempt.PrerequisiteId,
+                new ApprovalSignalCommand(
+                    ownerWorkload,
+                    satisfied,
+                    attempt.SignalKey,
+                    prerequisite.Version,
+                    evidenceReference,
+                    evidenceDigest,
+                    attempt.SignalKey),
+                now,
+                token),
             cancellationToken);
     }
 
@@ -743,20 +795,23 @@ public sealed class BudgetPrerequisiteProcessor(
             source,
             movements.Select(entry => new BudgetMovementCommandItem(
                 entry.Movement.Amount, entry.Movement.ParentMovementId, entry.Movement.Target))));
-        var outcome = await ledger.ApplyOperationAsync(
-            new BudgetOperationSpec(
-                BudgetOperationKind.Release,
-                attempt.OrganizationId,
-                attempt.CompensateKey,
-                fingerprint,
-                source,
-                actor,
-                "BUDGET_RELEASE",
-                "RELEASED",
-                movements,
-                LeaseFence: LeaseFenceOf(attempt)),
-            payloads,
-            correlation,
+        var outcome = await RunRenewingAsync(
+            attempt,
+            token => ledger.ApplyOperationAsync(
+                new BudgetOperationSpec(
+                    BudgetOperationKind.Release,
+                    attempt.OrganizationId,
+                    attempt.CompensateKey,
+                    fingerprint,
+                    source,
+                    actor,
+                    "BUDGET_RELEASE",
+                    "RELEASED",
+                    movements,
+                    LeaseFence: LeaseFenceOf(attempt)),
+                payloads,
+                correlation,
+                token),
             cancellationToken);
         attempt.ReverseOperationId ??= outcome.OperationId;
         _ = now;
