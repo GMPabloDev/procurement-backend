@@ -1,7 +1,7 @@
 # RUN SPEC 08 — Budgets y movimientos presupuestarios por posición
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** Lista para integrar
+> **Estado del run:** Integrado
 > **Spec:** specs/08-budgets-movimientos-presupuestarios.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 534a7c83b42f2727a143298d77b2a2fd47d0536d
@@ -13,9 +13,9 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-14 18:50 -0500
-> **Actualizado:** 2026-09-15 10:20 -0500
+> **Actualizado:** 2026-09-15 14:41 -0500
 > **HEAD verificado:** 95b3012bcfd540a0210d186c987951c9c9eb5418
-> **Commit de integración:** Pendiente
+> **Commit de integración:** 58ecba593264b3f4d0ccdca58851963b17662168
 
 ## Línea base
 
@@ -144,3 +144,16 @@ Ejecutada sobre el commit base `534a7c8` antes de cualquier edición, con el ár
 > **Modelo efectivo:** `openai-codex/gpt-5.6-sol` (subagente `sdd-implementation-reviewer`, effort high; 8 + 6 + 7 + 9 + 11 + 7 + 7 turnos).
 > **Método:** revisión full base `534a7c83b42f2727a143298d77b2a2fd47d0536d` → `329e842` y diferenciales `329e842` → `013da5f`, `013da5f` → `b645b3f`, `b645b3f` → `4ab7041`, `4ab7041` → `bbd255f`, `bbd255f` → `f44c1bb`, `f44c1bb` → `10c06df` y PASS sobre el candidato `95b3012`, con las suites completas de cada candidato aportadas por el orquestador.
 > **Fecha:** 2026-09-15
+
+## Cierre
+
+- **Fecha:** 2026-09-15 14:41 -0500.
+- **Estrategia:** merge real de `spec-08-budgets-movimientos-presupuestarios` en `main` (commit
+  `58ecba593264b3f4d0ccdca58851963b17662168`, padres `534a7c8` y `e7984f5`); sin squash ni rebase.
+- **Evidencia de integración:** `git diff e7984f5 58ecba5` vacío (árbol idéntico al verificado),
+  `95b3012` (`HEAD verificado`) y `534a7c8` (base) son ancestros de `58ecba5`, y `git status --short`
+  permaneció limpio durante la comprobación.
+- **Validaciones:** `specctl doctor` (incluye spec/run afectados) y `specctl git-check 08`.
+- **Vigencia:** SPEC 03, SPEC 05 y SPEC 06 quedan `Sustituida parcialmente por … SPEC 08`; SPEC 08
+  queda `Vigente`.
+

@@ -3,7 +3,7 @@
 > **Formato:** sdd/v3
 > **Estado:** Implementada
 > **Ejecución:** Integrada
-> **Vigencia:** Sustituida parcialmente por SPEC 04, SPEC 05, SPEC 06, SPEC 07
+> **Vigencia:** Sustituida parcialmente por SPEC 04, SPEC 05, SPEC 06, SPEC 07, SPEC 08
 > **Revisión:** 3
 > **Digest contractual:** f0b61a917c4c4b4adcaee598c75352ef93d03c3bf25b76d15f80177ba3446234
 > **Fecha:** 2026-09-10
