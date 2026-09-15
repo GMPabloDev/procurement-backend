@@ -337,10 +337,20 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
 
         // Block the worker inside its reservation: the cooperative renewal must keep the lease fresh
         // by interrupting the blocked effect at the renewal interval and retrying it (REQ-07).
+        Guid positionId;
+        await using (var positions = harness.CreateContext())
+        {
+            positionId = await positions.BudgetPositions
+                .AsNoTracking()
+                .Select(record => record.Id)
+                .SingleAsync(cancellationToken);
+        }
+
         await using var blockerContext = harness.CreateContext();
         await using var blocker = await blockerContext.Database.BeginTransactionAsync(cancellationToken);
-        await blockerContext.Database.ExecuteSqlRawAsync(
-            "SELECT [BalanceVersion] FROM [Budget].[Balances] WITH (XLOCK, ROWLOCK)",
+        // An exclusive lock on the balance row blocks the reservation without table escalation.
+        await blockerContext.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE [Budget].[Balances] SET [BalanceVersion] = [BalanceVersion] WHERE [PositionId] = {positionId}",
             cancellationToken);
         var worker = Task.Run(
             async () => await harness.ProcessBudgetInstanceAsync("renewal-worker", cancellationToken),
@@ -380,6 +390,97 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
             1,
             await verification.BudgetMovements.CountAsync(
                 movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+    }
+
+    [Fact]
+    public async Task A_reclaimed_lease_is_never_overwritten_by_a_stale_worker()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        _ = await harness.SubmitAsync(requestId, version, "submit-reclaim", cancellationToken);
+        Assert.Empty(await harness.ProcessBudgetInstanceAsync(
+            "reclaim-seed-worker", cancellationToken, DateTimeOffset.UtcNow.AddHours(-1)));
+        Guid attemptId;
+        await using (var seeded = harness.CreateContext())
+        {
+            attemptId = (await seeded.BudgetPrerequisiteAttempts.SingleAsync(cancellationToken)).Id;
+        }
+
+        // The stale worker blocks inside its reservation while another instance reclaims the lease.
+        Guid positionId;
+        await using (var positions = harness.CreateContext())
+        {
+            positionId = await positions.BudgetPositions
+                .AsNoTracking()
+                .Select(record => record.Id)
+                .SingleAsync(cancellationToken);
+        }
+
+        await using var blockerContext = harness.CreateContext();
+        await using var blocker = await blockerContext.Database.BeginTransactionAsync(cancellationToken);
+        // An exclusive lock on the balance row blocks the reservation without table escalation.
+        await blockerContext.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE [Budget].[Balances] SET [BalanceVersion] = [BalanceVersion] WHERE [PositionId] = {positionId}",
+            cancellationToken);
+        var blockerSessionId = await blockerContext.Database
+            .SqlQueryRaw<int>("SELECT CAST(@@SPID AS int) AS [Value]")
+            .SingleAsync(cancellationToken);
+        var worker = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await harness.ProcessBudgetInstanceAsync("reclaim-worker", cancellationToken);
+                    return null;
+                }
+                catch (Exception exception)
+                {
+                    return exception;
+                }
+            },
+            cancellationToken);
+        await harness.WaitForLeaseOwnerAsync(attemptId, "reclaim-worker", cancellationToken);
+        // Only reclaim once the stale worker is blocked inside its reservation, so it reaches the
+        // transactional fence instead of a boundary lease read.
+        await harness.WaitForBlockedRequestAsync(blockerSessionId, cancellationToken);
+        int claimedToken;
+        await using (var claimed = harness.CreateContext())
+        {
+            claimedToken = (await claimed.BudgetPrerequisiteAttempts
+                .AsNoTracking()
+                .Where(record => record.Id == attemptId)
+                .SingleAsync(cancellationToken)).FencingToken;
+        }
+
+        await using (var reclaimer = harness.CreateContext())
+        {
+            // A raw conditional update mimics the reclaim without racing the heartbeat rowversion.
+            var affected = await reclaimer.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE [Budget].[PrerequisiteAttempts] SET [LeaseOwner] = {"reclaimer"}, [LeaseUntil] = {DateTimeOffset.UtcNow.AddSeconds(30)}, [FencingToken] = {claimedToken + 1}, [Attempts] = [Attempts] + 1 WHERE [Id] = {attemptId}",
+                cancellationToken);
+            Assert.Equal(1, affected);
+        }
+
+        await blocker.CommitAsync(cancellationToken);
+        var failure = await worker;
+        Assert.NotNull(failure);
+
+        // The stale worker never overwrites the new holder's lease nor confirms anything (REQ-07).
+        await using var verification = harness.CreateContext();
+        var stale = await verification.BudgetPrerequisiteAttempts
+            .SingleAsync(record => record.Id == attemptId, cancellationToken);
+        Assert.Equal("reclaimer", stale.LeaseOwner);
+        Assert.Equal(claimedToken + 1, stale.FencingToken);
+        Assert.Equal(
+            0,
+            await verification.BudgetMovements.CountAsync(
+                movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+        Assert.Equal(
+            0,
+            await verification.ApprovalPrerequisiteSignals
+                .CountAsync(record => record.PrerequisiteId == stale.PrerequisiteId, cancellationToken));
     }
 
     [Fact]
@@ -1004,6 +1105,28 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                     loggerFactory.CreateLogger<ApprovalWorkflowService>()),
                 new ApprovalInstanceIdentity(configuration));
             return await processor.ProcessDueAsync(now ?? DateTimeOffset.UtcNow, cancellationToken);
+        }
+
+        /// <summary>Waits until a worker is blocked behind the given test session (SQL Server).</summary>
+        public async Task WaitForBlockedRequestAsync(int blockerSessionId, CancellationToken cancellationToken)
+        {
+            for (var attempt = 0; attempt < 150; attempt++)
+            {
+                await using var context = CreateContext();
+                var blocked = await context.Database
+                    .SqlQueryRaw<int>(
+                        "SELECT COUNT(*) AS [Value] FROM sys.dm_exec_requests WHERE blocking_session_id = {0}",
+                        blockerSessionId)
+                    .SingleAsync(cancellationToken);
+                if (blocked > 0)
+                {
+                    return;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+            }
+
+            throw new InvalidOperationException("No worker blocked behind the test lock in time.");
         }
 
         /// <summary>Waits until the named instance owns the durable lease of one attempt (REQ-07).</summary>

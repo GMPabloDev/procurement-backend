@@ -545,44 +545,32 @@ public sealed class BudgetPrerequisiteProcessor(
 
     /// <summary>
     /// Verifies that this instance still owns the attempt lease and renews it to a full lease
-    /// before the next effect (REQ-07). The row is reloaded under the lease gate, so the
-    /// independent heartbeat never surfaces as a false conflict; a lost, expired or reclaimed
-    /// lease returns false and the caller aborts without posting a movement or a checkpoint.
+    /// before the next effect (REQ-07). The checkpoint write itself revalidates ownership under
+    /// the gate, so a lost, expired or reclaimed lease returns false without writing.
     /// </summary>
     private async Task<bool> HoldLeaseAsync(
         BudgetPrerequisiteAttemptRecord attempt,
-        CancellationToken cancellationToken)
-    {
-        var expectedToken = attempt.FencingToken;
-        var owner = instanceIdentity.Owner;
-        return await SaveAttemptAsync(
+        CancellationToken cancellationToken) =>
+        await SaveAttemptAsync(
             attempt,
-            current =>
-            {
-                var now = DateTimeOffset.UtcNow;
-                if (!string.Equals(current.LeaseOwner, owner, StringComparison.Ordinal) ||
-                    current.FencingToken != expectedToken ||
-                    current.LeaseUntil is not DateTimeOffset until ||
-                    until <= now)
-                {
-                    throw new DomainConflictException("The budget attempt lease was lost.");
-                }
-
-                current.LeaseUntil = now + LeaseDuration;
-            },
+            current => current.LeaseUntil = DateTimeOffset.UtcNow + LeaseDuration,
             cancellationToken);
-    }
 
     /// <summary>
-    /// Applies one checkpoint to the attempt row under the lease gate: the row is reloaded first,
-    /// so this instance's heartbeat renewals never surface as a false concurrency conflict. A
-    /// reclaim from another instance returns false without writing (REQ-07).
+    /// Applies one checkpoint to the attempt row under the lease gate: the row is reloaded and the
+    /// ownership of the exact claimed lease (owner, fencing token and unexpired lease) is verified
+    /// before mutating, so this instance never overwrites the row of a new holder nor revives an
+    /// expired lease, and the heartbeat renewals of this instance never surface as a false
+    /// concurrency conflict. A reclaim from another instance returns false without writing
+    /// (REQ-07).
     /// </summary>
     private async Task<bool> SaveAttemptAsync(
         BudgetPrerequisiteAttemptRecord attempt,
         Action<BudgetPrerequisiteAttemptRecord> mutate,
         CancellationToken cancellationToken)
     {
+        var expectedToken = attempt.FencingToken;
+        var owner = instanceIdentity.Owner;
         await leaseGate.WaitAsync(cancellationToken);
         try
         {
@@ -593,6 +581,14 @@ public sealed class BudgetPrerequisiteProcessor(
             }
 
             await entry.ReloadAsync(cancellationToken);
+            if (!string.Equals(attempt.LeaseOwner, owner, StringComparison.Ordinal) ||
+                attempt.FencingToken != expectedToken ||
+                attempt.LeaseUntil is not DateTimeOffset until ||
+                until <= DateTimeOffset.UtcNow)
+            {
+                return false;
+            }
+
             mutate(attempt);
             await positions.SaveAsync(cancellationToken);
             return true;
@@ -648,10 +644,13 @@ public sealed class BudgetPrerequisiteProcessor(
                     await using var connection = new SqlConnection(connectionString);
                     await connection.OpenAsync(cancellation.Token);
                     await using var command = connection.CreateCommand();
+                    var now = DateTimeOffset.UtcNow;
                     command.CommandText =
                         "UPDATE [Budget].[PrerequisiteAttempts] SET [LeaseUntil] = @until " +
-                        "WHERE [Id] = @id AND [LeaseOwner] = @owner AND [FencingToken] = @token";
-                    command.Parameters.AddWithValue("@until", DateTimeOffset.UtcNow + duration);
+                        "WHERE [Id] = @id AND [LeaseOwner] = @owner AND [FencingToken] = @token " +
+                        "AND [LeaseUntil] > @now";
+                    command.Parameters.AddWithValue("@until", now + duration);
+                    command.Parameters.AddWithValue("@now", now);
                     command.Parameters.AddWithValue("@id", attemptId);
                     command.Parameters.AddWithValue("@owner", owner);
                     command.Parameters.AddWithValue("@token", fencingToken);
