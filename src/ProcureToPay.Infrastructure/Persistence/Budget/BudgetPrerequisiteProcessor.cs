@@ -38,14 +38,18 @@ public sealed class BudgetPrerequisiteProcessor(
     ApprovalWorkflowService workflow,
     ApprovalInstanceIdentity instanceIdentity)
 {
+    /// <summary>Serializes this instance's lease heartbeat with its attempt checkpoints (REQ-07).</summary>
+    private readonly SemaphoreSlim leaseGate = new(1, 1);
+
     /// <summary>Lease of one attempt before another instance may reclaim it (REQ-07).</summary>
     public static readonly TimeSpan LeaseDuration = TimeSpan.FromSeconds(30);
 
     /// <summary>Readiness budget of one due attempt (REQ-07, NFR-05).</summary>
     public static readonly TimeSpan DueBudget = TimeSpan.FromSeconds(60);
 
-    /// <summary>Maximum time one effect may run before the lease is renewed again (REQ-07).</summary>
+    /// <summary>Interval of the independent lease heartbeat while an attempt is in flight (REQ-07).</summary>
     public static readonly TimeSpan LeaseRenewalInterval = TimeSpan.FromSeconds(10);
+
 
     /// <summary>Claims every processable budget attempt and advances it once (REQ-07).</summary>
     public async Task<IReadOnlyList<BudgetProcessorOutcome>> ProcessDueAsync(
@@ -101,6 +105,27 @@ public sealed class BudgetPrerequisiteProcessor(
             return null;
         }
 
+        // An independent heartbeat renews the lease while this instance processes the attempt, so a
+        // blocked effect never lets the lease expire under a live worker (REQ-07).
+        await using var heartbeat = new LeaseHeartbeat(
+            dbContext.Database.GetConnectionString()
+                ?? throw new InvalidOperationException("The budget processor has no configured connection."),
+            attempt.Id,
+            instanceIdentity.Owner,
+            attempt.FencingToken,
+            LeaseRenewalInterval,
+            LeaseDuration,
+            leaseGate);
+        heartbeat.Start();
+        return await ProcessClaimedAsync(attempt, now, cancellationToken);
+    }
+
+    /// <summary>Advances one attempt whose lease is already held by this instance (REQ-07).</summary>
+    private async Task<BudgetProcessorOutcome?> ProcessClaimedAsync(
+        BudgetPrerequisiteAttemptRecord attempt,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
         var caseRecord = await dbContext.ApprovalCases
             .AsNoTracking()
             .SingleOrDefaultAsync(record => record.Id == attempt.CaseId, cancellationToken)
@@ -132,7 +157,11 @@ public sealed class BudgetPrerequisiteProcessor(
                 }
 
                 var recordedResult = recorded.Satisfied ? "SATISFIED" : "FAILED";
-                await CompleteAsync(attempt, recordedResult, recorded.EvidenceDigest, now, cancellationToken);
+                if (!await CompleteAsync(attempt, recordedResult, recorded.EvidenceDigest, now, cancellationToken))
+                {
+                    return null;
+                }
+
                 return new BudgetProcessorOutcome(
                     attempt.Id,
                     attemptCompleted,
@@ -171,7 +200,11 @@ public sealed class BudgetPrerequisiteProcessor(
                         return null;
                     }
 
-                    await CompleteCompensatedAsync(attempt, now, cancellationToken);
+                    if (!await CompleteCompensatedAsync(attempt, now, cancellationToken))
+                    {
+                        return null;
+                    }
+
                     return new BudgetProcessorOutcome(
                         attempt.Id, BudgetAttemptStateCodes.Of(BudgetAttemptState.Compensated), null, BudgetCheckResult.Available);
                 }
@@ -196,24 +229,21 @@ public sealed class BudgetPrerequisiteProcessor(
                 // REQ-08: with a superseded predecessor still holding funds, the replacement is
                 // reserved through the serialized transfer, which counts that hold as available and
                 // reverses it in the same transaction only when the whole new set fits.
-                var transfer = await RunRenewingAsync(
-                    attempt,
-                    token => ledger.TransferReserveAsync(
-                        attempt.OrganizationId,
-                        attempt.RequestKey,
-                        attempt.ReserveKey,
-                        source,
-                        actor,
-                        "BUDGET_CHECK",
-                        attempt.CaseId,
-                        demands,
-                        predecessors
-                            .Select(hold => new BudgetPredecessorReservation(hold.CaseId, hold.ReservedMovementIds))
-                            .ToArray(),
-                        attempt.SignalKey,
-                        token,
-                        LeaseFenceOf(attempt)),
-                    cancellationToken);
+                var transfer = await ledger.TransferReserveAsync(
+                    attempt.OrganizationId,
+                    attempt.RequestKey,
+                    attempt.ReserveKey,
+                    source,
+                    actor,
+                    "BUDGET_CHECK",
+                    attempt.CaseId,
+                    demands,
+                    predecessors
+                        .Select(hold => new BudgetPredecessorReservation(hold.CaseId, hold.ReservedMovementIds))
+                        .ToArray(),
+                    attempt.SignalKey,
+                    cancellationToken,
+                    LeaseFenceOf(attempt));
                 reserve = new BudgetReserveOutcome(
                     transfer.Result,
                     transfer.RequestOperationId,
@@ -223,23 +253,20 @@ public sealed class BudgetPrerequisiteProcessor(
             }
             else
             {
-                reserve = await RunRenewingAsync(
-                    attempt,
-                    token => ledger.ReserveAsync(
-                        attempt.OrganizationId,
-                        attempt.RequestKey,
-                        attempt.ReserveKey,
-                        source,
-                        actor,
-                        "BUDGET_CHECK",
-                        attempt.CaseId,
-                        demands,
-                        attempt.SignalKey,
-                        causeAuditId: null,
-                        causeStream: null,
-                        token,
-                        LeaseFenceOf(attempt)),
-                    cancellationToken);
+                reserve = await ledger.ReserveAsync(
+                    attempt.OrganizationId,
+                    attempt.RequestKey,
+                    attempt.ReserveKey,
+                    source,
+                    actor,
+                    "BUDGET_CHECK",
+                    attempt.CaseId,
+                    demands,
+                    attempt.SignalKey,
+                    causeAuditId: null,
+                    causeStream: null,
+                    cancellationToken,
+                    LeaseFenceOf(attempt));
             }
         }
         catch (Exception exception) when (exception is BudgetDependencyUnavailableException or
@@ -259,7 +286,10 @@ public sealed class BudgetPrerequisiteProcessor(
 
         try
         {
-            await RecordReserveAsync(attempt, reserve, now, cancellationToken);
+            if (!await RecordReserveAsync(attempt, reserve, now, cancellationToken))
+            {
+                return null;
+            }
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -297,7 +327,11 @@ public sealed class BudgetPrerequisiteProcessor(
                     return null;
                 }
 
-                await CompleteAsync(attempt, "FAILED", null, now, cancellationToken);
+                if (!await CompleteAsync(attempt, "FAILED", null, now, cancellationToken))
+                {
+                    return null;
+                }
+
                 return new BudgetProcessorOutcome(
                     attempt.Id, BudgetAttemptStateCodes.Of(BudgetAttemptState.Completed), "FAILED", reserve.Result);
             }
@@ -334,7 +368,11 @@ public sealed class BudgetPrerequisiteProcessor(
                 return null;
             }
 
-            await CompleteAsync(attempt, "SATISFIED", evidence, now, cancellationToken);
+            if (!await CompleteAsync(attempt, "SATISFIED", evidence, now, cancellationToken))
+            {
+                return null;
+            }
+
             return new BudgetProcessorOutcome(
                 attempt.Id, BudgetAttemptStateCodes.Of(BudgetAttemptState.Completed), "SATISFIED", BudgetCheckResult.Available);
         }
@@ -506,77 +544,155 @@ public sealed class BudgetPrerequisiteProcessor(
     }
 
     /// <summary>
-    /// Verifies that this instance still owns the attempt lease and renews it at most every 10
-    /// seconds (REQ-07). A lost, expired or reclaimed lease returns false, so the caller aborts
-    /// without posting a movement or confirming a checkpoint.
+    /// Verifies that this instance still owns the attempt lease and renews it to a full lease
+    /// before the next effect (REQ-07). The row is reloaded under the lease gate, so the
+    /// independent heartbeat never surfaces as a false conflict; a lost, expired or reclaimed
+    /// lease returns false and the caller aborts without posting a movement or a checkpoint.
     /// </summary>
     private async Task<bool> HoldLeaseAsync(
         BudgetPrerequisiteAttemptRecord attempt,
         CancellationToken cancellationToken)
     {
-        var now = DateTimeOffset.UtcNow;
-        var current = await dbContext.BudgetPrerequisiteAttempts
-            .AsNoTracking()
-            .Where(record => record.Id == attempt.Id)
-            .Select(record => new { record.LeaseOwner, record.LeaseUntil, record.FencingToken })
-            .SingleOrDefaultAsync(cancellationToken);
-        if (current is null ||
-            !string.Equals(current.LeaseOwner, instanceIdentity.Owner, StringComparison.Ordinal) ||
-            current.FencingToken != attempt.FencingToken ||
-            current.LeaseUntil is not DateTimeOffset until ||
-            until <= now)
-        {
-            return false;
-        }
+        var expectedToken = attempt.FencingToken;
+        var owner = instanceIdentity.Owner;
+        return await SaveAttemptAsync(
+            attempt,
+            current =>
+            {
+                var now = DateTimeOffset.UtcNow;
+                if (!string.Equals(current.LeaseOwner, owner, StringComparison.Ordinal) ||
+                    current.FencingToken != expectedToken ||
+                    current.LeaseUntil is not DateTimeOffset until ||
+                    until <= now)
+                {
+                    throw new DomainConflictException("The budget attempt lease was lost.");
+                }
 
-        // If the lease is still ours, it is extended to a full lease before the next effect, so the
-        // following operation never starts already close to expiry (REQ-07).
-        attempt.LeaseUntil = now + LeaseDuration;
+                current.LeaseUntil = now + LeaseDuration;
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Applies one checkpoint to the attempt row under the lease gate: the row is reloaded first,
+    /// so this instance's heartbeat renewals never surface as a false concurrency conflict. A
+    /// reclaim from another instance returns false without writing (REQ-07).
+    /// </summary>
+    private async Task<bool> SaveAttemptAsync(
+        BudgetPrerequisiteAttemptRecord attempt,
+        Action<BudgetPrerequisiteAttemptRecord> mutate,
+        CancellationToken cancellationToken)
+    {
+        await leaseGate.WaitAsync(cancellationToken);
         try
         {
+            var entry = dbContext.Entry(attempt);
+            if (entry.State == EntityState.Detached)
+            {
+                dbContext.Attach(attempt);
+            }
+
+            await entry.ReloadAsync(cancellationToken);
+            mutate(attempt);
             await positions.SaveAsync(cancellationToken);
+            return true;
         }
         catch (Exception exception) when (exception is DomainConflictException or
                                               DbUpdateConcurrencyException)
         {
-            // Another instance reclaimed the expired lease: this one stops without writing.
             dbContext.ChangeTracker.Clear();
             return false;
         }
-
-        return true;
+        finally
+        {
+            leaseGate.Release();
+        }
     }
 
     /// <summary>
-    /// Runs one recoverable effect under the attempt lease. The lease is renewed before each
-    /// attempt and the effect is bounded to the renewal interval, so a live worker keeps a fresh
-    /// 30-second lease even when an effect blocks; the interrupted attempt is retried with the
-    /// same deterministic keys, which are idempotent (REQ-07). A lost lease aborts the effect.
+    /// Independent lease heartbeat (REQ-07): while this instance owns the attempt, a dedicated
+    /// connection renews the 30-second lease every 10 seconds, so a blocked effect never lets the
+    /// lease expire under a live worker. A renewal that affects no row means the attempt was
+    /// reclaimed; the heartbeat stops and the transactional fence rejects every stale effect.
     /// </summary>
-    private async Task<T> RunRenewingAsync<T>(
-        BudgetPrerequisiteAttemptRecord attempt,
-        Func<CancellationToken, Task<T>> effect,
-        CancellationToken cancellationToken)
+    private sealed class LeaseHeartbeat(
+        string connectionString,
+        Guid attemptId,
+        string owner,
+        int fencingToken,
+        TimeSpan interval,
+        TimeSpan duration,
+        SemaphoreSlim gate) : IAsyncDisposable
     {
-        while (true)
+        private readonly CancellationTokenSource cancellation = new();
+        private Task? loop;
+
+        public void Start() => loop = Task.Run(RunAsync);
+
+        private async Task RunAsync()
         {
-            if (!await HoldLeaseAsync(attempt, cancellationToken))
+            while (true)
             {
-                throw new DomainConflictException(
-                    "The budget attempt lease was lost before the operation was confirmed.");
+                try
+                {
+                    await Task.Delay(interval, cancellation.Token);
+                    await gate.WaitAsync(cancellation.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                try
+                {
+                    await using var connection = new SqlConnection(connectionString);
+                    await connection.OpenAsync(cancellation.Token);
+                    await using var command = connection.CreateCommand();
+                    command.CommandText =
+                        "UPDATE [Budget].[PrerequisiteAttempts] SET [LeaseUntil] = @until " +
+                        "WHERE [Id] = @id AND [LeaseOwner] = @owner AND [FencingToken] = @token";
+                    command.Parameters.AddWithValue("@until", DateTimeOffset.UtcNow + duration);
+                    command.Parameters.AddWithValue("@id", attemptId);
+                    command.Parameters.AddWithValue("@owner", owner);
+                    command.Parameters.AddWithValue("@token", fencingToken);
+                    var affected = await command.ExecuteNonQueryAsync(cancellation.Token);
+                    if (affected == 0)
+                    {
+                        return;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception)
+                {
+                    // A transient renewal failure must not kill the attempt: the next tick retries
+                    // and every effect is still fenced transactionally.
+                }
+                finally
+                {
+                    gate.Release();
+                }
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            cancellation.Cancel();
+            if (loop is not null)
+            {
+                try
+                {
+                    await loop;
+                }
+                catch (OperationCanceledException)
+                {
+                    // The heartbeat stops with the attempt.
+                }
             }
 
-            using var interval = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            interval.CancelAfter(LeaseRenewalInterval);
-            try
-            {
-                return await effect(interval.Token);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                // Interrupted only to renew the lease: retry the idempotent effect with the same
-                // keys and a renewed lease.
-            }
+            cancellation.Dispose();
         }
     }
 
@@ -595,30 +711,16 @@ public sealed class BudgetPrerequisiteProcessor(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        attempt.LastErrorCode = errorCode;
-        attempt.NextAttemptAt = now.AddSeconds(1);
-        attempt.LeaseOwner = null;
-        attempt.LeaseUntil = null;
-        await SaveRetryAsync(attempt, cancellationToken);
-    }
-
-    /// <summary>
-    /// Persists a retry checkpoint; a concurrent reclaim simply wins, because the new holder owns
-    /// the next decision and the stale worker must not overwrite it (REQ-07).
-    /// </summary>
-    private async Task SaveRetryAsync(
-        BudgetPrerequisiteAttemptRecord attempt,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await positions.SaveAsync(cancellationToken);
-        }
-        catch (Exception exception) when (exception is DomainConflictException or
-                                              DbUpdateConcurrencyException)
-        {
-            dbContext.ChangeTracker.Clear();
-        }
+        await SaveAttemptAsync(
+            attempt,
+            current =>
+            {
+                current.LastErrorCode = errorCode;
+                current.NextAttemptAt = now.AddSeconds(1);
+                current.LeaseOwner = null;
+                current.LeaseUntil = null;
+            },
+            cancellationToken);
     }
 
     /// <summary>
@@ -626,20 +728,23 @@ public sealed class BudgetPrerequisiteProcessor(
     /// lease stays held until the attempt reaches a terminal state, so no other instance reclaims
     /// an in-flight attempt; only an expired lease (a dead worker) is reclaimable (REQ-07).
     /// </summary>
-    private async Task RecordReserveAsync(
+    private async Task<bool> RecordReserveAsync(
         BudgetPrerequisiteAttemptRecord attempt,
         BudgetReserveOutcome reserve,
         DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        attempt.RequestOperationId ??= reserve.RequestOperationId;
-        attempt.ReserveOperationId ??= reserve.ReserveOperationId;
-        attempt.State = reserve.Result == BudgetCheckResult.Available
-            ? BudgetAttemptStateCodes.Of(BudgetAttemptState.Reserved)
-            : BudgetAttemptStateCodes.Of(BudgetAttemptState.Insufficient);
-        attempt.NextAttemptAt = now;
-        await positions.SaveAsync(cancellationToken);
-    }
+        CancellationToken cancellationToken) =>
+        await SaveAttemptAsync(
+            attempt,
+            current =>
+            {
+                current.RequestOperationId ??= reserve.RequestOperationId;
+                current.ReserveOperationId ??= reserve.ReserveOperationId;
+                current.State = reserve.Result == BudgetCheckResult.Available
+                    ? BudgetAttemptStateCodes.Of(BudgetAttemptState.Reserved)
+                    : BudgetAttemptStateCodes.Of(BudgetAttemptState.Insufficient);
+                current.NextAttemptAt = now;
+            },
+            cancellationToken);
 
     private async Task SignalAsync(
         BudgetPrerequisiteAttemptRecord attempt,
@@ -651,54 +756,63 @@ public sealed class BudgetPrerequisiteProcessor(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        attempt.State = BudgetAttemptStateCodes.Of(BudgetAttemptState.Signalling);
-        await positions.SaveAsync(cancellationToken);
+        if (!await SaveAttemptAsync(
+                attempt,
+                current => current.State = BudgetAttemptStateCodes.Of(BudgetAttemptState.Signalling),
+                cancellationToken))
+        {
+            throw new DomainConflictException("The budget attempt lease was lost before signalling.");
+        }
+
         // SPEC 03 owns the signal contract; Budget only supplies its owner identity, key and proof.
-        _ = await RunRenewingAsync(
-            attempt,
-            token => workflow.SignalAsync(
-                attempt.PrerequisiteId,
-                new ApprovalSignalCommand(
-                    ownerWorkload,
-                    satisfied,
-                    attempt.SignalKey,
-                    prerequisite.Version,
-                    evidenceReference,
-                    evidenceDigest,
-                    attempt.SignalKey),
-                now,
-                token),
+        _ = await workflow.SignalAsync(
+            attempt.PrerequisiteId,
+            new ApprovalSignalCommand(
+                ownerWorkload,
+                satisfied,
+                attempt.SignalKey,
+                prerequisite.Version,
+                evidenceReference,
+                evidenceDigest,
+                attempt.SignalKey),
+            now,
             cancellationToken);
     }
 
-    private async Task CompleteAsync(
+    private async Task<bool> CompleteAsync(
         BudgetPrerequisiteAttemptRecord attempt,
         string signalResult,
         string? evidenceDigest,
         DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        attempt.State = BudgetAttemptStateCodes.Of(BudgetAttemptState.Completed);
-        attempt.SignalResult = signalResult;
-        attempt.EvidenceDigest ??= evidenceDigest;
-        attempt.LastErrorCode = null;
-        attempt.CompletedAt = now;
-        attempt.LeaseOwner = null;
-        attempt.LeaseUntil = null;
-        await positions.SaveAsync(cancellationToken);
-    }
+        CancellationToken cancellationToken) =>
+        await SaveAttemptAsync(
+            attempt,
+            current =>
+            {
+                current.State = BudgetAttemptStateCodes.Of(BudgetAttemptState.Completed);
+                current.SignalResult = signalResult;
+                current.EvidenceDigest ??= evidenceDigest;
+                current.LastErrorCode = null;
+                current.CompletedAt = now;
+                current.LeaseOwner = null;
+                current.LeaseUntil = null;
+            },
+            cancellationToken);
 
-    private async Task CompleteCompensatedAsync(
+    private async Task<bool> CompleteCompensatedAsync(
         BudgetPrerequisiteAttemptRecord attempt,
         DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        attempt.State = BudgetAttemptStateCodes.Of(BudgetAttemptState.Compensated);
-        attempt.CompletedAt = now;
-        attempt.LeaseOwner = null;
-        attempt.LeaseUntil = null;
-        await positions.SaveAsync(cancellationToken);
-    }
+        CancellationToken cancellationToken) =>
+        await SaveAttemptAsync(
+            attempt,
+            current =>
+            {
+                current.State = BudgetAttemptStateCodes.Of(BudgetAttemptState.Compensated);
+                current.CompletedAt = now;
+                current.LeaseOwner = null;
+                current.LeaseUntil = null;
+            },
+            cancellationToken);
 
     /// <summary>
     /// Reverses every open reservation of the attempt or none. Returns false when nothing was left
@@ -795,23 +909,20 @@ public sealed class BudgetPrerequisiteProcessor(
             source,
             movements.Select(entry => new BudgetMovementCommandItem(
                 entry.Movement.Amount, entry.Movement.ParentMovementId, entry.Movement.Target))));
-        var outcome = await RunRenewingAsync(
-            attempt,
-            token => ledger.ApplyOperationAsync(
-                new BudgetOperationSpec(
-                    BudgetOperationKind.Release,
-                    attempt.OrganizationId,
-                    attempt.CompensateKey,
-                    fingerprint,
-                    source,
-                    actor,
-                    "BUDGET_RELEASE",
-                    "RELEASED",
-                    movements,
-                    LeaseFence: LeaseFenceOf(attempt)),
-                payloads,
-                correlation,
-                token),
+        var outcome = await ledger.ApplyOperationAsync(
+            new BudgetOperationSpec(
+                BudgetOperationKind.Release,
+                attempt.OrganizationId,
+                attempt.CompensateKey,
+                fingerprint,
+                source,
+                actor,
+                "BUDGET_RELEASE",
+                "RELEASED",
+                movements,
+                LeaseFence: LeaseFenceOf(attempt)),
+            payloads,
+            correlation,
             cancellationToken);
         attempt.ReverseOperationId ??= outcome.OperationId;
         _ = now;
@@ -883,12 +994,17 @@ public sealed class BudgetPrerequisiteProcessor(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        attempt.State = BudgetAttemptStateCodes.Of(BudgetAttemptState.Pending);
-        attempt.LastErrorCode = errorCode;
-        attempt.NextAttemptAt = now.AddSeconds(1);
-        attempt.LeaseOwner = null;
-        attempt.LeaseUntil = null;
-        await SaveRetryAsync(attempt, cancellationToken);
+        await SaveAttemptAsync(
+            attempt,
+            current =>
+            {
+                current.State = BudgetAttemptStateCodes.Of(BudgetAttemptState.Pending);
+                current.LastErrorCode = errorCode;
+                current.NextAttemptAt = now.AddSeconds(1);
+                current.LeaseOwner = null;
+                current.LeaseUntil = null;
+            },
+            cancellationToken);
     }
 
     private Task<string> BaseCurrencyAsync(Guid organizationId, CancellationToken cancellationToken) =>

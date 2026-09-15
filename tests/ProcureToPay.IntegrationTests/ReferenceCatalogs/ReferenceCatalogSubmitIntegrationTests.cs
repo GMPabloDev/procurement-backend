@@ -320,6 +320,69 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
     }
 
     [Fact]
+    public async Task The_lease_is_renewed_while_an_effect_is_blocked()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        _ = await harness.SubmitAsync(requestId, version, "submit-renewal", cancellationToken);
+        Assert.Empty(await harness.ProcessBudgetInstanceAsync(
+            "renewal-seed-worker", cancellationToken, DateTimeOffset.UtcNow.AddHours(-1)));
+        Guid attemptId;
+        await using (var seeded = harness.CreateContext())
+        {
+            attemptId = (await seeded.BudgetPrerequisiteAttempts.SingleAsync(cancellationToken)).Id;
+        }
+
+        // Block the worker inside its reservation: the cooperative renewal must keep the lease fresh
+        // by interrupting the blocked effect at the renewal interval and retrying it (REQ-07).
+        await using var blockerContext = harness.CreateContext();
+        await using var blocker = await blockerContext.Database.BeginTransactionAsync(cancellationToken);
+        await blockerContext.Database.ExecuteSqlRawAsync(
+            "SELECT [BalanceVersion] FROM [Budget].[Balances] WITH (XLOCK, ROWLOCK)",
+            cancellationToken);
+        var worker = Task.Run(
+            async () => await harness.ProcessBudgetInstanceAsync("renewal-worker", cancellationToken),
+            cancellationToken);
+        await harness.WaitForLeaseOwnerAsync(attemptId, "renewal-worker", cancellationToken);
+        DateTimeOffset initialLease;
+        await using (var before = harness.CreateContext())
+        {
+            initialLease = (await before.BudgetPrerequisiteAttempts
+                .AsNoTracking()
+                .SingleAsync(cancellationToken)).LeaseUntil!.Value;
+        }
+
+        await Task.Delay(TimeSpan.FromSeconds(12), cancellationToken);
+
+        DateTimeOffset renewedLease;
+        await using (var during = harness.CreateContext())
+        {
+            renewedLease = (await during.BudgetPrerequisiteAttempts
+                .AsNoTracking()
+                .SingleAsync(cancellationToken)).LeaseUntil!.Value;
+        }
+
+        Assert.True(
+            renewedLease > initialLease,
+            $"The lease was not renewed while the effect was blocked: {initialLease:o} -> {renewedLease:o}");
+
+        await blocker.CommitAsync(cancellationToken);
+        var outcomes = await worker;
+        Assert.Single(outcomes);
+
+        await using var verification = harness.CreateContext();
+        var attempt = await verification.BudgetPrerequisiteAttempts.SingleAsync(cancellationToken);
+        Assert.Equal("COMPLETED", attempt.State);
+        Assert.Equal("SATISFIED", attempt.SignalResult);
+        Assert.Equal(
+            1,
+            await verification.BudgetMovements.CountAsync(
+                movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+    }
+
+    [Fact]
     public async Task A_rejected_requirement_releases_the_open_reservation()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -941,6 +1004,31 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                     loggerFactory.CreateLogger<ApprovalWorkflowService>()),
                 new ApprovalInstanceIdentity(configuration));
             return await processor.ProcessDueAsync(now ?? DateTimeOffset.UtcNow, cancellationToken);
+        }
+
+        /// <summary>Waits until the named instance owns the durable lease of one attempt (REQ-07).</summary>
+        public async Task WaitForLeaseOwnerAsync(
+            Guid attemptId,
+            string owner,
+            CancellationToken cancellationToken)
+        {
+            for (var attempt = 0; attempt < 100; attempt++)
+            {
+                await using var context = CreateContext();
+                var current = await context.BudgetPrerequisiteAttempts
+                    .AsNoTracking()
+                    .Where(record => record.Id == attemptId)
+                    .Select(record => record.LeaseOwner)
+                    .SingleAsync(cancellationToken);
+                if (string.Equals(current, owner, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+            }
+
+            throw new InvalidOperationException("The worker did not claim the attempt in time.");
         }
 
         public async Task<PurchaseRequestSubmissionOutcome> SubmitAsync(
