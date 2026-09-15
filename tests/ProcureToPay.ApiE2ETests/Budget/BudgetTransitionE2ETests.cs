@@ -254,6 +254,39 @@ public sealed class BudgetTransitionE2ETests
         Assert.Equal(0m, balance.Consumed);
     }
 
+    [Fact]
+    public async Task Health_rebuilds_the_projection_instead_of_reading_a_revision_as_corruption()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var sqlServer = await SqlEnvironment.StartAsync(cancellationToken);
+        await using var factory = new BudgetTransitionApiFactory(sqlServer.ConnectionString);
+        var (organizationId, _) = await sqlServer.SeedReservationAsync(cancellationToken);
+
+        using var client = factory.CreateClient();
+        using (var healthy = await client.GetAsync("/health/budget", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.OK, healthy.StatusCode);
+            Assert.Contains(
+                "BUDGET_OK",
+                await healthy.Content.ReadAsStringAsync(cancellationToken),
+                StringComparison.Ordinal);
+        }
+
+        // A legitimate allocation revision changes ALLOCATED without posting a movement; health
+        // must compare against the contractual rebuild, not against the last movement snapshot
+        // (REQ-01, NFR-01, CA-08).
+        await sqlServer.ReviseAllocationAsync(organizationId, 2000m, cancellationToken);
+
+        using (var afterRevision = await client.GetAsync("/health/budget", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.OK, afterRevision.StatusCode);
+            Assert.Contains(
+                "BUDGET_OK",
+                await afterRevision.Content.ReadAsStringAsync(cancellationToken),
+                StringComparison.Ordinal);
+        }
+    }
+
     private static TransitionCommandBody Command(
         Guid organizationId,
         Guid parentMovementId,
@@ -473,6 +506,32 @@ public sealed class BudgetTransitionE2ETests
             new DbContextOptionsBuilder<ProcureToPayDbContext>()
                 .UseSqlServer(ConnectionString)
                 .Options);
+
+        /// <summary>Appends one administrative allocation revision of the seeded position (REQ-01).</summary>
+        public async Task ReviseAllocationAsync(
+            Guid organizationId,
+            decimal amount,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var position = await context.BudgetPositions
+                .AsNoTracking()
+                .SingleAsync(cancellationToken);
+            var budgets = new BudgetPersistenceService(context);
+            await budgets.SetAllocationAsync(
+                organizationId,
+                ActorId,
+                position.CostCenterId,
+                position.FiscalYear,
+                position.SpendCategoryCode,
+                amount,
+                "PEN",
+                expectedVersion: position.CurrentAllocationVersion,
+                allocationKey: "alloc-http-revision",
+                reason: "Legitimate allocation revision after movements",
+                correlationReference: "corr-http-revision",
+                cancellationToken);
+        }
 
         public async ValueTask DisposeAsync() => await container.DisposeAsync();
 

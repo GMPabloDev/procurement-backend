@@ -224,6 +224,102 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
     }
 
     [Fact]
+    public async Task A_crash_after_the_confirmed_signal_is_finished_from_the_recorded_signal()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        _ = await harness.SubmitAsync(requestId, version, "submit-signal-crash", cancellationToken);
+        await harness.ProcessBudgetAsync(cancellationToken);
+
+        string evidenceDigest;
+        Guid prerequisiteId;
+        await using (var crashed = harness.CreateContext())
+        {
+            var attempt = await crashed.BudgetPrerequisiteAttempts.SingleAsync(cancellationToken);
+            prerequisiteId = attempt.PrerequisiteId;
+            evidenceDigest = attempt.EvidenceDigest!;
+            // Crash between the confirmed Approval signal and the terminal checkpoint (REQ-07).
+            attempt.State = BudgetAttemptStateCodes.Of(BudgetAttemptState.Signalling);
+            attempt.SignalResult = null;
+            attempt.CompletedAt = null;
+            attempt.LeaseOwner = null;
+            attempt.LeaseUntil = null;
+            await crashed.SaveChangesAsync(cancellationToken);
+        }
+
+        // Approval already decided, so the prerequisite is no longer WAITING; the durable attempt
+        // is still reclaimed and finished from its recorded signal without a second reservation.
+        var outcomes = await harness.ProcessBudgetInstanceAsync("signal-recovery-worker", cancellationToken);
+        Assert.Single(outcomes);
+
+        await using var verification = harness.CreateContext();
+        var recovered = await verification.BudgetPrerequisiteAttempts
+            .SingleAsync(record => record.PrerequisiteId == prerequisiteId, cancellationToken);
+        Assert.Equal("COMPLETED", recovered.State);
+        Assert.Equal("SATISFIED", recovered.SignalResult);
+        Assert.Equal(evidenceDigest, recovered.EvidenceDigest);
+        Assert.Equal(2, recovered.FencingToken);
+        Assert.Equal(
+            1,
+            await verification.ApprovalPrerequisiteSignals
+                .CountAsync(record => record.PrerequisiteId == prerequisiteId, cancellationToken));
+        Assert.Equal(
+            1,
+            await verification.BudgetMovements
+                .CountAsync(movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+        var balance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(100m, balance.Reserved);
+        var prerequisite = await verification.ApprovalPrerequisites
+            .SingleAsync(record => record.Id == prerequisiteId, cancellationToken);
+        Assert.Equal((int)PrerequisiteStatus.Satisfied, prerequisite.Status);
+    }
+
+    [Fact]
+    public async Task An_expired_lease_of_a_dead_worker_is_reclaimed_without_double_booking()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        _ = await harness.SubmitAsync(requestId, version, "submit-lease-expiry", cancellationToken);
+
+        // The durable attempt exists without being processed; a dead worker holds an expired lease.
+        Assert.Empty(await harness.ProcessBudgetInstanceAsync(
+            "lease-seed-worker", cancellationToken, DateTimeOffset.UtcNow.AddHours(-1)));
+        Guid attemptId;
+        await using (var dead = harness.CreateContext())
+        {
+            var attempt = await dead.BudgetPrerequisiteAttempts.SingleAsync(cancellationToken);
+            attemptId = attempt.Id;
+            attempt.LeaseOwner = "dead-worker";
+            attempt.LeaseUntil = DateTimeOffset.UtcNow.AddSeconds(-1);
+            attempt.FencingToken = 1;
+            attempt.Attempts = 1;
+            await dead.SaveChangesAsync(cancellationToken);
+        }
+
+        // The expired lease is reclaimed with a new fencing token and the work is posted once.
+        var outcomes = await harness.ProcessBudgetInstanceAsync("lease-recovery-worker", cancellationToken);
+        Assert.Single(outcomes);
+
+        await using var verification = harness.CreateContext();
+        var recovered = await verification.BudgetPrerequisiteAttempts
+            .SingleAsync(record => record.Id == attemptId, cancellationToken);
+        Assert.Equal("COMPLETED", recovered.State);
+        Assert.Equal("SATISFIED", recovered.SignalResult);
+        Assert.Equal(2, recovered.FencingToken);
+        Assert.Equal(2, recovered.Attempts);
+        Assert.Equal(
+            1,
+            await verification.BudgetMovements
+                .CountAsync(movement => movement.Type == (int)BudgetMovementType.Reserved, cancellationToken));
+        var balance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(100m, balance.Reserved);
+    }
+
+    [Fact]
     public async Task A_rejected_requirement_releases_the_open_reservation()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

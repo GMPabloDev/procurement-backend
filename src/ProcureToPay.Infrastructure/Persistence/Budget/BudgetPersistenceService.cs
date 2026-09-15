@@ -195,17 +195,22 @@ public sealed class BudgetPersistenceService(ProcureToPayDbContext dbContext)
             .OrderBy(movement => movement.OccurredAt)
             .ThenBy(movement => movement.Id)
             .ToArrayAsync(cancellationToken);
-        // The ledger is self-describing: the first row carries the projection before its delta and
-        // the last one carries the projection after; with no movement the position is fully
-        // available. This rebuild is independent from the movement-type arithmetic, so a corrupted
-        // type or amount cannot hide a divergence (NFR-01).
-        return movements.Length == 0
-            ? BudgetBuckets.Create(allocated, 0m, 0m, 0m)
-            : BudgetBuckets.Create(
-                movements[^1].AllocatedAfter,
-                movements[^1].ReservedAfter,
-                movements[^1].CommittedAfter,
-                movements[^1].ConsumedAfter);
+        // The contractual reconstruction is the current allocation plus every recorded delta of the
+        // position (Datos y contratos). An allocation revision changes ALLOCATED without posting a
+        // movement, so it is read from the current version; RESERVED, COMMITTED and CONSUMED are the
+        // net delta of the append-only rows. The rebuild never derives the delta from the movement
+        // type, so a corrupted type or amount cannot hide a divergence (NFR-01, REQ-01, REQ-02).
+        var reserved = 0m;
+        var committed = 0m;
+        var consumed = 0m;
+        foreach (var movement in movements)
+        {
+            reserved += movement.ReservedAfter - movement.ReservedBefore;
+            committed += movement.CommittedAfter - movement.CommittedBefore;
+            consumed += movement.ConsumedAfter - movement.ConsumedBefore;
+        }
+
+        return BudgetBuckets.Create(allocated, reserved, committed, consumed);
     }
 
     /// <summary>

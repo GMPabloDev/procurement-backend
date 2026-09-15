@@ -44,19 +44,35 @@ public sealed class BudgetPrerequisiteProcessor(
     /// <summary>Readiness budget of one due attempt (REQ-07, NFR-05).</summary>
     public static readonly TimeSpan DueBudget = TimeSpan.FromSeconds(60);
 
+    /// <summary>Maximum age of a lease renewal while an attempt is in flight (REQ-07).</summary>
+    public static readonly TimeSpan LeaseRenewalInterval = TimeSpan.FromSeconds(10);
+
     /// <summary>Claims every processable budget attempt and advances it once (REQ-07).</summary>
     public async Task<IReadOnlyList<BudgetProcessorOutcome>> ProcessDueAsync(
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
-        var candidates = await dbContext.ApprovalPrerequisites
+        // A waiting prerequisite needs its attempt created or advanced; a durable attempt that never
+        // reached a terminal state is reclaimed even when its prerequisite already decided, so a
+        // crash between the confirmed signal and the terminal checkpoint stays recoverable (REQ-07).
+        var completed = BudgetAttemptStateCodes.Of(BudgetAttemptState.Completed);
+        var compensated = BudgetAttemptStateCodes.Of(BudgetAttemptState.Compensated);
+        var waiting = await dbContext.ApprovalPrerequisites
             .AsNoTracking()
             .Where(record => record.Status == (int)PrerequisiteStatus.Waiting &&
                              record.OwnerAdapterId == BudgetCodes.BudgetOwnerAdapterId &&
                              record.OwnerAdapterVersion == BudgetCodes.BudgetOwnerAdapterVersion)
-            .OrderBy(record => record.Id)
             .Select(record => record.Id)
             .ToArrayAsync(cancellationToken);
+        var recoverable = await dbContext.BudgetPrerequisiteAttempts
+            .AsNoTracking()
+            .Where(record => record.State != completed && record.State != compensated)
+            .Select(record => record.PrerequisiteId)
+            .ToArrayAsync(cancellationToken);
+        var candidates = waiting
+            .Union(recoverable)
+            .OrderBy(record => record)
+            .ToArray();
         var outcomes = new List<BudgetProcessorOutcome>();
         foreach (var prerequisiteId in candidates)
         {
@@ -94,6 +110,37 @@ public sealed class BudgetPrerequisiteProcessor(
             .SingleAsync(record => record.Id == attempt.PrerequisiteId, cancellationToken);
         var ownerWorkload = new ApprovalWorkloadIdentity(
             prerequisite.OwnerWorkloadIssuer, prerequisite.OwnerWorkloadClientId);
+
+        // A crash between the confirmed Approval signal and the terminal checkpoint leaves the
+        // attempt non-terminal while Approval already decided. The recorded signal is consulted
+        // first with the attempt's own key: a confirmed signal is finalized as-is and never
+        // compensated nor signalled twice (REQ-07).
+        var attemptCompleted = BudgetAttemptStateCodes.Of(BudgetAttemptState.Completed);
+        if (prerequisite.Status is (int)PrerequisiteStatus.Satisfied or (int)PrerequisiteStatus.Failed &&
+            attempt.State != attemptCompleted)
+        {
+            var recorded = await dbContext.ApprovalPrerequisiteSignals
+                .AsNoTracking()
+                .SingleOrDefaultAsync(record => record.PrerequisiteId == attempt.PrerequisiteId &&
+                                                record.SignalKey == attempt.SignalKey,
+                    cancellationToken);
+            if (recorded is not null)
+            {
+                if (!await HoldLeaseAsync(attempt, cancellationToken))
+                {
+                    return null;
+                }
+
+                var recordedResult = recorded.Satisfied ? "SATISFIED" : "FAILED";
+                await CompleteAsync(attempt, recordedResult, recorded.EvidenceDigest, now, cancellationToken);
+                return new BudgetProcessorOutcome(
+                    attempt.Id,
+                    attemptCompleted,
+                    recordedResult,
+                    recorded.Satisfied ? BudgetCheckResult.Available : BudgetCheckResult.Insufficient);
+            }
+        }
+
         var demands = await BuildDemandsAsync(attempt, prerequisite.TargetsJson, cancellationToken);
         var parametersDigest = Sha256(prerequisite.ParametersJson);
         var source = new BudgetSource(
@@ -108,12 +155,22 @@ public sealed class BudgetPrerequisiteProcessor(
         var caseStatus = (ApprovalCaseStatus)caseRecord.Status;
         if (caseStatus is ApprovalCaseStatus.Cancelled or ApprovalCaseStatus.Superseded)
         {
+            if (!await HoldLeaseAsync(attempt, cancellationToken))
+            {
+                return null;
+            }
+
             if (attempt.ReserveOperationId is not null)
             {
                 var reversed = await ReleaseReservationsAsync(
                     attempt, source, actor, correlation: attempt.SignalKey, now, cancellationToken);
                 if (reversed)
                 {
+                    if (!await HoldLeaseAsync(attempt, cancellationToken))
+                    {
+                        return null;
+                    }
+
                     await CompleteCompensatedAsync(attempt, now, cancellationToken);
                     return new BudgetProcessorOutcome(
                         attempt.Id, BudgetAttemptStateCodes.Of(BudgetAttemptState.Compensated), null, BudgetCheckResult.Available);
@@ -126,6 +183,11 @@ public sealed class BudgetPrerequisiteProcessor(
         }
 
         var predecessors = await FindPredecessorHoldsAsync(attempt, cancellationToken);
+        if (!await HoldLeaseAsync(attempt, cancellationToken))
+        {
+            return null;
+        }
+
         BudgetReserveOutcome reserve;
         try
         {
@@ -181,47 +243,84 @@ public sealed class BudgetPrerequisiteProcessor(
         }
 
         await RecordReserveAsync(attempt, reserve, now, cancellationToken);
-        if (reserve.Result != BudgetCheckResult.Available)
+        if (!await HoldLeaseAsync(attempt, cancellationToken))
         {
+            return null;
+        }
+
+        try
+        {
+            if (reserve.Result != BudgetCheckResult.Available)
+            {
+                await SignalAsync(
+                    attempt,
+                    prerequisite,
+                    ownerWorkload,
+                    satisfied: false,
+                    evidenceDigest: null,
+                    evidenceReference: null,
+                    now,
+                    cancellationToken);
+                if (!await HoldLeaseAsync(attempt, cancellationToken))
+                {
+                    return null;
+                }
+
+                await CompleteAsync(attempt, "FAILED", null, now, cancellationToken);
+                return new BudgetProcessorOutcome(
+                    attempt.Id, BudgetAttemptStateCodes.Of(BudgetAttemptState.Completed), "FAILED", reserve.Result);
+            }
+
+            var evidenceMovements = reserve.RequestedMovements.Concat(reserve.ReservedMovements).ToArray();
+            var evidence = BudgetCanonicalJson.Digest(BudgetFingerprints.EvidencePreimage(
+                attempt.OrganizationId,
+                attempt.Id,
+                attempt.CaseId,
+                attempt.PrerequisiteId,
+                now,
+                BudgetCheckResult.Available,
+                attempt.SignalKey,
+                parametersDigest,
+                attempt.SourceControlDigest,
+                evidenceMovements));
+            _ = predecessors;
+            if (!await HoldLeaseAsync(attempt, cancellationToken))
+            {
+                return null;
+            }
+
             await SignalAsync(
                 attempt,
                 prerequisite,
                 ownerWorkload,
-                satisfied: false,
-                evidenceDigest: null,
-                evidenceReference: null,
+                satisfied: true,
+                evidenceDigest: evidence,
+                evidenceReference: $"budget://{attempt.Id:D}",
                 now,
                 cancellationToken);
-            await CompleteAsync(attempt, "FAILED", null, now, cancellationToken);
-            return new BudgetProcessorOutcome(
-                attempt.Id, BudgetAttemptStateCodes.Of(BudgetAttemptState.Completed), "FAILED", reserve.Result);
-        }
+            if (!await HoldLeaseAsync(attempt, cancellationToken))
+            {
+                return null;
+            }
 
-        var evidenceMovements = reserve.RequestedMovements.Concat(reserve.ReservedMovements).ToArray();
-        var evidence = BudgetCanonicalJson.Digest(BudgetFingerprints.EvidencePreimage(
-            attempt.OrganizationId,
-            attempt.Id,
-            attempt.CaseId,
-            attempt.PrerequisiteId,
-            now,
-            BudgetCheckResult.Available,
-            attempt.SignalKey,
-            parametersDigest,
-            attempt.SourceControlDigest,
-            evidenceMovements));
-        _ = predecessors;
-        await SignalAsync(
-            attempt,
-            prerequisite,
-            ownerWorkload,
-            satisfied: true,
-            evidenceDigest: evidence,
-            evidenceReference: $"budget://{attempt.Id:D}",
-            now,
-            cancellationToken);
-        await CompleteAsync(attempt, "SATISFIED", evidence, now, cancellationToken);
-        return new BudgetProcessorOutcome(
-            attempt.Id, BudgetAttemptStateCodes.Of(BudgetAttemptState.Completed), "SATISFIED", BudgetCheckResult.Available);
+            await CompleteAsync(attempt, "SATISFIED", evidence, now, cancellationToken);
+            return new BudgetProcessorOutcome(
+                attempt.Id, BudgetAttemptStateCodes.Of(BudgetAttemptState.Completed), "SATISFIED", BudgetCheckResult.Available);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // The lease was reclaimed while this instance worked: it confirms no checkpoint.
+            dbContext.ChangeTracker.Clear();
+            return null;
+        }
+        catch (Exception exception) when (exception is DomainException or DbUpdateException)
+        {
+            // A failure after the operation was confirmed preserves the state, records the error
+            // and releases the lease so the next sweep retries with the same keys (REQ-07).
+            await MarkRetryAsync(attempt, ErrorCode(exception), now, cancellationToken);
+            throw new BudgetDependencyUnavailableException(
+                $"{ErrorCode(exception)}: {exception.Message}", exception);
+        }
     }
 
     /// <summary>
@@ -373,6 +472,69 @@ public sealed class BudgetPrerequisiteProcessor(
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Verifies that this instance still owns the attempt lease and renews it at most every 10
+    /// seconds (REQ-07). A lost, expired or reclaimed lease returns false, so the caller aborts
+    /// without posting a movement or confirming a checkpoint.
+    /// </summary>
+    private async Task<bool> HoldLeaseAsync(
+        BudgetPrerequisiteAttemptRecord attempt,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var current = await dbContext.BudgetPrerequisiteAttempts
+            .AsNoTracking()
+            .Where(record => record.Id == attempt.Id)
+            .Select(record => new { record.LeaseOwner, record.LeaseUntil, record.FencingToken })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (current is null ||
+            !string.Equals(current.LeaseOwner, instanceIdentity.Owner, StringComparison.Ordinal) ||
+            current.FencingToken != attempt.FencingToken ||
+            current.LeaseUntil is not DateTimeOffset until ||
+            until <= now)
+        {
+            return false;
+        }
+
+        if (until - now > LeaseDuration - LeaseRenewalInterval)
+        {
+            return true;
+        }
+
+        attempt.LeaseUntil = now + LeaseDuration;
+        try
+        {
+            await positions.SaveAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is DomainConflictException or
+                                              DbUpdateConcurrencyException)
+        {
+            // Another instance reclaimed the expired lease: this one stops without writing.
+            dbContext.ChangeTracker.Clear();
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Records a failure after the operation was confirmed: the attempt keeps its state, the error
+    /// and the next retry are recorded and the lease is released without clearing the ids. The next
+    /// sweep reclaims it and retries the signal with the same key (REQ-07).
+    /// </summary>
+    private async Task MarkRetryAsync(
+        BudgetPrerequisiteAttemptRecord attempt,
+        string errorCode,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        attempt.LastErrorCode = errorCode;
+        attempt.NextAttemptAt = now.AddSeconds(1);
+        attempt.LeaseOwner = null;
+        attempt.LeaseUntil = null;
+        await positions.SaveAsync(cancellationToken);
     }
 
     /// <summary>

@@ -51,32 +51,27 @@ public sealed class BudgetHealthCheck(
             }
         }
 
-        // NFR-01: the mutable projection must equal the ledger rebuild. The comparison is by count of
-        // divergent positions only, so readiness never leaks a balance.
+        // NFR-01: the mutable projection must equal the contractual rebuild (current allocation plus
+        // every recorded delta). The comparison is by divergent positions only, so readiness never
+        // leaks a balance.
         var positions = await dbContext.BudgetPositions
             .AsNoTracking()
-            .Select(record => record.Id)
+            .Select(record => new { record.Id, record.OrganizationId })
             .ToArrayAsync(cancellationToken);
-        foreach (var positionId in positions)
+        var persistence = new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPersistenceService(
+            dbContext);
+        foreach (var position in positions)
         {
             var balance = await dbContext.BudgetBalances
                 .AsNoTracking()
-                .SingleAsync(record => record.PositionId == positionId, cancellationToken);
-            var last = await dbContext.BudgetMovements
-                .AsNoTracking()
-                .Where(movement => movement.PositionId == positionId)
-                .OrderByDescending(movement => movement.OccurredAt)
-                .ThenByDescending(movement => movement.Id)
-                .FirstOrDefaultAsync(cancellationToken);
-            if (last is null)
-            {
-                continue;
-            }
-
-            if (balance.Allocated != last.AllocatedAfter ||
-                balance.Reserved != last.ReservedAfter ||
-                balance.Committed != last.CommittedAfter ||
-                balance.Consumed != last.ConsumedAfter)
+                .SingleAsync(record => record.PositionId == position.Id, cancellationToken);
+            var rebuilt = await persistence.RebuildAsync(
+                position.OrganizationId, position.Id, cancellationToken);
+            if (rebuilt is null ||
+                balance.Allocated != rebuilt.Allocated ||
+                balance.Reserved != rebuilt.Reserved ||
+                balance.Committed != rebuilt.Committed ||
+                balance.Consumed != rebuilt.Consumed)
             {
                 return HealthCheckResult.Unhealthy("BUDGET_LEDGER_CORRUPTED");
             }

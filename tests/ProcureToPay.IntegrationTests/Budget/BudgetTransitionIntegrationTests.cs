@@ -268,6 +268,183 @@ public sealed class BudgetTransitionIntegrationTests
         Assert.Equal(900m, buckets.Available);
     }
 
+    [Fact]
+    public async Task Two_concurrent_allocation_revisions_leave_one_current_version()
+    {
+        await using var harness = await Harness.StartAsync(TestContext.Current.CancellationToken);
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        // Two administrators revise from version 1 at the same instant (REQ-01, CA-01).
+        var first = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await harness.ReviseAllocationAsync(1200m, "alloc-race-a", cancellationToken);
+                    return true;
+                }
+                catch (DomainConflictException)
+                {
+                    return false;
+                }
+            },
+            cancellationToken);
+        var second = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await harness.ReviseAllocationAsync(1300m, "alloc-race-b", cancellationToken);
+                    return true;
+                }
+                catch (DomainConflictException)
+                {
+                    return false;
+                }
+            },
+            cancellationToken);
+        Assert.Equal(1, (await Task.WhenAll(first, second)).Count(accepted => accepted));
+
+        await using var verification = harness.CreateContext();
+        var versions = await verification.BudgetAllocationVersions
+            .OrderBy(version => version.Version)
+            .ToArrayAsync(cancellationToken);
+        Assert.Equal(2, versions.Length);
+        Assert.Equal(1000m, versions[0].AllocatedAmount);
+        var position = await verification.BudgetPositions.SingleAsync(cancellationToken);
+        Assert.Equal(2, position.CurrentAllocationVersion);
+        var balance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(versions[1].AllocatedAmount, balance.Allocated);
+    }
+
+    [Fact]
+    public async Task An_allocation_reduction_below_held_funds_and_invalid_references_are_rejected()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken);
+        var (position, _) = await harness.ReserveAsync(100m, cancellationToken);
+
+        // Reducing below RESERVED+COMMITTED+CONSUMED never changes the projection (REQ-01, CA-01).
+        await Assert.ThrowsAsync<DomainConflictException>(() =>
+            harness.ReviseAllocationAsync(50m, "alloc-reduce", cancellationToken));
+        var unchanged = await harness.BucketsAsync(position, cancellationToken);
+        Assert.Equal(1000m, unchanged.Allocated);
+        Assert.Equal(100m, unchanged.Reserved);
+
+        // An out-of-range Fiscal Year and a currency other than the organization base are rejected
+        // before any history row is appended.
+        await Assert.ThrowsAsync<DomainValidationException>(() =>
+            harness.ReviseAllocationRawAsync(1800, "PEN", 900m, "alloc-year", cancellationToken));
+        await Assert.ThrowsAsync<DomainValidationException>(() =>
+            harness.ReviseAllocationRawAsync(2026, "USD", 900m, "alloc-currency", cancellationToken));
+
+        await using var verification = harness.CreateContext();
+        Assert.Single(await verification.BudgetAllocationVersions.ToArrayAsync(cancellationToken));
+        var balance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(1000m, balance.Allocated);
+    }
+
+    [Fact]
+    public async Task A_multi_position_batch_with_one_failing_movement_confirms_nothing()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken);
+        var (firstPosition, firstParent) = await harness.ReserveAsync(100m, cancellationToken);
+        var (_, secondSpendCategory) = await harness.CreateSecondPositionAsync(50m, cancellationToken);
+        var (secondPosition, secondParent) = await harness.ReserveAtAsync(
+            secondSpendCategory,
+            40m,
+            "budget-request-second",
+            "budget-reserve-second",
+            Guid.Parse("77777777-7777-7777-7777-777777777777"),
+            cancellationToken);
+
+        // A batch that fits confirms both positions in one operation (REQ-02, CA-02).
+        var confirmed = await harness.CommitBatchAsync(
+            [(firstParent, 60m), (secondParent, 30m)], "commit-batch-ok", cancellationToken);
+        Assert.Equal(2, confirmed.Movements.Count);
+
+        // The next batch has a valid first movement and an impossible second one: the whole batch
+        // must roll back and leave the confirmed state intact.
+        await Assert.ThrowsAsync<DomainConflictException>(() => harness.CommitBatchAsync(
+            [(firstParent, 30m), (secondParent, 20m)], "commit-batch-1", cancellationToken));
+
+        await using var verification = harness.CreateContext();
+        Assert.Equal(
+            1,
+            await verification.BudgetOperations.CountAsync(
+                operation => operation.Kind == (int)BudgetOperationKind.Commit, cancellationToken));
+        Assert.Equal(
+            2,
+            await verification.BudgetMovements.CountAsync(
+                movement => movement.Type == (int)BudgetMovementType.Committed, cancellationToken));
+        var firstBuckets = await harness.BucketsAsync(firstPosition, cancellationToken);
+        Assert.Equal(40m, firstBuckets.Reserved);
+        Assert.Equal(60m, firstBuckets.Committed);
+        var secondBuckets = await harness.BucketsAsync(secondPosition, cancellationToken);
+        Assert.Equal(10m, secondBuckets.Reserved);
+        Assert.Equal(30m, secondBuckets.Committed);
+    }
+
+    [Fact]
+    public async Task A_precheck_groups_targets_per_position_and_never_changes_buckets()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken);
+        var firstPosition = await harness.PositionIdAsync(
+            "HARDWARE", cancellationToken);
+        var (_, secondSpendCategory) = await harness.CreateSecondPositionAsync(200m, cancellationToken);
+        var secondPosition = await harness.PositionIdAsync(secondSpendCategory, cancellationToken);
+
+        // Two lines of the first position and one of the second are persisted per target and
+        // evaluated as one snapshot (REQ-04, CA-03).
+        var outcome = await harness.PrecheckAsync(
+            [
+                (Guid.NewGuid(), 300m, "HARDWARE"),
+                (Guid.NewGuid(), 200m, "HARDWARE"),
+                (Guid.NewGuid(), 150m, secondSpendCategory)
+            ],
+            "precheck-grouped",
+            cancellationToken);
+        Assert.Equal("AVAILABLE", outcome.Result);
+
+        await using (var verification = harness.CreateContext())
+        {
+            var operation = await verification.BudgetOperations
+                .SingleAsync(record => record.Id == outcome.OperationId, cancellationToken);
+            Assert.Equal((int)BudgetOperationKind.Precheck, operation.Kind);
+            var requested = await verification.BudgetMovements
+                .Where(movement => movement.OperationId == outcome.OperationId)
+                .ToArrayAsync(cancellationToken);
+            Assert.Equal(3, requested.Length);
+            Assert.All(
+                requested,
+                movement => Assert.Equal((int)BudgetMovementType.Requested, movement.Type));
+            Assert.Equal(2, requested.Count(movement => movement.PositionId == firstPosition));
+            Assert.Equal(1, requested.Count(movement => movement.PositionId == secondPosition));
+        }
+
+        var untouchedFirst = await harness.BucketsAsync(firstPosition, cancellationToken);
+        Assert.Equal(1000m, untouchedFirst.Allocated);
+        Assert.Equal(1000m, untouchedFirst.Available);
+        var untouchedSecond = await harness.BucketsAsync(secondPosition, cancellationToken);
+        Assert.Equal(200m, untouchedSecond.Allocated);
+
+        // An aggregate that one position cannot cover stays non-binding and reserves nothing.
+        var insufficient = await harness.PrecheckAsync(
+            [(Guid.NewGuid(), 1200m, "HARDWARE")],
+            "precheck-insufficient",
+            cancellationToken);
+        Assert.NotEqual("AVAILABLE", insufficient.Result);
+        await using var afterInsufficient = harness.CreateContext();
+        var stillReserved = await harness.BucketsAsync(firstPosition, cancellationToken);
+        Assert.Equal(0m, stillReserved.Reserved);
+        Assert.Equal(
+            1,
+            await afterInsufficient.BudgetMovements.CountAsync(
+                movement => movement.OperationId == insufficient.OperationId, cancellationToken));
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         public const string ProducerIssuer = "internal://procure-to-pay";
@@ -384,6 +561,191 @@ public sealed class BudgetTransitionIntegrationTests
                 .Select(record => record.Id)
                 .SingleAsync(cancellationToken);
             return (position, outcome.ReservedMovements.Single().Id);
+        }
+
+        /// <summary>Second funded position (another spend category) for multi-position batches (REQ-02).</summary>
+        public async Task<(Guid CostCenterId, string SpendCategoryCode)> CreateSecondPositionAsync(
+            decimal allocation,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var catalogs = new ReferenceCatalogPersistenceService(context);
+            var spendCategory = await catalogs.CreateSpendCategoryAsync(
+                OrganizationId,
+                ActorId,
+                "SERVICES",
+                "Services",
+                "Second position for the ledger tests",
+                "corr-transition-sc-second",
+                cancellationToken);
+            var budgets = new BudgetPersistenceService(context);
+            await budgets.SetAllocationAsync(
+                OrganizationId,
+                ActorId,
+                CostCenterId,
+                2026,
+                spendCategory.Code,
+                allocation,
+                "PEN",
+                expectedVersion: null,
+                allocationKey: "alloc-transition-second",
+                reason: "Second allocation for the ledger tests",
+                correlationReference: "corr-transition-alloc-second",
+                cancellationToken);
+            return (CostCenterId, spendCategory.Code);
+        }
+
+        public async Task<Guid> PositionIdAsync(string spendCategoryCode, CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            return await context.BudgetPositions
+                .AsNoTracking()
+                .Where(record => record.OrganizationId == OrganizationId &&
+                                 record.CostCenterId == CostCenterId &&
+                                 record.FiscalYear == 2026 &&
+                                 record.SpendCategoryCode == spendCategoryCode)
+                .Select(record => record.Id)
+                .SingleAsync(cancellationToken);
+        }
+
+        /// <summary>One administrative allocation revision from the current version (REQ-01).</summary>
+        public async Task<BudgetPositionView> ReviseAllocationAsync(
+            decimal amount,
+            string allocationKey,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var budgets = new BudgetPersistenceService(context);
+            return await budgets.SetAllocationAsync(
+                OrganizationId,
+                ActorId,
+                CostCenterId,
+                2026,
+                SpendCategoryCode,
+                amount,
+                "PEN",
+                expectedVersion: 1,
+                allocationKey,
+                reason: "Concurrent allocation revision",
+                correlationReference: "corr-alloc-race",
+                cancellationToken);
+        }
+
+        /// <summary>One administrative allocation revision with explicit year/currency (REQ-01).</summary>
+        public async Task<BudgetPositionView> ReviseAllocationRawAsync(
+            int fiscalYear,
+            string currency,
+            decimal amount,
+            string allocationKey,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var budgets = new BudgetPersistenceService(context);
+            return await budgets.SetAllocationAsync(
+                OrganizationId,
+                ActorId,
+                CostCenterId,
+                fiscalYear,
+                SpendCategoryCode,
+                amount,
+                currency,
+                expectedVersion: 1,
+                allocationKey,
+                reason: "Raw allocation revision",
+                correlationReference: "corr-alloc-raw",
+                cancellationToken);
+        }
+
+        /// <summary>Reserves one demand in the named position through the real ledger.</summary>
+        public async Task<(Guid PositionId, Guid ReservedMovementId)> ReserveAtAsync(
+            string spendCategoryCode,
+            decimal amount,
+            string requestKey,
+            string reserveKey,
+            Guid sourceId,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var budgets = new BudgetPersistenceService(context);
+            var ledger = new BudgetLedgerService(context, budgets);
+            var payload = await budgets.ResolvePositionAsync(
+                OrganizationId, CostCenterId, 2026, spendCategoryCode, "PEN", cancellationToken);
+            var outcome = await ledger.ReserveAsync(
+                OrganizationId,
+                requestKey,
+                reserveKey,
+                new BudgetSource(BudgetCodes.PurchaseRequestSourceType, sourceId, 1, new string('d', 64)),
+                BudgetActors.OwnerSystem,
+                "BUDGET_CHECK",
+                sourceId,
+                [new BudgetDemand(amount, payload, Guid.NewGuid(), 1, new string('b', 64), null)],
+                "corr-transition-reserve",
+                cancellationToken: cancellationToken);
+            var position = await context.BudgetPositions
+                .AsNoTracking()
+                .Where(record => record.OrganizationId == OrganizationId &&
+                                 record.CostCenterId == CostCenterId &&
+                                 record.FiscalYear == 2026 &&
+                                 record.SpendCategoryCode == spendCategoryCode)
+                .Select(record => record.Id)
+                .SingleAsync(cancellationToken);
+            return (position, outcome.ReservedMovements.Single().Id);
+        }
+
+        /// <summary>Applies one COMMIT batch of several movements or none (REQ-02, CA-02).</summary>
+        public async Task<BudgetTransitionResult> CommitBatchAsync(
+            IReadOnlyList<(Guid ParentMovementId, decimal Amount)> movements,
+            string key,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var service = new BudgetTransitionService(
+                context,
+                new BudgetLedgerService(context, new BudgetPersistenceService(context)),
+                new BudgetMovementProducerRegistry(DefaultConfiguration.Build()),
+                new BudgetPersistenceService(context));
+            var source = SourceFor("COMMIT", key, BudgetCodes.PurchaseOrderSourceType);
+            return await service.ApplyAsync(
+                OrganizationId,
+                Producer,
+                "COMMIT",
+                key,
+                "PO_ISSUED",
+                source,
+                movements
+                    .Select(movement => new BudgetTransitionCommandMovement(
+                        movement.Amount, movement.ParentMovementId, 1, null))
+                    .ToArray(),
+                "corr-transition",
+                cancellationToken);
+        }
+
+        /// <summary>Runs one non-binding precheck over demands of several positions (REQ-04, CA-03).</summary>
+        public async Task<BudgetPrecheckOutcome> PrecheckAsync(
+            IReadOnlyList<(Guid LineId, decimal Amount, string SpendCategoryCode)> demands,
+            string key,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var budgets = new BudgetPersistenceService(context);
+            var ledger = new BudgetLedgerService(context, budgets);
+            var built = new List<BudgetDemand>();
+            foreach (var demand in demands)
+            {
+                var payload = await budgets.ResolvePositionAsync(
+                    OrganizationId, CostCenterId, 2026, demand.SpendCategoryCode, "PEN", cancellationToken);
+                built.Add(new BudgetDemand(
+                    demand.Amount, payload, demand.LineId, 1, new string('b', 64), null));
+            }
+
+            return await ledger.PrecheckAsync(
+                OrganizationId,
+                key,
+                new string('c', 64),
+                new BudgetSource(BudgetCodes.PurchaseRequestSourceType, Guid.NewGuid(), 1, new string('f', 64)),
+                built,
+                "corr-precheck",
+                cancellationToken);
         }
 
         public Task<(BudgetTransitionResult Result, BudgetTransitionSource Source)> CommitAsync(

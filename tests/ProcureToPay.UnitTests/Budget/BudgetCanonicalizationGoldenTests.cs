@@ -26,6 +26,9 @@ public sealed class BudgetCanonicalizationGoldenTests
     private const string EvidenceBytes =
         "{\"attempt_id\":\"88888888-8888-8888-8888-888888888888\",\"canonicalization_version\":\"policy-canonical-json/v1\",\"case_id\":\"66666666-6666-6666-6666-666666666666\",\"checked_at\":\"2026-09-14T12:00:00.0000000Z\",\"contract_version\":\"budget-check-evidence/v1\",\"movements\":[{\"amount\":\"100\",\"id\":\"99999999-9999-9999-9999-999999999998\",\"position_key_digest\":\"b83e7782986b251a897c72add363aa8d980a836b7a6950a7acab188cc73bb9e3\",\"target\":{\"id\":\"55555555-5555-5555-5555-555555555555\",\"material_snapshot_digest\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"type\":\"PURCHASE_REQUEST_LINE\",\"version\":1},\"type\":\"REQUESTED\",\"version\":1},{\"amount\":\"100\",\"id\":\"99999999-9999-9999-9999-999999999999\",\"position_key_digest\":\"b83e7782986b251a897c72add363aa8d980a836b7a6950a7acab188cc73bb9e3\",\"target\":{\"id\":\"55555555-5555-5555-5555-555555555555\",\"material_snapshot_digest\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"type\":\"PURCHASE_REQUEST_LINE\",\"version\":1},\"type\":\"RESERVED\",\"version\":1}],\"organization_id\":\"11111111-1111-1111-1111-111111111111\",\"parameters_digest\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"prerequisite_id\":\"77777777-7777-7777-7777-777777777777\",\"result\":\"SATISFIED\",\"signal_key\":\"budget:77777777-7777-7777-7777-777777777777:signal\",\"source_control_digest\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"}";
 
+    private const string ReleaseBytes =
+        "{\"canonicalization_version\":\"policy-canonical-json/v1\",\"case_id\":\"66666666-6666-6666-6666-666666666666\",\"command_version\":\"budget-release-command/v1\",\"organization_id\":\"11111111-1111-1111-1111-111111111111\",\"reason_code\":\"PR_CANCELLED\",\"release_key\":\"release-1\",\"request_id\":\"44444444-4444-4444-4444-444444444444\",\"request_version\":1,\"targets\":[{\"id\":\"55555555-5555-5555-5555-555555555555\",\"material_snapshot_digest\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"type\":\"PURCHASE_REQUEST_LINE\",\"version\":1}],\"trigger\":\"APPROVAL_RESULT\",\"trigger_event\":{\"contract_version\":\"approval-result/v3\",\"event_id\":\"99999999-9999-9999-9999-999999999997\"}}";
+
     private static readonly Guid OrganizationId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid ActorUserId = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid CostCenterId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -171,6 +174,33 @@ public sealed class BudgetCanonicalizationGoldenTests
             "4eece706b7214a84f45756adab97043ab30b551afcff89fb480bf64c72acc51e",
             Sha256(EvidenceBytes));
         Assert.Equal(Sha256(EvidenceBytes), BudgetCanonicalJson.Digest(preimage));
+    }
+
+    /// <summary>
+    /// The release fingerprint has no published gold table, so it is fixed independently here: the
+    /// byte string follows the preimage property table of the contract and its SHA-256 is computed
+    /// from the literal, never from the production builder (CA-07).
+    /// </summary>
+    [Fact]
+    public void Release_fingerprint_is_reproducible_from_the_contract_fixture()
+    {
+        var preimage = BudgetFingerprints.ReleasePreimage(
+            OrganizationId,
+            CaseId,
+            RequestId,
+            1,
+            "release-1",
+            "PR_CANCELLED",
+            BudgetReleaseTrigger.ApprovalResult,
+            new BudgetTriggerEvent(
+                "approval-result/v3", Guid.Parse("99999999-9999-9999-9999-999999999997")),
+            [Target]);
+
+        Assert.Equal(ReleaseBytes, BudgetCanonicalJson.Serialize(preimage));
+        Assert.Equal(
+            "7a1c066828c5a75637f1efbf72b86cb9522faf23b7f19c2e632af09a9db7b54f",
+            Sha256(ReleaseBytes));
+        Assert.Equal(Sha256(ReleaseBytes), BudgetCanonicalJson.Digest(preimage));
     }
 
     [Fact]
