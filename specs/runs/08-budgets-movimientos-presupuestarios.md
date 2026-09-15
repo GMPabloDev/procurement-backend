@@ -1,7 +1,7 @@
 # RUN SPEC 08 — Budgets y movimientos presupuestarios por posición
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** Bloqueado
+> **Estado del run:** Lista para integrar
 > **Spec:** specs/08-budgets-movimientos-presupuestarios.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 534a7c83b42f2727a143298d77b2a2fd47d0536d
@@ -14,7 +14,7 @@
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-14 18:50 -0500
 > **Actualizado:** 2026-09-15 10:20 -0500
-> **HEAD verificado:** Pendiente
+> **HEAD verificado:** 95b3012bcfd540a0210d186c987951c9c9eb5418
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -105,7 +105,21 @@ Ejecutada sobre el commit base `534a7c8` antes de cualquier edición, con el ár
 
 ## Desviaciones y bloqueos
 
-- **Correcciones exigidas por la revisión independiente (rondas 1–4).** Los hallazgos R8–R11
+- **Rondas adicionales autorizadas: 7.** El usuario autorizó la ronda final tras el residual de la
+  ronda 4 ("dale una ronda final", 2026-09-15). Las rondas 5, 6 y 7 se ejecutaron como
+  continuación del mismo mandato de cierre, cada una verificando solo el hallazgo residual de la
+  anterior (heartbeat, titularidad del checkpoint y reloj del servidor tras el lock). El contrato,
+  el digest y la superficie HTTP no cambiaron.
+- **Causa raíz de las rondas 5–7 y vectores que la fijan.** El lease se implementó por capas
+  (claim→terminal, renovación, fencing, heartbeat) sin una única comprobación de titularidad en la
+  frontera de escritura, y cada revisión expuso la siguiente ventana. Cada comportamiento queda
+  ahora fijado por una regresión: `Two_instances_racing_the_same_attempt_reserve_and_signal_once`
+  (claim concurrente), `A_stale_fence_cannot_confirm_a_movement` (fence obsoleto),
+  `A_redelivered_reservation_reuses_its_operations_without_double_booking` (artefactos de replay),
+  `The_lease_is_renewed_while_an_effect_is_blocked` (heartbeat), `A_reclaimed_lease_is_never_overwritten_by_a_stale_worker`
+  (titularidad del checkpoint tras reclaim) y `The_heartbeat_does_not_revive_an_expired_lease`
+  (reloj del servidor tras el lock), esta última validada en negativo contra el reloj previo.
+- **Correcciones exigidas por la revisión independiente (rondas 1–7).** Los hallazgos R8–R11
   señalaron: un attempt podía quedar `SIGNALLING` para siempre si el proceso moría tras confirmar
   la señal; el lease de 30 s no se renovaba cada ≤10 s ni se comprobaba antes de escribir; health
   comparaba con el snapshot del último movimiento en lugar de la reconstrucción contractual (falso
@@ -124,9 +138,9 @@ Ejecutada sobre el commit base `534a7c8` antes de cualquier edición, con el ár
 
 ## Verificación independiente
 
-> **Resultado:** BLOCK (rondas 1–6). R8, R10 y R11 resueltos; R9 corregido por completo tras la ronda 6 (heartbeat con reloj del servidor leído tras el lock de la fila, titularidad validada en cada checkpoint) con regresiones de efecto bloqueado, reclaim y lease vencido bajo lock. Verificación final pendiente sobre `10c06df`.
-> **Rondas:** 6/6 consumidas; verificación final de los arreglos de la ronda 6 pendiente.
-> **Triaje:** R8 (recuperación de señal confirmada) resuelto en ronda 2; R10 (health falso corrupto) resuelto en ronda 2; R11 (CA-01/02/03/07 sin evidencia) resuelto en rondas 2–4; R9 corregido en varias iteraciones: ronda 2 claim concurrente, ronda 3 lease/fence, ronda 4 retornos/checkpoint/replay, ronda 5 heartbeat independiente, ronda 6 titularidad del checkpoint y reloj del servidor tras el lock. Ningún hallazgo descartado.
-> **Modelo efectivo:** `openai-codex/gpt-5.6-sol` (subagente `sdd-implementation-reviewer`, effort high; 8 + 6 + 7 + 9 + 11 + 7 turnos).
-> **Método:** revisión full base `534a7c83b42f2727a143298d77b2a2fd47d0536d` → `329e842` y diferenciales `329e842` → `013da5f`, `013da5f` → `b645b3f`, `b645b3f` → `4ab7041`, `4ab7041` → `bbd255f`, `bbd255f` → `f44c1bb` y `f44c1bb` → `10c06df`, con las suites completas de cada candidato aportadas por el orquestador.
+> **Resultado:** Sin bloqueos
+> **Rondas:** 7/7
+> **Triaje:** R8 (recuperación de señal confirmada) y R10 (health falso corrupto) resueltos en la ronda 2; R11 (CA-01/02/03/07 sin evidencia) resuelto entre las rondas 2 y 4; R9 resuelto tras la ronda 6 (heartbeat independiente con reloj del servidor leído tras el lock, titularidad validada antes de cada checkpoint, fence transaccional en todos los retornos y artefactos de replay completos). Sin hallazgos abiertos; ninguno descartado.
+> **Modelo efectivo:** `openai-codex/gpt-5.6-sol` (subagente `sdd-implementation-reviewer`, effort high; 8 + 6 + 7 + 9 + 11 + 7 + 7 turnos).
+> **Método:** revisión full base `534a7c83b42f2727a143298d77b2a2fd47d0536d` → `329e842` y diferenciales `329e842` → `013da5f`, `013da5f` → `b645b3f`, `b645b3f` → `4ab7041`, `4ab7041` → `bbd255f`, `bbd255f` → `f44c1bb`, `f44c1bb` → `10c06df` y PASS sobre el candidato `95b3012`, con las suites completas de cada candidato aportadas por el orquestador.
 > **Fecha:** 2026-09-15
