@@ -13,7 +13,7 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-14 18:50 -0500
-> **Actualizado:** 2026-09-14 21:40 -0500
+> **Actualizado:** 2026-09-15 02:20 -0500
 > **HEAD verificado:** Pendiente
 > **Commit de integración:** Pendiente
 
@@ -50,7 +50,7 @@ Ejecutada sobre el commit base `534a7c8` antes de cualquier edición, con el ár
 - Cambios: `TransferReserveAsync` en el ledger (evaluación con crédito del hold previo, reversión y reserva all-or-nothing en una transacción, replay por keys registradas), integración del transfer en `BudgetPrerequisiteProcessor` cuando el case superseded tiene holds abiertos, y `BudgetPersistenceService.LoadStateAsync` para resolver una posición desde un movimiento.
 - Tests y checks: build 0 errores; Unit `199/199`; Integración `96/96`; API/E2E `24/24`; `git diff --check` limpio.
 - Evidencia: `BudgetTransitionIntegrationTests` (10), `Cancelling_an_approved_request_releases_its_reservation_before_completing`.
-- HEAD: pendiente de commit (working tree).
+- HEAD: `ad7ec4c` (código probado commiteado).
 - Próximo paso: commit del bloque y revisión final del run.
 
 ### CP-02 — 2026-09-14 23:55 -0500 — Release de reservas y transiciones workload-only
@@ -59,7 +59,7 @@ Ejecutada sobre el commit base `534a7c8` antes de cualquier edición, con el ár
 - Cambios: release automático en el consumer de resultados/lifecycle con `ReleaseBudgetAsync`, release previa a la cancelación de PR (`ReleaseBudgetBeforeCancellationAsync` + attempt durable), superficie `POST /api/v1/budgets/movements` con contrato v1, proyección `Posted` en el ledger, `Include(Position)` en las lecturas de replay (bug real: el replay fallaba en un contexto que no trackeaba la posición) y `BudgetTriggerEvent` con alfabeto de identidad.
 - Tests y checks: build 0 errores; Unit `199/199`; Integración `91/91`; API/E2E `24/24`; `git diff --check` limpio.
 - Evidencia: `BudgetTransitionIntegrationTests` (6), `A_rejected_requirement_releases_the_open_reservation`, suites completas sobre el árbol estable de CP-02.
-- HEAD: pendiente de commit (working tree).
+- HEAD: `5ca454c` (código probado commiteado; el release de reservas quedó en `57239a5`).
 - Próximo paso: transferencia atómica en supersesión y prueba de cancelación de PR con presupuesto; después T-08 (fault injection, dos instancias, rollback).
 
 ### CP-01 — 2026-09-14 21:40 -0500 — Ledger, precheck, adapter v3 y owner real
