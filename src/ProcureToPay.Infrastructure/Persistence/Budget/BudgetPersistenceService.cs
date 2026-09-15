@@ -213,6 +213,44 @@ public sealed class BudgetPersistenceService(ProcureToPayDbContext dbContext)
     /// position; later revisions append a successor version and update the projection in the same
     /// transaction, refusing to reduce ALLOCATED below the funds already held.
     /// </summary>
+    /// <summary>
+    /// Loads the writable state of one position by its id, for the internal transitions that start
+    /// from a recorded movement instead of a caller-declared position key (REQ-08).
+    /// </summary>
+    public async Task<BudgetLedger.BudgetLedgerService.BudgetPositionState> LoadStateAsync(
+        Guid organizationId,
+        Guid positionId,
+        CancellationToken cancellationToken = default)
+    {
+        var position = await dbContext.BudgetPositions
+            .SingleOrDefaultAsync(
+                record => record.Id == positionId && record.OrganizationId == organizationId,
+                cancellationToken)
+            ?? throw new DomainNotFoundException("The budget position was not found.");
+        var balance = await dbContext.BudgetBalances
+            .SingleAsync(record => record.PositionId == position.Id, cancellationToken);
+        var allocation = await dbContext.BudgetAllocationVersions
+            .AsNoTracking()
+            .SingleAsync(
+                record => record.PositionId == position.Id &&
+                          record.Version == position.CurrentAllocationVersion,
+                cancellationToken);
+        var payload = BudgetPositionPayload.For(
+            position.CostCenterId,
+            position.FiscalYear,
+            new BudgetCostCenterRef(allocation.CostCenterId, allocation.CostCenterVersion),
+            new BudgetSpendCategoryRef(
+                allocation.SpendCategoryCode, allocation.SpendCategoryVersion, allocation.SpendCategoryDigest));
+        return new BudgetLedger.BudgetLedgerService.BudgetPositionState(
+            position.Id,
+            position.PositionKeyDigest,
+            payload,
+            position,
+            balance,
+            BudgetBuckets.Create(balance.Allocated, balance.Reserved, balance.Committed, balance.Consumed),
+            allocation.Currency);
+    }
+
     public async Task<BudgetPositionView> SetAllocationAsync(
         Guid organizationId,
         Guid actorUserId,

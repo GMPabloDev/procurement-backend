@@ -164,10 +164,108 @@ public sealed class BudgetTransitionIntegrationTests
             TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task A_redelivered_reservation_reuses_its_operations_without_double_booking()
+    {
+        await using var harness = await Harness.StartAsync(TestContext.Current.CancellationToken);
+
+        // A crash after the reservation was confirmed but before the signal is replayed by the same
+        // keys: the ledger resolves the recorded operations and posts nothing twice (REQ-07, NFR-03).
+        await harness.ReserveAsync(100m, TestContext.Current.CancellationToken);
+        var repeated = await harness.ReserveOutcomeAsync(100m, TestContext.Current.CancellationToken);
+        Assert.Equal(BudgetCheckResult.Available, repeated.Result);
+        Assert.NotNull(repeated.ReserveOperationId);
+
+        await using var context = harness.CreateContext();
+        var reserves = await context.BudgetOperations
+            .Where(operation => operation.Kind == (int)BudgetOperationKind.ApprovalReserve)
+            .ToArrayAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, reserves.Length);
+        Assert.Equal(2, await context.BudgetMovements.CountAsync(TestContext.Current.CancellationToken));
+        var balance = await context.BudgetBalances.SingleAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(100m, balance.Reserved);
+        Assert.Equal(900m, balance.Allocated - balance.Reserved);
+    }
+
+    [Fact]
+    public async Task Rebuilding_a_balance_matches_the_posted_movements_exactly()
+    {
+        await using var harness = await Harness.StartAsync(TestContext.Current.CancellationToken);
+        var (position, reservedMovement) = await harness.ReserveAsync(100m, TestContext.Current.CancellationToken);
+        var commit = await harness.CommitAsync(
+            reservedMovement, 60m, "commit-1", TestContext.Current.CancellationToken);
+        await harness.ReverseAsync(
+            commit.Result.Movements[0].MovementId,
+            20m,
+            "reverse-1",
+            commit.Source,
+            TestContext.Current.CancellationToken);
+
+        // The append-only history reconstructs exactly the projected buckets (NFR-01, REQ-02).
+        await using var context = harness.CreateContext();
+        var budgets = new BudgetPersistenceService(context);
+        var rebuilt = await budgets.RebuildAsync(
+            harness.OrganizationId, position, TestContext.Current.CancellationToken);
+        var projected = await harness.BucketsAsync(position, TestContext.Current.CancellationToken);
+        Assert.NotNull(rebuilt);
+        Assert.Equal(projected.Allocated, rebuilt!.Allocated);
+        Assert.Equal(projected.Reserved, rebuilt.Reserved);
+        Assert.Equal(projected.Committed, rebuilt.Committed);
+        Assert.Equal(projected.Consumed, rebuilt.Consumed);
+        Assert.Equal(1000m, rebuilt.Allocated);
+        Assert.Equal(60m, rebuilt.Reserved);
+        Assert.Equal(40m, rebuilt.Committed);
+    }
+
     /// <summary>Produces the producer table a test deployment runs with.</summary>
     private interface ITransitionConfiguration
     {
         IConfiguration Build();
+    }
+
+    [Fact]
+    public async Task A_superseded_hold_transfers_to_the_replacement_all_or_nothing()
+    {
+        await using var harness = await Harness.StartAsync(TestContext.Current.CancellationToken);
+        var (position, reservedMovement) = await harness.ReserveAsync(
+            100m, TestContext.Current.CancellationToken);
+
+        // The replacement needs the predecessor's 100 plus 50 of its own: only the transfer, which
+        // counts the previous hold as available, can reserve it.
+        var replacementCaseId = Guid.NewGuid();
+        var replacement = await harness.TransferAsync(
+            [reservedMovement], 150m, replacementCaseId, TestContext.Current.CancellationToken);
+        Assert.Equal(BudgetCheckResult.Available, replacement.Result);
+        var afterTransfer = await harness.BucketsAsync(position, TestContext.Current.CancellationToken);
+        Assert.Equal(150m, afterTransfer.Reserved);
+
+        // Replay resolves the same operations and touches no bucket.
+        var replay = await harness.TransferAsync(
+            [reservedMovement], 150m, replacementCaseId, TestContext.Current.CancellationToken);
+        Assert.Equal(replacement.ReserveOperationId, replay.ReserveOperationId);
+        Assert.Equal(replacement.ReverseOperationId, replay.ReverseOperationId);
+        Assert.Equal(150m, (await harness.BucketsAsync(position, TestContext.Current.CancellationToken)).Reserved);
+    }
+
+    [Fact]
+    public async Task A_transfer_that_cannot_cover_the_whole_set_reverses_nothing()
+    {
+        await using var harness = await Harness.StartAsync(TestContext.Current.CancellationToken);
+        var (position, reservedMovement) = await harness.ReserveAsync(
+            100m, TestContext.Current.CancellationToken);
+
+        // 100 of predecessor hold + 900 of free allocation is short of 1100: the whole set must fail
+        // and the predecessor keeps its hold.
+        var failed = await harness.TransferAsync(
+            [reservedMovement], 1100m, Guid.NewGuid(), TestContext.Current.CancellationToken);
+        Assert.Equal(BudgetCheckResult.Insufficient, failed.Result);
+        Assert.Null(failed.ReserveOperationId);
+        Assert.Empty(failed.ReversedMovements);
+        Assert.Empty(failed.ReservedMovements);
+
+        var buckets = await harness.BucketsAsync(position, TestContext.Current.CancellationToken);
+        Assert.Equal(100m, buckets.Reserved);
+        Assert.Equal(900m, buckets.Available);
     }
 
     private sealed class Harness : IAsyncDisposable
@@ -182,8 +280,15 @@ public sealed class BudgetTransitionIntegrationTests
         public Guid DepartmentId { get; } = Guid.Parse("33333333-3333-3333-3333-333333333333");
         public Guid ActorId { get; } = Guid.Parse("88888888-8888-8888-8888-888888888888");
         private Guid CostCenterId { get; set; }
+        private const string ReservationRequestKey = "budget-request-1";
+        private const string ReservationReserveKey = "budget-reserve-1";
+        private static readonly BudgetSource ReservationSource = new(
+            BudgetCodes.PurchaseRequestSourceType, Guid.Parse("44444444-4444-4444-4444-444444444444"), 1, new string('d', 64));
+        private static readonly Guid ReservationCaseId = Guid.Parse("66666666-6666-6666-6666-666666666666");
+        private static readonly Guid ReservationSourceLineId = Guid.Parse("55555555-5555-5555-5555-555555555555");
         private string SpendCategoryCode { get; set; } = string.Empty;
         private readonly Dictionary<string, BudgetTransitionSource> sources = [];
+        private readonly Dictionary<string, BudgetSource> transferSources = [];
 
         public static async Task<Harness> StartAsync(CancellationToken cancellationToken)
         {
@@ -261,13 +366,13 @@ public sealed class BudgetTransitionIntegrationTests
                 cancellationToken);
             var outcome = await ledger.ReserveAsync(
                 OrganizationId,
-                "budget-request-1",
-                "budget-reserve-1",
-                new BudgetSource(BudgetCodes.PurchaseRequestSourceType, Guid.NewGuid(), 1, new string('d', 64)),
+                ReservationRequestKey,
+                ReservationReserveKey,
+                ReservationSource,
                 BudgetActors.OwnerSystem,
                 "BUDGET_CHECK",
-                Guid.NewGuid(),
-                [new BudgetDemand(amount, payload, Guid.NewGuid(), 1, new string('b', 64), null)],
+                ReservationCaseId,
+                [new BudgetDemand(amount, payload, ReservationSourceLineId, 1, new string('b', 64), null)],
                 "corr-transition-reserve",
                 cancellationToken: cancellationToken);
             var position = await context.BudgetPositions
@@ -321,6 +426,19 @@ public sealed class BudgetTransitionIntegrationTests
         /// The source of one operation key, cached so a redelivery of the same command reuses the
         /// exact source it declared the first time (a different source is another preimage).
         /// </summary>
+        /// <summary>The exact source of one transfer command, reused by its redelivery.</summary>
+        private BudgetSource TransferSourceFor(string key)
+        {
+            if (!transferSources.TryGetValue(key, out var source))
+            {
+                source = new BudgetSource(
+                    BudgetCodes.PurchaseRequestSourceType, Guid.NewGuid(), 1, new string('c', 64));
+                transferSources[key] = source;
+            }
+
+            return source;
+        }
+
         private BudgetTransitionSource SourceFor(string operation, string key, string sourceType)
         {
             if (!sources.TryGetValue(operation + ":" + key, out var source))
@@ -373,6 +491,61 @@ public sealed class BudgetTransitionIntegrationTests
                 source,
                 [new BudgetTransitionCommandMovement(amount, parentMovementId, 1, null)],
                 "corr-transition",
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// Redelivery of the reservation command with the exact preimage the first attempt declared:
+        /// this is what a worker resuming after a crash resolves (REQ-07, NFR-03).
+        /// </summary>
+        public async Task<BudgetReserveOutcome> ReserveOutcomeAsync(
+            decimal amount,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var budgets = new BudgetPersistenceService(context);
+            var ledger = new BudgetLedgerService(context, budgets);
+            var payload = await budgets.ResolvePositionAsync(
+                OrganizationId, CostCenterId, 2026, SpendCategoryCode, "PEN", cancellationToken);
+            return await ledger.ReserveAsync(
+                OrganizationId,
+                ReservationRequestKey,
+                ReservationReserveKey,
+                ReservationSource,
+                BudgetActors.OwnerSystem,
+                "BUDGET_CHECK",
+                ReservationCaseId,
+                [new BudgetDemand(amount, payload, ReservationSourceLineId, 1, new string('b', 64), null)],
+                "corr-transition-reserve",
+                cancellationToken: cancellationToken);
+        }
+
+        /// <summary>
+        /// Runs one serialized transfer of the predecessor reservations into a replacement case
+        /// (REQ-08) with the deterministic keys of the replacement attempt.
+        /// </summary>
+        public async Task<BudgetTransferReserveOutcome> TransferAsync(
+            IReadOnlyList<Guid> predecessorMovements,
+            decimal amount,
+            Guid replacementCaseId,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var positions = new BudgetPersistenceService(context);
+            var ledger = new BudgetLedgerService(context, positions);
+            var payload = await positions.ResolvePositionAsync(
+                OrganizationId, CostCenterId, 2026, SpendCategoryCode, "PEN", cancellationToken);
+            return await ledger.TransferReserveAsync(
+                OrganizationId,
+                $"budget:{replacementCaseId:D}:request",
+                $"budget:{replacementCaseId:D}:reserve",
+                TransferSourceFor(replacementCaseId.ToString("D")),
+                BudgetActors.OwnerSystem,
+                "BUDGET_CHECK",
+                replacementCaseId,
+                [new BudgetDemand(amount, payload, Guid.NewGuid(), 1, new string('b', 64), null)],
+                [new BudgetPredecessorReservation(Guid.NewGuid(), predecessorMovements)],
+                "corr-transfer",
                 cancellationToken);
         }
 

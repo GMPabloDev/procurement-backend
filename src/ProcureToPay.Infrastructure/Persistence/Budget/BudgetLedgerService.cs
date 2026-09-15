@@ -33,6 +33,36 @@ public sealed record BudgetBatchOutcome(
 /// </summary>
 public sealed record BudgetLedgerPostedMovement(BudgetPositionKey Position, BudgetMovementRecord Movement);
 
+/// <summary>
+/// One open reservation of a superseded case that the replacement may count as available (REQ-08).
+/// </summary>
+public sealed record BudgetPredecessorReservation(
+    Guid CaseId,
+    IReadOnlyList<Guid> ReservedMovementIds);
+
+/// <summary>One resolved predecessor reservation ready to be reversed by a transfer.</summary>
+public sealed record BudgetPredecessorParent(
+    Guid Id,
+    Guid PositionId,
+    Guid CaseId,
+    decimal Amount,
+    BudgetPositionPayload Payload,
+    BudgetPostedMovement Posted);
+
+/// <summary>
+/// Outcome of the serialized transfer of REQ-08. <see cref="ReverseOperationId"/> always exists;
+/// <see cref="ReserveOperationId"/> exists only when the replacement set fitted entirely, so a
+/// failed transfer reverses nothing.
+/// </summary>
+public sealed record BudgetTransferReserveOutcome(
+    BudgetCheckResult Result,
+    Guid ReverseOperationId,
+    Guid? RequestOperationId,
+    Guid? ReserveOperationId,
+    IReadOnlyList<BudgetEvidenceMovement> ReversedMovements,
+    IReadOnlyList<BudgetEvidenceMovement> RequestedMovements,
+    IReadOnlyList<BudgetEvidenceMovement> ReservedMovements);
+
 /// <summary>Outcome of the owner's decision: reserved, or a business insufficiency (REQ-06).</summary>
 public sealed record BudgetReserveOutcome(
     BudgetCheckResult Result,
@@ -801,6 +831,491 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
         }
 
         return await Task.FromResult<IReadOnlyDictionary<BudgetPositionKey, string>>(digests);
+    }
+
+    /// <summary>
+    /// Serialized transfer between a superseded case and its replacement (REQ-08, DEC-07). Under the
+    /// locks of every involved position it evaluates the replacement set counting the open
+    /// reservations of its predecessors as available; when the whole set fits, it reverses those
+    /// reservations and posts the new REQUESTED+RESERVED pair in the same transaction. When it does
+    /// not fit, it posts nothing at all: the predecessors keep their hold and the caller signals the
+    /// business insufficiency. Replay resolves each recorded operation by its own key.
+    /// </summary>
+    public async Task<BudgetTransferReserveOutcome> TransferReserveAsync(
+        Guid organizationId,
+        string requestKey,
+        string reserveKey,
+        BudgetSource source,
+        BudgetActor actor,
+        string reasonCode,
+        Guid caseId,
+        IReadOnlyList<BudgetDemand> demands,
+        IReadOnlyList<BudgetPredecessorReservation> predecessors,
+        string correlationReference,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(demands);
+        ArgumentNullException.ThrowIfNull(predecessors);
+        if (demands.Count is < 1 or > BudgetCodes.MaxDemandCount)
+        {
+            throw new DomainValidationException(
+                $"A reservation accepts between 1 and {BudgetCodes.MaxDemandCount} demands.");
+        }
+
+        var correlation = BudgetCodes.RequireCorrelation(correlationReference);
+        var normalizedReason = BudgetCodes.RequireReasonCode(reasonCode);
+        var normalizedRequestKey = BudgetCodes.RequireKey(requestKey, "request_key");
+        var normalizedReserveKey = BudgetCodes.RequireKey(reserveKey, "reserve_key");
+        var predecessorParents = await LoadPredecessorParentsAsync(
+            organizationId, predecessors, cancellationToken);
+        var reverseKey = $"budget:{caseId:D}:transfer-reverse";
+        var requestedFingerprint = BudgetCanonicalJson.Digest(BudgetFingerprints.OperationPreimage(
+            organizationId,
+            actor,
+            BudgetOperationKind.TransferReserve,
+            normalizedRequestKey,
+            normalizedReason,
+            source,
+            demands.Select(demand => new BudgetMovementCommandItem(demand.AmountBase, null, demand.Target))));
+        var reserveFingerprint = BudgetCanonicalJson.Digest(BudgetFingerprints.OperationPreimage(
+            organizationId,
+            actor,
+            BudgetOperationKind.TransferReserve,
+            normalizedReserveKey,
+            normalizedReason,
+            source,
+            demands.Select(demand => new BudgetMovementCommandItem(demand.AmountBase, null, demand.Target))));
+        var reverseFingerprint = await ReverseFingerprintAsync(
+            organizationId,
+            actor,
+            reverseKey,
+            normalizedReason,
+            source,
+            predecessorParents,
+            cancellationToken);
+
+        var replayed = await ReplayTransferAsync(
+            organizationId,
+            normalizedRequestKey,
+            normalizedReserveKey,
+            reverseKey,
+            requestedFingerprint,
+            reserveFingerprint,
+            reverseFingerprint,
+            demands,
+            cancellationToken);
+        if (replayed is not null)
+        {
+            return replayed;
+        }
+
+        var payloads = demands.Select(demand => demand.Payload).ToArray();
+        var states = await LoadStatesAsync(organizationId, payloads, cancellationToken);
+        var reversalStates = new List<BudgetPositionState>();
+        foreach (var positionId in predecessorParents
+                     .Select(parent => parent.PositionId)
+                     .Distinct()
+                     .ToArray())
+        {
+            reversalStates.Add(await positions.LoadStateAsync(organizationId, positionId, cancellationToken));
+        }
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken);
+        // Every involved position is locked in the same order as any other writer, so the reversal and
+        // the replacement cannot interleave with a third transaction (REQ-02, REQ-08).
+        var locked = states
+            .Concat(reversalStates)
+            .Where(state => state.Position is not null)
+            .DistinctBy(state => state.PositionKeyDigest)
+            .OrderBy(state => state.PositionKeyDigest, StringComparer.Ordinal)
+            .ToArray();
+        foreach (var state in locked)
+        {
+            await BudgetPersistenceService.AcquirePositionLockAsync(
+                dbContext, organizationId, state.PositionKeyDigest, cancellationToken);
+        }
+
+        var stateByKey = locked.ToDictionary(state => state.Payload.Position, state => state);
+        var keyDigests = locked.ToDictionary(state => state.Payload.Position, state => state.PositionKeyDigest);
+        var occurredAt = DateTimeOffset.UtcNow;
+
+        // Evaluate the replacement against the buckets the predecessors still hold: this is the whole
+        // point of counting the previous hold as available before deciding.
+        var availableWithCredit = locked.ToDictionary(
+            state => state.Payload.Position,
+            state => state.Buckets.Available + CreditFor(predecessorParents, state.Payload.Position));
+        var evaluated = EvaluateWithCredit(demands, locked, predecessorParents);
+        if (evaluated != BudgetCheckResult.Available)
+        {
+            // Nothing is reversed and nothing is reserved: the failure is a business outcome.
+            await transaction.CommitAsync(cancellationToken);
+            return new BudgetTransferReserveOutcome(evaluated, Guid.Empty, null, null, [], [], []);
+        }
+
+        var reverseOperation = NewOperation(
+            organizationId,
+            BudgetOperationKind.TransferReserve,
+            reverseKey,
+            reverseFingerprint,
+            source,
+            actor,
+            normalizedReason,
+            "TRANSFERRED",
+            correlation,
+            occurredAt,
+            null,
+            null);
+        dbContext.BudgetOperations.Add(reverseOperation);
+        var reversedMovements = new List<BudgetMovementRecord>();
+        foreach (var parent in predecessorParents)
+        {
+            var state = stateByKey[parent.Payload.Position];
+            var before = state.Buckets;
+            var request = new BudgetMovementRequest(
+                BudgetMovementType.Reverse, parent.Amount, parent.Id, null);
+            var application = BudgetMovementCalculator.Apply(before, request, parent.Posted);
+            state.Buckets = application.After;
+            var movement = NewMovement(
+                organizationId,
+                reverseOperation.Id,
+                state,
+                request,
+                before,
+                application.After,
+                null,
+                occurredAt);
+            dbContext.BudgetMovements.Add(movement);
+            reversedMovements.Add(movement);
+        }
+
+        positions.AddAudit(
+            organizationId,
+            actor,
+            BudgetCodes.ActionReleased,
+            "BudgetOperation",
+            reverseOperation.Id,
+            null,
+            1,
+            new { case_id = caseId, predecessor_count = predecessorParents.Count },
+            correlation,
+            occurredAt,
+            null,
+            null);
+
+        var requestOperation = NewOperation(
+            organizationId,
+            BudgetOperationKind.TransferReserve,
+            normalizedRequestKey,
+            requestedFingerprint,
+            source,
+            actor,
+            normalizedReason,
+            "RECORDED",
+            correlation,
+            occurredAt,
+            null,
+            null);
+        dbContext.BudgetOperations.Add(requestOperation);
+        var requestedMovements = new List<BudgetMovementRecord>();
+        var requestedByDemand = new List<(BudgetDemand Demand, BudgetMovementRecord Movement)>();
+        foreach (var demand in demands)
+        {
+            var state = stateByKey[demand.Payload.Position];
+            var before = state.Buckets;
+            var request = BudgetMovementRequestFor(BudgetMovementType.Requested, demand);
+            var application = BudgetMovementCalculator.Apply(before, request, null);
+            state.Buckets = application.After;
+            var movement = NewMovement(
+                organizationId,
+                requestOperation.Id,
+                state,
+                request,
+                before,
+                application.After,
+                demand.Target,
+                occurredAt);
+            dbContext.BudgetMovements.Add(movement);
+            requestedMovements.Add(movement);
+            requestedByDemand.Add((demand, movement));
+        }
+
+        var reserveOperation = NewOperation(
+            organizationId,
+            BudgetOperationKind.TransferReserve,
+            normalizedReserveKey,
+            reserveFingerprint,
+            source,
+            actor,
+            normalizedReason,
+            "AVAILABLE",
+            correlation,
+            occurredAt,
+            null,
+            null);
+        dbContext.BudgetOperations.Add(reserveOperation);
+        var reservedMovements = new List<BudgetMovementRecord>();
+        foreach (var (demand, requestedMovement) in requestedByDemand)
+        {
+            var state = stateByKey[demand.Payload.Position];
+            var before = state.Buckets;
+            var request = BudgetMovementRequestFor(BudgetMovementType.Reserved, demand, requestedMovement.Id);
+            // The replacement reservation is validated against the availability the transfer just
+            // freed, which includes the predecessor hold reversed above (REQ-08).
+            var availableNow = availableWithCredit[state.Payload.Position];
+            var application = BudgetMovementCalculator.Apply(
+                before,
+                request,
+                Posted(requestedMovement),
+                availableOverride: availableNow);
+            state.Buckets = application.After;
+            var movement = NewMovement(
+                organizationId,
+                reserveOperation.Id,
+                state,
+                request,
+                before,
+                application.After,
+                demand.Target,
+                occurredAt);
+            dbContext.BudgetMovements.Add(movement);
+            reservedMovements.Add(movement);
+        }
+
+        foreach (var state in locked.Where(state => state.BalancesTouched))
+        {
+            UpdateBalance(state);
+        }
+
+        positions.AddAudit(
+            organizationId,
+            actor,
+            BudgetCodes.ActionReserved,
+            "BudgetOperation",
+            reserveOperation.Id,
+            null,
+            1,
+            new { case_id = caseId, demand_count = demands.Count, total = demands.Sum(demand => demand.AmountBase) },
+            correlation,
+            occurredAt,
+            null,
+            null);
+        await positions.SaveAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return new BudgetTransferReserveOutcome(
+            BudgetCheckResult.Available,
+            reverseOperation.Id,
+            requestOperation.Id,
+            reserveOperation.Id,
+            Evidence(reversedMovements, keyDigests),
+            Evidence(requestedMovements, keyDigests),
+            Evidence(reservedMovements, keyDigests));
+    }
+
+    /// <summary>
+    /// Fingerprint of the reversal command. A redelivery of an already applied transfer finds its
+    /// predecessor holds already reversed, so the item set is rebuilt from the recorded operation;
+    /// that keeps the replay comparison about the command the caller sent, not about the state.
+    /// </summary>
+    private async Task<string> ReverseFingerprintAsync(
+        Guid organizationId,
+        BudgetActor actor,
+        string reverseKey,
+        string reasonCode,
+        BudgetSource source,
+        IReadOnlyList<BudgetPredecessorParent> predecessorParents,
+        CancellationToken cancellationToken)
+    {
+        var recorded = await dbContext.BudgetOperations
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                operation => operation.OrganizationId == organizationId &&
+                             operation.OperationKey == reverseKey,
+                cancellationToken);
+        if (recorded is null)
+        {
+            return BudgetCanonicalJson.Digest(BudgetFingerprints.OperationPreimage(
+                organizationId,
+                actor,
+                BudgetOperationKind.TransferReserve,
+                reverseKey,
+                reasonCode,
+                source,
+                predecessorParents.Select(parent => new BudgetMovementCommandItem(
+                    parent.Amount, parent.Id, null))));
+        }
+
+        var movements = await ReadOperationMovementsAsync(recorded.Id, cancellationToken);
+        return BudgetCanonicalJson.Digest(BudgetFingerprints.OperationPreimage(
+            organizationId,
+            actor,
+            BudgetOperationKind.TransferReserve,
+            reverseKey,
+            reasonCode,
+            source,
+            movements
+                .OrderBy(movement => movement.Id)
+                .Select(movement => new BudgetMovementCommandItem(
+                    movement.Amount, movement.ParentMovementId, null))));
+    }
+
+    /// <summary>Availability the transfer credits to one position from its predecessors.</summary>
+    private static decimal CreditFor(IReadOnlyList<BudgetPredecessorParent> predecessors, BudgetPositionKey position) =>
+        predecessors
+            .Where(parent => parent.Payload.Position == position)
+            .Sum(parent => parent.Amount);
+
+    /// <summary>
+    /// Evaluates the replacement set with the open reservations of its predecessors counted as
+    /// available, per position and all-or-nothing (REQ-08). It mirrors the demand-only evaluation of
+    /// a plain reservation without posting anything.
+    /// </summary>
+    private static BudgetCheckResult EvaluateWithCredit(
+        IReadOnlyList<BudgetDemand> demands,
+        IReadOnlyList<BudgetPositionState> states,
+        IReadOnlyList<BudgetPredecessorParent> predecessors)
+    {
+        var stateByPosition = states.ToDictionary(state => state.Payload.Position, state => state);
+        var creditByPosition = predecessors
+            .GroupBy(parent => parent.Payload.Position)
+            .ToDictionary(group => group.Key, group => group.Sum(parent => parent.Amount));
+        var result = BudgetCheckResult.Available;
+        foreach (var total in demands
+                     .GroupBy(demand => demand.Payload.Position)
+                     .Select(group => (Position: group.Key, Total: group.Sum(demand => demand.AmountBase))))
+        {
+            var state = stateByPosition[total.Position];
+            if (state.Position is null)
+            {
+                result = BudgetCheckResult.Unfunded;
+                continue;
+            }
+
+            var credit = creditByPosition.TryGetValue(total.Position, out var value) ? value : 0m;
+            if (state.Buckets.Available + credit < total.Total)
+            {
+                result = BudgetCheckResult.Insufficient;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Resolves the predecessor reservations that the transfer reverts: each id must be an open
+    /// RESERVED movement of this organization with no posted reversal yet (REQ-08).
+    /// </summary>
+    private async Task<IReadOnlyList<BudgetPredecessorParent>> LoadPredecessorParentsAsync(
+        Guid organizationId,
+        IReadOnlyList<BudgetPredecessorReservation> predecessors,
+        CancellationToken cancellationToken)
+    {
+        var parents = new List<BudgetPredecessorParent>();
+        foreach (var predecessor in predecessors)
+        {
+            foreach (var movementId in predecessor.ReservedMovementIds)
+            {
+                var movement = await dbContext.BudgetMovements
+                    .AsNoTracking()
+                    .SingleOrDefaultAsync(record => record.Id == movementId, cancellationToken)
+                    ?? throw new DomainNotFoundException("The predecessor movement is not visible.");
+                if (movement.OrganizationId != organizationId ||
+                    movement.Type != (int)BudgetMovementType.Reserved)
+                {
+                    throw new DomainNotFoundException("The predecessor movement is not visible.");
+                }
+
+                var state = await positions.LoadStateAsync(
+                    organizationId, movement.PositionId, cancellationToken);
+                var reversed = await dbContext.BudgetMovements
+                    .AsNoTracking()
+                    .Where(record => record.ParentMovementId == movementId)
+                    .Select(record => record.Amount)
+                    .ToArrayAsync(cancellationToken);
+                var remaining = movement.Amount - reversed.Sum();
+                if (remaining <= 0m)
+                {
+                    // The hold was already released or committed: nothing to transfer.
+                    continue;
+                }
+
+                parents.Add(new BudgetPredecessorParent(
+                    movement.Id,
+                    movement.PositionId,
+                    predecessor.CaseId,
+                    remaining,
+                    state.Payload,
+                    Posted(movement)));
+            }
+        }
+
+        return parents;
+    }
+
+    /// <summary>Replay of a transfer, resolving whichever operations were already recorded.</summary>
+    private async Task<BudgetTransferReserveOutcome?> ReplayTransferAsync(
+        Guid organizationId,
+        string requestKey,
+        string reserveKey,
+        string reverseKey,
+        string requestedFingerprint,
+        string reserveFingerprint,
+        string reverseFingerprint,
+        IReadOnlyList<BudgetDemand> demands,
+        CancellationToken cancellationToken)
+    {
+        var existing = await dbContext.BudgetOperations
+            .AsNoTracking()
+            .Where(operation => operation.OrganizationId == organizationId &&
+                                (operation.OperationKey == requestKey ||
+                                 operation.OperationKey == reserveKey ||
+                                 operation.OperationKey == reverseKey))
+            .ToArrayAsync(cancellationToken);
+        if (existing.Length == 0)
+        {
+            return null;
+        }
+
+        var recorded = existing.ToDictionary(operation => operation.OperationKey, StringComparer.Ordinal);
+        foreach (var (key, fingerprint) in new[]
+                 {
+                     (requestKey, requestedFingerprint),
+                     (reserveKey, reserveFingerprint),
+                     (reverseKey, reverseFingerprint)
+                 })
+        {
+            if (recorded.TryGetValue(key, out var operation) &&
+                !string.Equals(operation.Fingerprint, fingerprint, StringComparison.Ordinal))
+            {
+                throw new DomainConflictException("The transfer key was already used with different content.");
+            }
+        }
+
+        var replayKeys = await PositionKeysAsync(
+            organizationId, demands.Select(demand => demand.Payload).ToArray(), cancellationToken);
+        var reversed = recorded.TryGetValue(reverseKey, out var reverse)
+            ? Evidence(await ReadOperationMovementsAsync(reverse.Id, cancellationToken), replayKeys)
+            : [];
+        var requested = recorded.TryGetValue(requestKey, out var request)
+            ? Evidence(await ReadOperationMovementsAsync(request.Id, cancellationToken), replayKeys)
+            : [];
+        var reserved = recorded.TryGetValue(reserveKey, out var reserveOperation)
+            ? Evidence(await ReadOperationMovementsAsync(reserveOperation.Id, cancellationToken), replayKeys)
+            : [];
+        if (reserved.Count == 0 && reversed.Count != 0)
+        {
+            // The first transfer reversed nothing (insufficiency); the replay reports the same.
+            return new BudgetTransferReserveOutcome(
+                BudgetCheckResult.Insufficient, reverse.Id, null, null, [], [], []);
+        }
+
+        return new BudgetTransferReserveOutcome(
+            BudgetCheckResult.Available,
+            reverse?.Id ?? Guid.Empty,
+            request?.Id,
+            reserveOperation?.Id,
+            reversed,
+            requested,
+            reserved);
     }
 
     /// <summary>

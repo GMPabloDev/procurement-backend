@@ -184,6 +184,60 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
     }
 
     [Fact]
+    public async Task Cancelling_an_approved_request_releases_its_reservation_before_completing()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.StartAsync(cancellationToken, withBudgetCheck: true);
+        await harness.FundBudgetAsync(1000m, cancellationToken);
+        var (requestId, version) = await harness.CreateAsync(cancellationToken);
+        var submitted = await harness.SubmitAsync(requestId, version, "submit-budget-cancel", cancellationToken);
+        await harness.ProcessBudgetAsync(cancellationToken);
+
+        // The case reached its end without further Approval events: the cancellation itself has to
+        // release the open reservation before the request becomes terminal (SPEC 08 REQ-08).
+        Guid caseId;
+        await using (var before = harness.CreateContext())
+        {
+            var balance = await before.BudgetBalances.SingleAsync(cancellationToken);
+            Assert.Equal(100m, balance.Reserved);
+            caseId = await before.ApprovalPrerequisites
+                .Where(record => record.OwnerAdapterId == BudgetCodes.BudgetOwnerAdapterId &&
+                                 record.Status == (int)PrerequisiteStatus.Satisfied)
+                .Select(record => record.CaseId)
+                .SingleAsync(cancellationToken);
+            Assert.Equal(submitted.ApprovalCaseId, caseId);
+        }
+
+        var cancelled = await harness.CancelAsync(requestId, version, "cancel-budget-1", cancellationToken);
+        Assert.False(cancelled.Replayed);
+
+        await using var verification = harness.CreateContext();
+        var releasedBalance = await verification.BudgetBalances.SingleAsync(cancellationToken);
+        Assert.Equal(0m, releasedBalance.Reserved);
+        var releases = await verification.BudgetMovements
+            .Where(movement => movement.Type == (int)BudgetMovementType.Reverse)
+            .ToArrayAsync(cancellationToken);
+        Assert.Single(releases);
+        Assert.Equal(100m, releases[0].Amount);
+        var attempt = await verification.PurchaseRequestBudgetReleaseAttempts
+            .SingleAsync(record => record.RequestId == requestId, cancellationToken);
+        Assert.Equal(BudgetReleaseAttemptStateCodes.Of(BudgetReleaseAttemptState.Released), attempt.State);
+        Assert.NotNull(attempt.ReleaseOperationId);
+        var request = await verification.PurchaseRequests
+            .SingleAsync(record => record.Id == requestId, cancellationToken);
+        Assert.Equal((int)PurchaseRequestStatus.Cancelled, request.Status);
+
+        // A replay of the same cancellation resolves against its ledger and never releases twice.
+        var replay = await harness.CancelAsync(requestId, version, "cancel-budget-1", cancellationToken);
+        Assert.True(replay.Replayed);
+        await using var afterReplay = harness.CreateContext();
+        Assert.Equal(
+            1,
+            await afterReplay.BudgetMovements.CountAsync(
+                movement => movement.Type == (int)BudgetMovementType.Reverse, cancellationToken));
+    }
+
+    [Fact]
     public async Task A_budget_without_funds_fails_the_owner_prerequisite_without_reserving()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -712,6 +766,26 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
                 DateTimeOffset.UtcNow,
                 cancellationToken);
         }
+
+        /// <summary>
+        /// Cancels the request through the real submission service, which must release the budget
+        /// reservation of an approved case before the request becomes terminal (SPEC 08 REQ-08).
+        /// </summary>
+        public Task<PurchaseRequestCancellation> CancelAsync(
+            Guid requestId,
+            int version,
+            string cancelKey,
+            CancellationToken cancellationToken) =>
+            CreateServices().Submission.CancelAsync(
+                requestId,
+                version,
+                cancelKey,
+                "Cancelled by the budget release test",
+                OrganizationId,
+                RequesterId,
+                "corr-cancel",
+                DateTimeOffset.UtcNow,
+                cancellationToken);
 
         private PurchaseRequestLineContent LineContent() =>
             new(

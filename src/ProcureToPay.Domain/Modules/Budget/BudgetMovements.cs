@@ -223,10 +223,17 @@ public sealed record BudgetMovementApplication(
 /// </summary>
 public static class BudgetMovementCalculator
 {
+    /// <summary>
+    /// Same rules, but the availability check of a RESERVED movement may be satisfied by funds that
+    /// a sibling operation of the same transaction is releasing: the serialized transfer of REQ-08
+    /// reverses the predecessor hold and reserves the replacement in one batch, so the validation
+    /// has to see the freed amount while the recorded buckets stay the real ones.
+    /// </summary>
     public static BudgetMovementApplication Apply(
         BudgetBuckets before,
         BudgetMovementRequest request,
-        BudgetPostedMovement? parent)
+        BudgetPostedMovement? parent,
+        decimal? availableOverride = null)
     {
         ArgumentNullException.ThrowIfNull(before);
         ArgumentNullException.ThrowIfNull(request);
@@ -235,7 +242,7 @@ public static class BudgetMovementCalculator
         var after = request.Type switch
         {
             BudgetMovementType.Requested => Requested(before, request, parent),
-            BudgetMovementType.Reserved => Reserved(before, amount, parent),
+            BudgetMovementType.Reserved => Reserved(before, amount, parent, availableOverride),
             BudgetMovementType.Committed => Committed(before, amount, parent),
             BudgetMovementType.Consumed => Consumed(before, amount, parent),
             BudgetMovementType.Reverse => Reversed(before, amount, parent),
@@ -263,10 +270,15 @@ public static class BudgetMovementCalculator
         return before;
     }
 
-    private static BudgetBuckets Reserved(BudgetBuckets before, decimal amount, BudgetPostedMovement? parent)
+    private static BudgetBuckets Reserved(
+        BudgetBuckets before,
+        decimal amount,
+        BudgetPostedMovement? parent,
+        decimal? availableOverride = null)
     {
         RequireParent(parent, "RESERVED", BudgetMovementType.Requested);
-        if (before.Available < amount)
+        var available = availableOverride ?? before.Available;
+        if (available < amount)
         {
             throw new DomainConflictException("The position does not have enough available budget to reserve.");
         }

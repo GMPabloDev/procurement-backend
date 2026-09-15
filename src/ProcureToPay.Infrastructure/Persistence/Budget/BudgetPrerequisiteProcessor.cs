@@ -11,7 +11,10 @@ using ProcureToPay.Infrastructure.Persistence.Approval;
 namespace ProcureToPay.Infrastructure.Persistence.BudgetLedger;
 
 /// <summary>One predecessor whose open reservations must count as available for its replacement (REQ-08).</summary>
-public sealed record BudgetPredecessorHold(Guid AttemptId, Guid CaseId);
+public sealed record BudgetPredecessorHold(
+    Guid AttemptId,
+    Guid CaseId,
+    IReadOnlyList<Guid> ReservedMovementIds);
 
 /// <summary>Outcome of one processed budget prerequisite.</summary>
 public sealed record BudgetProcessorOutcome(
@@ -126,19 +129,48 @@ public sealed class BudgetPrerequisiteProcessor(
         BudgetReserveOutcome reserve;
         try
         {
-            reserve = await ledger.ReserveAsync(
-                attempt.OrganizationId,
-                attempt.RequestKey,
-                attempt.ReserveKey,
-                source,
-                actor,
-                "BUDGET_CHECK",
-                attempt.CaseId,
-                demands,
-                attempt.SignalKey,
-                causeAuditId: null,
-                causeStream: null,
-                cancellationToken);
+            if (predecessors.Count > 0)
+            {
+                // REQ-08: with a superseded predecessor still holding funds, the replacement is
+                // reserved through the serialized transfer, which counts that hold as available and
+                // reverses it in the same transaction only when the whole new set fits.
+                var transfer = await ledger.TransferReserveAsync(
+                    attempt.OrganizationId,
+                    attempt.RequestKey,
+                    attempt.ReserveKey,
+                    source,
+                    actor,
+                    "BUDGET_CHECK",
+                    attempt.CaseId,
+                    demands,
+                    predecessors
+                        .Select(hold => new BudgetPredecessorReservation(hold.CaseId, hold.ReservedMovementIds))
+                        .ToArray(),
+                    attempt.SignalKey,
+                    cancellationToken);
+                reserve = new BudgetReserveOutcome(
+                    transfer.Result,
+                    transfer.RequestOperationId,
+                    transfer.ReserveOperationId,
+                    transfer.RequestedMovements,
+                    transfer.ReservedMovements);
+            }
+            else
+            {
+                reserve = await ledger.ReserveAsync(
+                    attempt.OrganizationId,
+                    attempt.RequestKey,
+                    attempt.ReserveKey,
+                    source,
+                    actor,
+                    "BUDGET_CHECK",
+                    attempt.CaseId,
+                    demands,
+                    attempt.SignalKey,
+                    causeAuditId: null,
+                    causeStream: null,
+                    cancellationToken);
+            }
         }
         catch (Exception exception) when (exception is BudgetDependencyUnavailableException or
                                               BudgetReferenceInvalidException or DomainException)
@@ -551,9 +583,39 @@ public sealed class BudgetPrerequisiteProcessor(
                              record.ReserveOperationId != null &&
                              record.State != BudgetAttemptStateCodes.Of(BudgetAttemptState.Compensated) &&
                              record.State != BudgetAttemptStateCodes.Of(BudgetAttemptState.Completed))
-            .Select(record => new BudgetPredecessorHold(record.Id, record.CaseId))
+            .Select(record => new { record.Id, record.CaseId, ReserveOperationId = record.ReserveOperationId!.Value })
             .ToArrayAsync(cancellationToken);
-        return holds;
+        var result = new List<BudgetPredecessorHold>();
+        foreach (var hold in holds)
+        {
+            // Only the RESERVED movements of the predecessor that no later transition advanced are
+            // transferable; a hold already committed or reversed is not counted as available.
+            var reserved = await dbContext.BudgetMovements
+                .AsNoTracking()
+                .Where(movement => movement.OperationId == hold.ReserveOperationId &&
+                                   movement.Type == (int)BudgetMovementType.Reserved)
+                .Select(movement => movement.Id)
+                .ToArrayAsync(cancellationToken);
+            if (reserved.Length == 0)
+            {
+                continue;
+            }
+
+            var advanced = await dbContext.BudgetMovements
+                .AsNoTracking()
+                .Where(movement => movement.ParentMovementId != null &&
+                                   reserved.Contains(movement.ParentMovementId!.Value))
+                .Select(movement => movement.ParentMovementId!.Value)
+                .Distinct()
+                .ToArrayAsync(cancellationToken);
+            var open = reserved.Except(advanced).ToArray();
+            if (open.Length > 0)
+            {
+                result.Add(new BudgetPredecessorHold(hold.Id, hold.CaseId, open));
+            }
+        }
+
+        return result;
     }
 
     private async Task MarkPendingAsync(
