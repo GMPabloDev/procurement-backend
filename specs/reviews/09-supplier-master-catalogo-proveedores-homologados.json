@@ -1,0 +1,87 @@
+{
+  "format": "sdd-review/v1",
+  "spec": "09-supplier-master-catalogo-proveedores-homologados.md",
+  "revision": 1,
+  "digest": "338d7c40ad2d45979e5b053006f3a2f2283f0e9bfc0faa5bd1f0e144754f7faa",
+  "dependencies": {
+    "01-organizacion-identidad-roles-autoridades-aprobacion.md": "c5f194a4dca2597aff6cbbace581b1f9212197416c2918559e1a124484de458e",
+    "02-motor-de-politicas.md": "63fec425400bc197524e23cb3a130ab2d7d64f6eba823944b3ebee8923e6d688",
+    "03-approval-workflow.md": "f0b61a917c4c4b4adcaee598c75352ef93d03c3bf25b76d15f80177ba3446234",
+    "04-delegacion-y-evolucion-de-aprobaciones.md": "0ffbc76e8ef5a1c88d251ebad74a99d6cb45cebffd0b6f553fddc5210049933f",
+    "05-integracion-policy-approval-workflow.md": "001c559d72845b0f77919df50bad5e7b74eeecb5e6dc8921d52bba932cb20f70",
+    "06-purchase-requests-versionadas.md": "f8c570320cc1093698b8b2998c83eee168335c5345236a2fe457755bf4a41dd8",
+    "07-catalogos-referencia-purchase-requests.md": "64daf9c60d28f2d9a2dc6c286a8e2f12d83dd97a01a7651a3a72e73681f0eed1",
+    "08-budgets-movimientos-presupuestarios.md": "f381a0a03d09ebf344504cc47a64ac6ebcbe20078d143b57af4226012c883326"
+  },
+  "verdict": "PASS",
+  "mode": "full",
+  "baseline_digest": null,
+  "review_count": 2,
+  "reviewer": "sdd-contract-reviewer · openai-codex/gpt-5.6-luna · effort high",
+  "reviewed_at": "2026-09-15",
+  "coverage": {
+    "behavior": "REQ-01..REQ-12 y CA-01..CA-08 recibieron cobertura full; el delta cerró roles, estados, Banking, catálogo, facts y recuperación frente a la fuente funcional §§0.3, 6, 34–36, 41, 44, 91, 109 y 110.1.",
+    "boundaries": "Se contrastaron SPEC 01–08, roots/versiones/pointers, owners y catálogos exact-one, attestation v1, manifest/provider v2, adapter v4, prerequisite Supplier, identidades, nulabilidad y compatibilidad histórica.",
+    "failure_modes": "Unicidad, concurrencia, retry, crash, inbox/outbox, leases/fencing, errores de cifrado/storage, approval tardía, matching ambiguo, reveal revocado y signal perdida tienen resultado observable y fail-closed.",
+    "acceptance": "CA-01..CA-08 enlazan dominio, SQL, API/E2E, contratos cross-module, health, operación y goldens; el vector de identidad fue reproducido independientemente como `633c1bd7…5c91d`.",
+    "implementation_readiness": "Se trazó Supplier/Catalog aprobados → owner/snapshot PR → provider Policy v2 → adapter v4 → Approval → active-supplier-owner/v1, con rutas actuales de proyección/adapter/DI y trabajo T-01..T-08 verificable sin doubles."
+  },
+  "findings": [
+    {
+      "id": "R1",
+      "severity": "question",
+      "status": "dismissed",
+      "evidence": "La primera revisión citó por error `procure-to-p2p-management-platform-v2.md` como ruta ausente.",
+      "resolution": "La fuente correcta `procure-to-pay-management-platform-v2.md` existe, fue leída y la revisión delta confirmó sus reglas; no era un defecto del contrato."
+    },
+    {
+      "id": "R2",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Manifest/provider v2 y los snapshots Supplier no fijaban inicialmente propiedades, preimages ni frontera con attestation v1.",
+      "resolution": "Datos y contratos define snapshot por línea, set agregado, manifest v2, provider v2, digests, provenance y compatibilidad exacta, manteniendo line content y attestation v1."
+    },
+    {
+      "id": "R3",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Adapter v4 carecía inicialmente de parámetros, key de partición, fingerprint, workload, attempt, evidence y signal exactos.",
+      "resolution": "La sección Adapter v4 fija descriptor, partición y cobertura por Supplier, parameters v1, keys/digests, registry/workload, máquina durable, evidence y signal fingerprint sin alterar v1–v3."
+    },
+    {
+      "id": "R4",
+      "severity": "question",
+      "status": "resolved",
+      "evidence": "REQ-05 y REQ-11 permitían interpretar que ADMIN o AP obtenían Banking plaintext en una lectura ordinaria.",
+      "resolution": "Procurement, AP y Auditor solo reciben máscara; plaintext requiere reveal explícito para AP current o approver de task pending, y ADMIN carece de lectura empresarial."
+    },
+    {
+      "id": "R5",
+      "severity": "warning",
+      "status": "resolved",
+      "evidence": "La lista mínima prometía categorías pero `supplier-reference/v1` no las incluía.",
+      "resolution": "El schema exacto incorpora `categories_supplied` con refs SPEND_CATEGORY de SPEC 07."
+    },
+    {
+      "id": "R6",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "La expresión `precio/acuerdo digests minimizados` no identificaba qué compromiso probaba el fact.",
+      "resolution": "El único `catalog_content_digest` del snapshot usa la preimage publicada de la versión y compromete selector, precio, acuerdo, vigencia y attachment sin exponerse como fact o en API ordinaria."
+    },
+    {
+      "id": "R7",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Audit cross-module no fijaba variantes de actor, causa, target ni deduplicación del efecto automático.",
+      "resolution": "Datos y contratos publica actor union, cause/source, target, schema exacto, effect key y unicidad; approval, reveal y download quedan causalmente reproducibles."
+    },
+    {
+      "id": "R8",
+      "severity": "question",
+      "status": "dismissed",
+      "evidence": "La primera revisión señaló que el código actual aún fija facts sintéticos y no registra Supplier/provider v2/adapter v4.",
+      "resolution": "Es precisamente el gap objetivo del borrador y está trazado a T-05/T-06/T-08 y CA-06/CA-07; la revisión delta confirmó que no contradice la implementabilidad."
+    }
+  ]
+}
