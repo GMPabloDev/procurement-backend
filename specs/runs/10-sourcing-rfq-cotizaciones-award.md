@@ -13,7 +13,7 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-16 10:31 -0500
-> **Actualizado:** 2026-09-16 14:15 -0500
+> **Actualizado:** 2026-09-16 14:58 -0500
 > **HEAD verificado:** Pendiente
 > **Commit de integración:** Pendiente
 
@@ -33,7 +33,7 @@
 | T-03 | Parcial | Waiver basado en hechos: `SourcingWaiverFacts.cs` (`quotation-waiver-facts/v1`, preimagen = documento canónico, `1 <= floor <= to < from`, `to = mínimo recalculado`, cero cotizaciones y target repetido rechazados), `SourcingWaiverService` (recalcula versiones/digests de cotización y conteos desde SQL, exige caso y prerequisite, mínimo publicable y floor, persiste facts antes de crear el caso y envía `policy-exception-submission/v1` con workload allowlisted), `SourcingSerialization.ReadWaiverFacts` (rehash al leer), migración `20260916182814_Spec10SourcingWaiver` (append-only + CHECK) y endpoints. Pruebas: `SourcingWaiverFactsTests` (5 unitarias) y `SourcingWaiverIntegrationTests` (6 SQL). Pendiente: consumir la decisión verificada contra los facts recalculados en el processor del owner (T-08) y la evidencia E2E Policy verify→signal de CA-04. | working-tree sobre 6e26b72 · CP-05 |
 | T-04 | Verificada | Motor reproducible (`SourcingEvaluation.cs`, `SourcingEvaluationEngine.cs`) y persistencia versionada: `SourcingEvaluationService` (FX con evidencia confirmada, score manual con quotation válida, una versión por comando, reemplazo rechazado si la current fue consumida, digest recomputado al leer), `SourcingQuotationQueries` compartida con el conteo, migración `20260916165427_Spec10SourcingEvaluation` (append-only + CHECK de rate/score), endpoints de FX/manual/evaluación. Pruebas: `SourcingEvaluationEngineTests` (13 unitarias) y `SourcingEvaluationIntegrationTests` (5 sobre SQL Server, 12 en la clase). | working-tree sobre 6e26b72 · CP-03 |
 | T-05 | Verificada | Catálogo y selección: `SourcingSelection.cs` (recomendado decidido por el servidor, desviación con justificación 1–1.000, partición por Supplier/moneda/términos y orden UUID canónico), `SourcingEvaluationDocument` (reconstruye el resultado por línea desde el documento persistido y verifica el digest), `SourcingSelectionService` (una selección current por línea, versión esperada, elegibilidad por quotation `ON_TIME+VALID`, restricción `supplier_ref` de la PR, partition) y migración `20260916173711_Spec10SourcingSelection`. Pruebas: `SourcingSelectionTests` (8 unitarias) y `SourcingSelectionIntegrationTests` (4 SQL). Ruta de catálogo sin RFQ (REQ-06) queda para el bloque 3 | working-tree sobre 6e26b72 · CP-04 |
-| T-06 | Pendiente | — | — |
+| T-06 | Parcial | Propuesta y manifest: `SourcingProposal.cs` (`award-line/v1`, `award-candidate/v1`, `catalog-snapshot` set con digest `catalog-snapshots/v1`, `policy-evaluation-ref/v1`, `sourcing-proposal-version/v1` con nulabilidad cerrada por base y `sourcing-completeness-manifest/v1` como preimagen de su digest), `SourcingProposalService` (construye desde la evaluación congelada, las selecciones y el bundle/manifest de la request; partición por términos/moneda; consume la evaluación; replay idempotente estable), `SourcingEvaluationDocument.ReadFxRef`, migración `20260916191948_Spec10SourcingProposal` (append-only + CHECK de base) y endpoints. Pruebas: `SourcingProposalTests` (8 unitarias) y `SourcingProposalIntegrationTests` (3 SQL). Pendiente: `ISourcingPolicyFactProvider`+registry, `EvaluateEnterpriseSourcingAsync` y el adapter de Approval. | working-tree sobre 6e26b72 · CP-06 |
 | T-07 | Pendiente | — | — |
 | T-08 | Pendiente | — | — |
 | T-09 | Pendiente | — | — |
@@ -59,6 +59,10 @@
   - Tests ejecutados sobre el árbol estable: unitarias 265/265; integración completa 149/149 sobre SQL Server 2022 (22 de Sourcing); API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
   - Decisión interna: los facts se persisten antes de crear el caso, pero la carga de la evaluación Policy base y del manifest ocurre antes de persistir; una dependencia Policy ausente devuelve `409` sin dejar un waiver fantasma (verificado por prueba).
   - Pendiente inmediato: T-08 debe consumir la decisión verificada comparándola contra estos facts (revocación/cambio invalidan), y después el Bloque 3 (provider/manifest `SOURCING_PO`, adapter, award + `award-consumption/v1`) y el Bloque 4 (operación, fixtures, revisión independiente).
+- **CP-06 (2026-09-16 14:58 -0500) · T-06 parcial (propuesta `SOURCING_PO` y manifest)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+  - Tests ejecutados sobre el árbol estable: unitarias 273/273; integración completa 152/152 sobre SQL Server 2022 (25 de Sourcing); API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
+  - Decisión interna: el `evaluation_ref` de la propuesta es una ref de artefacto Sourcing `{content_digest,id,version}` (como el resto de artefactos del módulo) y `request_bundle_ref` es `policy-evaluation-ref/v1`, que es el único `policy_bundle_ref` del contrato; el fingerprint del comando de propuesta se calcula sobre entradas estables (evaluación, Supplier y líneas) para que el replay devuelva su versión.
+  - Pendiente de T-06: `ISourcingPolicyFactProvider`/registry con `sourcing-domain/sourcing-policy-facts/v1`, `EvaluateEnterpriseSourcingAsync` y despacho de `SOURCING_PO` en `/v1/policy/evaluate`, más el adapter `sourcing-policy-approval-adapter/v1`.
 
 ## Evidencia de aceptación
 
@@ -70,8 +74,8 @@
 | CA-04 | Parcial | Unitarias e integración: facts ligados al conteo recalculado, reducción rechazada sin cotizaciones, por encima del mínimo, por debajo del floor y sin allowance (`NOT_EXCEPTIONABLE`), prerequisite/caso inexistentes, append-only y CHECK de rango, submission con workload allowlisted y fallo cerrado sin evaluación Policy. Faltan la decisión real de `PROCUREMENT_APPROVER`, la reverificación Policy y el signal del owner. | SourcingWaiverFactsTests + SourcingWaiverIntegrationTests |
 | CA-05 | Parcial | Goldens unitarios (FX 12 decimales, `PRICE`, `DELIVERY_TIME` con cero, `WARRANTY` con cero, acotado 0–100, redondeo `ToEven`, empate conserva el conjunto, digest invariante a permutación) y unitarias de selección (recomendado sin justificación, desviación con justificación obligatoria, partición por Supplier/moneda/términos, línea repetida). Integración: documento persistido == preimagen del digest, versión consumida irreemplazable, FX y score manual con evidencia/quotation válida, selección recomendada y partición, versión esperada, sucesor append-only, restricción `supplier_ref` de la PR. Falta la evidencia API/E2E de la desviación justificada. | SourcingEvaluation*Tests + SourcingSelectionTests + SourcingSelectionIntegrationTests |
 | CA-06 | Pendiente | — | — |
-| CA-07 | Pendiente | — | — |
-| CA-08 | Pendiente | — | — |
+| CA-07 | Parcial | Unitarias de la propuesta y el manifest (digests estables, nulabilidad por base, sumas del candidato, refs FX) e integración del armado desde la evaluación y las selecciones con consumo de la evaluación y versión inmutable. Falta el despacho HTTP `SOURCING_PO`, el registry/provider tipado y el adapter de Approval. | SourcingProposalTests + SourcingProposalIntegrationTests |
+| CA-08 | Parcial | Integración: el manifest compromete líneas y bundle, la evaluación consumida no se reemplaza, el replay devuelve la versión y un writer directo no puede reescribir la versión escrita. Falta publish/supersede y la verificación `award-consumption/v1`. | SourcingProposalIntegrationTests |
 | CA-09 | Pendiente | — | — |
 | CA-10 | Pendiente | — | — |
 
