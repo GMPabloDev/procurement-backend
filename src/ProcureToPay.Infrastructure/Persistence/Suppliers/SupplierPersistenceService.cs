@@ -287,9 +287,43 @@ public sealed class SupplierPersistenceService(
             }
         }
 
+        var corruptedDigests = 0;
+        foreach (var supplier in suppliers)
+        {
+            if (supplier.OperationalVersion is null)
+            {
+                continue;
+            }
+
+            var row = await dbContext.SupplierVersions
+                .AsNoTracking()
+                .SingleOrDefaultAsync(
+                    version => version.SupplierId == supplier.Id &&
+                               version.Version == supplier.OperationalVersion,
+                    cancellationToken);
+            if (row is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                var view = SupplierSerialization.ReadView(row);
+                if (!SupplierCanonicalizer.MatchesContentDigest(view))
+                {
+                    corruptedDigests++;
+                }
+            }
+            catch (DomainException)
+            {
+                corruptedDigests++;
+            }
+        }
+
         return new SupplierDiagnostics(
             suppliers.Length,
             corruptedPointers,
+            corruptedDigests,
             await dbContext.SupplierAgreementAttachments
                 .AsNoTracking()
                 .CountAsync(row => row.State == (int)SupplierAgreementAttachmentState.Staged, cancellationToken));
@@ -358,4 +392,8 @@ public sealed class SupplierPersistenceService(
 }
 
 /// <summary>Read-only diagnostic of the Supplier module used by readiness (REQ-12).</summary>
-public sealed record SupplierDiagnostics(int Suppliers, int CorruptedPointers, int StagedAttachments);
+public sealed record SupplierDiagnostics(
+    int Suppliers,
+    int CorruptedPointers,
+    int CorruptedDigests,
+    int StagedAttachments);

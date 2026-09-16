@@ -268,6 +268,30 @@ public sealed class ApprovedSupplierCatalogGovernanceService(
             {
                 throw new DomainConflictException("The catalogue entry was modified by another command.");
             }
+
+            // R12 (revisión independiente): una revisión no puede trasladar la versión al selector de
+            // otra raíz, ni publicar un intervalo ACTIVE que solape la versión vigente del mismo
+            // selector (dos entradas ACTIVE efectivas dejarían el matching ambiguo).
+            if (!string.Equals(entry.SpendCategoryCode, spendCategoryRef.Code, StringComparison.Ordinal) ||
+                (entry.ProductId is null) != (productRef is null) ||
+                (entry.ProductId is not null && entry.ProductId != productRef!.Id))
+            {
+                throw new DomainValidationException(
+                    "A catalogue version must keep the exact selector of its root.");
+            }
+
+            if (entry.CurrentVersion > 0)
+            {
+                var current = await LoadVersionAsync(entry.Id, entry.CurrentVersion, cancellationToken);
+                if (current.Content.Status == ApprovedCatalogEntryStatus.Active &&
+                    status == ApprovedCatalogEntryStatus.Active &&
+                    content.ValidFrom < current.Content.ValidTo &&
+                    current.Content.ValidFrom < content.ValidTo)
+                {
+                    throw new DomainConflictException(
+                        "An active catalogue version of that selector already covers the requested window.");
+                }
+            }
         }
 
         var existingProposal = await dbContext.SupplierChangeProposals

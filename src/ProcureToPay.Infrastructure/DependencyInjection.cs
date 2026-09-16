@@ -281,7 +281,6 @@ public static class DependencyInjection
         // SPEC 09: Supplier Master, approved supplier catalog, its owners and the real processor of
         // the active-supplier prerequisite.
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierPersistenceService>();
-        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierGovernanceService>();
         services.AddScoped<
             ProcureToPay.Infrastructure.Persistence.Suppliers.ApprovedSupplierCatalogGovernanceService>();
         services.AddScoped<ProcureToPay.Application.Abstractions.IApprovedSupplierFactOwner>(provider =>
@@ -315,6 +314,7 @@ public static class DependencyInjection
             provider => new ProcureToPay.Infrastructure.Persistence.Suppliers.ConfigurationSupplierBankingKeyProvider(
                 configuration));
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierBankingService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierGovernanceService>();
         services.AddSingleton<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierProcessorIdentity>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierPrerequisiteProcessor>();
 

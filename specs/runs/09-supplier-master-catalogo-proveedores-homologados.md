@@ -70,6 +70,14 @@ Ejecutada sobre el commit base `e52e978` con el árbol limpio, antes de cualquie
 
 - Ninguno bloqueante. Véanse las desviaciones internas registradas en CP-01 y CP-02.
 
+### CP-03 — 2026-09-16 07:25 -0500 — Correcciones de la revisión independiente (ronda 1)
+
+- Tareas: T-01–T-08 verificadas tras las correcciones; CA-01–CA-08 cumplidos.
+- Cambios: provenance contractual en el provider v2 (R9); idempotencia durable y default diferido del banking con `SupplierBankingCommands` e `IsDefault` (R10); eliminación de `AccountHolder` en claro (R11); índice único del selector sin el filtro implícito y validación de selector/solape (R12); materialización atómica y `event_id` único (R13); autorización organizacional del catálogo, lecturas gobernadas y roles de lectura del master (R14); sondas de readiness (R15); migración `Spec09SupplierReviewFixes` y suite de endurecimiento (R16).
+- Tests y checks: build 0 errores; Unit `222/222`; Integración `125/125`; API/E2E `29/29`; `git diff --check` limpio; `specctl run-lint 09` válido.
+- HEAD: working tree sin commit sobre `2b6954e`; requiere nuevo commit del usuario antes de la ronda 2.
+- Próximo paso: commit de las correcciones y ronda diferencial de la revisión.
+
 ### CP-02 — 2026-09-15 19:05 -0500 — Catálogo, facts v2, adapter v4 y recorrido real certificados
 
 - Tareas: T-01–T-08 verificadas; CA-01–CA-08 cumplidos.
@@ -81,9 +89,22 @@ Ejecutada sobre el commit base `e52e978` con el árbol limpio, antes de cualquie
 
 ## Verificación independiente
 
-> **Resultado:** Pendiente
-> **Rondas:** 0/2
-> **Triaje:** Pendiente
-> **Modelo efectivo:** Pendiente
-> **Método:** Pendiente
-> **Fecha:** Pendiente
+> **Resultado:** BLOCK (ronda 1) → correcciones aplicadas, pendiente ronda 2
+> **Rondas:** 1/2
+> **Triaje:** R9–R16 aceptados y corregidos
+> **Modelo efectivo:** `sdd-implementation-reviewer` · `openai-codex/gpt-5.6-sol` · effort high
+> **Método:** revisión independiente de solo lectura sobre el candidato `2b6954e` (tree `820b6e4`), base `e52e978`, sin modificar archivos
+> **Fecha:** 2026-09-16
+
+### Ronda 1 — hallazgos y resolución
+
+| ID | Severidad | Regla | Decisión y corrección |
+|---|---|---|---|
+| R9 | blocker | REQ-09, CA-06 | Aceptado. El proveedor emite la provenance publicada `supplier-facts/<supplier_fact_snapshots_digest>#<line-id>/<snapshot_digest>`. Consecuencia declarada: como el digest del set es por versión de request, una línea retenida vuelve a ser material y exige task nueva, resultado que SPEC 06 REQ-08 admite expresamente («cualquier diferencia o duda crea task nueva»); la expectativa histórica de carry-forward en `Revision_supersedes_with_retained_added_lines_and_verified_materiality` se actualiza con esa justificación. Si el producto quiere conservar carry-forward, requiere un delta de SPEC 09 sobre REQ-09. |
+| R10 | blocker | REQ-05, NFR-03, CA-04 | Aceptado. `SupplierBankingCommands` persiste key y refs antes del sobre: un replay con la misma carga descifra la versión registrada y devuelve la misma referencia, y una carga distinta da `409`. El default dejó de moverse al guardar: se publica en `ApplyOperationalDefaultsAsync` cuando la versión del proveedor que la referencia queda aprobada. |
+| R11 | blocker | REQ-05, NFR-06, CA-04 | Aceptado. `AccountHolder` deja de ser columna en claro: vive solo dentro del plaintext AEAD. |
+| R12 | blocker | REQ-06, REQ-07, CA-05 | Aceptado en sus tres partes. El índice único del selector deja de llevar el filtro implícito `[ProductId] IS NOT NULL` (se reemplaza por un predicado simple siempre verdadero), y `SaveAsync` valida que la revisión conserve el selector exacto de su raíz y que una ventana ACTIVE no solape la versión vigente del mismo selector. |
+| R13 | blocker | REQ-03, REQ-11, NFR-03, CA-03 | Aceptado. La materialización corre en una sola transacción con lock del proveedor y relectura del proposal dentro de ella (reintento e instancias concurrentes no duplican versión); el outbox publica el mismo `event_id` en la fila y en el payload. |
+| R14 | blocker | REQ-07, REQ-11, CA-02, CA-08 | Aceptado. El catálogo lo administra `PROCUREMENT_BUYER` con assignment `ORGANIZATION` (el approver decide, no edita), las lecturas del master y del catálogo exigen assignment organizacional, y se añaden las lecturas gobernadas `GET entries/{id}` y `GET entries/{id}/history`. |
+| R15 | blocker | REQ-12, CA-08 | Aceptado. Readiness autentica cada sobre bancario almacenado, recompone el digest de la versión operacional, exige exactamente un fact owner y resuelve el storage de acuerdos con una sonda de lectura. |
+| R16 | blocker | CA-01/03/04/05/07/08 | Aceptado. Nueva suite `SupplierHardeningIntegrationTests` (6): carrera de dos writers, replay y conflicto del comando bancario con default diferido, selector duplicado/cambio de selector/solape, redelivery del resultado de approval con una sola versión, attempt terminal y processor sin registro, y corrupción detectada por el diagnóstico. Total de integración: 125 casos. |

@@ -141,6 +141,73 @@ public sealed class ApprovedSupplierCatalogController(
         return Ok(await catalog.ListEffectiveAsync(organizationId, DateTimeOffset.UtcNow, cancellationToken));
     }
 
+    [HttpGet("entries/{catalogEntryId:guid}")]
+    public async Task<ActionResult<CatalogEntryDetailResponse>> GetEntry(
+        Guid catalogEntryId,
+        CancellationToken cancellationToken)
+    {
+        var actor = await RequireActiveUserAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        await RequireProcurementOrAuditorAsync(actor.Id, cancellationToken);
+        var entry = await dbContext.ApprovedSupplierCatalogEntries
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                record => record.Id == catalogEntryId && record.OrganizationId == organizationId,
+                cancellationToken)
+            ?? throw new DomainNotFoundException("The catalogue entry is not visible.");
+        var current = entry.CurrentVersion == 0
+            ? null
+            : await catalog.LoadVersionAsync(entry.Id, entry.CurrentVersion, cancellationToken);
+        return Ok(new CatalogEntryDetailResponse(
+            entry.Id,
+            entry.CurrentVersion,
+            entry.SupplierId,
+            entry.SpendCategoryCode,
+            entry.ProductId,
+            current?.Content.NegotiatedPrice,
+            current?.Content.Currency,
+            current?.Content.UnitCode,
+            current?.Content.ExternalContractReference,
+            current?.Content.ValidFrom,
+            current?.Content.ValidTo,
+            current?.Content.EffectiveStatus(DateTimeOffset.UtcNow)));
+    }
+
+    [HttpGet("entries/{catalogEntryId:guid}/history")]
+    public async Task<ActionResult<IReadOnlyList<CatalogEntryHistoryEntry>>> History(
+        Guid catalogEntryId,
+        CancellationToken cancellationToken)
+    {
+        var actor = await RequireActiveUserAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        await RequireProcurementOrAuditorAsync(actor.Id, cancellationToken);
+        var exists = await dbContext.ApprovedSupplierCatalogEntries
+            .AsNoTracking()
+            .AnyAsync(
+                record => record.Id == catalogEntryId && record.OrganizationId == organizationId,
+                cancellationToken);
+        if (!exists)
+        {
+            throw new DomainNotFoundException("The catalogue entry is not visible.");
+        }
+
+        var rows = await dbContext.ApprovedSupplierCatalogVersions
+            .AsNoTracking()
+            .Where(record => record.CatalogEntryId == catalogEntryId)
+            .OrderBy(record => record.Version)
+            .ToArrayAsync(cancellationToken);
+        return Ok(rows.Select(record => new CatalogEntryHistoryEntry(
+            record.Version,
+            record.NegotiatedPrice,
+            record.Currency,
+            record.ValidFrom,
+            record.ValidTo,
+            record.Status == (int)ApprovedCatalogEntryStatus.Active ? "ACTIVE" : "INACTIVE",
+            record.PredecessorVersion,
+            record.OccurredAt,
+            record.Reason)).ToArray());
+    }
+
     [HttpGet("attachments/{attachmentId:guid}/download")]
     public async Task<ActionResult<AgreementDownloadResponse>> Download(
         Guid attachmentId,
@@ -170,16 +237,13 @@ public sealed class ApprovedSupplierCatalogController(
         return profile;
     }
 
+    /// <summary>
+    /// Only PROCUREMENT_BUYER of the organization administers the catalogue (SPEC 09 REQ-07): the
+    /// approver decides, it does not draft, and a narrower assignment never qualifies.
+    /// </summary>
     private async Task RequireProcurementAsync(Guid userId, CancellationToken cancellationToken)
     {
-        if (await dbContext.RoleAssignments
-                .AsNoTracking()
-                .AnyAsync(
-                    assignment => assignment.UserProfileId == userId &&
-                                  (assignment.Role == (int)SystemRole.ProcurementBuyer ||
-                                   assignment.Role == (int)SystemRole.ProcurementApprover) &&
-                                  assignment.Status == (int)AssignmentStatus.Active,
-                    cancellationToken))
+        if (await HasOrganizationRoleAsync(userId, [SystemRole.ProcurementBuyer], cancellationToken))
         {
             return;
         }
@@ -189,21 +253,31 @@ public sealed class ApprovedSupplierCatalogController(
 
     private async Task RequireProcurementOrAuditorAsync(Guid userId, CancellationToken cancellationToken)
     {
-        if (await dbContext.RoleAssignments
-                .AsNoTracking()
-                .AnyAsync(
-                    assignment => assignment.UserProfileId == userId &&
-                                  (assignment.Role == (int)SystemRole.ProcurementBuyer ||
-                                   assignment.Role == (int)SystemRole.ProcurementApprover ||
-                                   assignment.Role == (int)SystemRole.Auditor) &&
-                                  assignment.Status == (int)AssignmentStatus.Active,
-                    cancellationToken))
+        if (await HasOrganizationRoleAsync(
+                userId,
+                [
+                    SystemRole.ProcurementBuyer, SystemRole.ProcurementApprover, SystemRole.Auditor
+                ],
+                cancellationToken))
         {
             return;
         }
 
         throw new DomainForbiddenException("The actor cannot download the agreement attachment.");
     }
+
+    private Task<bool> HasOrganizationRoleAsync(
+        Guid userId,
+        SystemRole[] roles,
+        CancellationToken cancellationToken) =>
+        dbContext.RoleAssignments
+            .AsNoTracking()
+            .AnyAsync(
+                assignment => assignment.UserProfileId == userId &&
+                              roles.Contains((SystemRole)assignment.Role) &&
+                              assignment.Status == (int)AssignmentStatus.Active &&
+                              assignment.ScopeJson == "[{\"dimension\":\"ORGANIZATION\",\"reference\":null}]",
+                cancellationToken);
 
     private Task<Guid> OrganizationIdAsync(CancellationToken cancellationToken) =>
         dbContext.Organizations.AsNoTracking().Select(record => record.Id).SingleAsync(cancellationToken);
@@ -242,3 +316,28 @@ public sealed record ApprovedCatalogVersionResponse(
     Guid? ProposalId);
 
 public sealed record AgreementDownloadResponse(string Url);
+
+public sealed record CatalogEntryDetailResponse(
+    Guid CatalogEntryId,
+    int CurrentVersion,
+    Guid SupplierId,
+    string SpendCategoryCode,
+    Guid? ProductId,
+    decimal? NegotiatedPrice,
+    string? Currency,
+    string? UnitCode,
+    string? ExternalContractReference,
+    DateTimeOffset? ValidFrom,
+    DateTimeOffset? ValidTo,
+    string? EffectiveStatus);
+
+public sealed record CatalogEntryHistoryEntry(
+    int Version,
+    decimal NegotiatedPrice,
+    string Currency,
+    DateTimeOffset ValidFrom,
+    DateTimeOffset ValidTo,
+    string Status,
+    int? PredecessorVersion,
+    DateTimeOffset OccurredAt,
+    string Reason);

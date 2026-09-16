@@ -20,6 +20,7 @@ public static class SupplierModelConfiguration
         ConfigureBankingDetail(modelBuilder);
         ConfigureBankingVersion(modelBuilder);
         ConfigureBankingDefault(modelBuilder);
+        ConfigureBankingCommand(modelBuilder);
         ConfigureProposal(modelBuilder);
         ConfigureCatalogEntry(modelBuilder);
         ConfigureCatalogVersion(modelBuilder);
@@ -100,7 +101,7 @@ public static class SupplierModelConfiguration
         var entity = modelBuilder.Entity<SupplierBankingVersionRecord>();
         entity.ToTable("SupplierBankingVersions", Schema);
         entity.HasKey(record => new { record.BankingDetailId, record.Version });
-        entity.Property(record => record.AccountHolder).HasMaxLength(300).IsRequired();
+
         entity.Property(record => record.BankName).HasMaxLength(300).IsRequired();
         entity.Property(record => record.BankCountryCode).HasMaxLength(2).IsRequired();
         entity.Property(record => record.Currency).HasMaxLength(3).IsRequired();
@@ -120,6 +121,16 @@ public static class SupplierModelConfiguration
         entity.ToTable("SupplierBankingDefaults", Schema);
         entity.HasKey(record => new { record.SupplierId, record.Currency });
         entity.Property(record => record.Currency).HasMaxLength(3).IsRequired();
+    }
+
+    private static void ConfigureBankingCommand(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SupplierBankingCommandRecord>();
+        entity.ToTable("SupplierBankingCommands", Schema);
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.ChangeKey).HasMaxLength(128).IsRequired();
+        // One key per supplier identifies the attempt: a retry resolves to the same version.
+        entity.HasIndex(record => new { record.OrganizationId, record.SupplierId, record.ChangeKey }).IsUnique();
     }
 
     private static void ConfigureProposal(ModelBuilder modelBuilder)
@@ -150,9 +161,13 @@ public static class SupplierModelConfiguration
         entity.HasKey(record => record.Id);
         entity.Property(record => record.SpendCategoryCode).HasMaxLength(64).IsRequired();
         entity.Property(record => record.RowVersion).IsRowVersion();
-        // REQ-06: one root per exact selector (supplier, category, optional product).
+        // REQ-06: one root per exact selector (supplier, category, optional product). EF would add
+        // an implicit "ProductId IS NOT NULL" filter that would let several general entries coexist,
+        // so the filter is replaced by a simple always-true predicate (a filtered index only admits
+        // simple comparisons, and a unique index treats two NULL products as duplicates).
         entity.HasIndex(record => new { record.OrganizationId, record.SupplierId, record.SpendCategoryCode, record.ProductId })
-            .IsUnique();
+            .IsUnique()
+            .HasFilter("[OrganizationId] IS NOT NULL");
     }
 
     private static void ConfigureCatalogVersion(ModelBuilder modelBuilder)

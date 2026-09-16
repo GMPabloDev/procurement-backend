@@ -92,8 +92,9 @@ public sealed class SupplierBankingService(
     };
 
     /// <summary>
-    /// Appends one encrypted banking version and, when requested, makes it the default of its
-    /// currency. The caller never supplies ciphertext, nonce, tag, key version or the masked suffix.
+    /// Appends one encrypted banking version. The command key is persisted before the envelope, so a
+    /// retry with the same payload replays the same version and a different payload is a conflict
+    /// (REQ-05, NFR-03). The default is only published when the version becomes operational.
     /// </summary>
     public async Task<SupplierBankingRef> SaveAsync(
         Guid organizationId,
@@ -142,6 +143,39 @@ public sealed class SupplierBankingService(
             throw new DomainNotFoundException("The supplier does not exist in this organization.");
         }
 
+        var plaintext = NormalizedForStorage(content);
+        var canonical = plaintext.CanonicalJson();
+
+        // Replay: the attempt row already exists for this key.
+        var attempt = await dbContext.SupplierBankingCommands
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                record => record.OrganizationId == organizationId &&
+                          record.SupplierId == supplierId &&
+                          record.ChangeKey == changeKey,
+                cancellationToken);
+        if (attempt is not null)
+        {
+            var recorded = await dbContext.SupplierBankingVersions
+                .AsNoTracking()
+                .SingleAsync(
+                    record => record.BankingDetailId == attempt.BankingDetailId &&
+                              record.Version == attempt.Version,
+                    cancellationToken);
+            var recordedPlaintext = keys.Decrypt(
+                recorded.Ciphertext,
+                recorded.Nonce,
+                recorded.Tag,
+                AssociatedData(organizationId, supplierId, recorded.BankingDetailId, recorded.Version));
+            if (!string.Equals(recordedPlaintext, canonical, StringComparison.Ordinal))
+            {
+                throw new DomainConflictException(
+                    "The banking command key was already used with a different payload.");
+            }
+
+            return new SupplierBankingRef(recorded.BankingDetailId, recorded.Version);
+        }
+
         var detailId = bankingDetailId ?? Guid.NewGuid();
         var latest = await dbContext.SupplierBankingVersions
             .Where(row => row.BankingDetailId == detailId && row.OrganizationId == organizationId)
@@ -162,21 +196,22 @@ public sealed class SupplierBankingService(
             throw new DomainNotFoundException("The banking detail does not exist in this organization.");
         }
 
+        await EnsureSingleDefaultPerCurrencyAsync(
+            organizationId, supplierId, detailId, version, plaintext, cancellationToken);
         var associatedData = AssociatedData(organizationId, supplierId, detailId, version);
-        var plaintext = NormalizedForStorage(content);
-        var ciphertext = keys.Encrypt(plaintext.CanonicalJson(), associatedData, out var nonce, out var tag);
+        var ciphertext = keys.Encrypt(canonical, associatedData, out var nonce, out var tag);
         var record = new SupplierBankingVersionRecord
         {
             BankingDetailId = detailId,
             Version = version,
             OrganizationId = organizationId,
             SupplierId = supplierId,
-            AccountHolder = plaintext.AccountHolder,
             BankName = plaintext.BankName,
             BankCountryCode = plaintext.BankCountryCode,
             Currency = plaintext.Currency,
             AccountType = (int)plaintext.AccountType,
             MaskedSuffix = Mask(plaintext),
+            IsDefault = plaintext.IsDefault,
             Ciphertext = ciphertext,
             Nonce = nonce,
             Tag = tag,
@@ -188,29 +223,17 @@ public sealed class SupplierBankingService(
             ChangeKey = changeKey
         };
         dbContext.SupplierBankingVersions.Add(record);
-        if (plaintext.IsDefault)
+        dbContext.SupplierBankingCommands.Add(new SupplierBankingCommandRecord
         {
-            var current = await dbContext.SupplierBankingDefaults
-                .SingleOrDefaultAsync(
-                    row => row.SupplierId == supplierId && row.Currency == plaintext.Currency,
-                    cancellationToken);
-            if (current is null)
-            {
-                dbContext.SupplierBankingDefaults.Add(new SupplierBankingDefaultRecord
-                {
-                    SupplierId = supplierId,
-                    Currency = plaintext.Currency,
-                    BankingDetailId = detailId,
-                    Version = version
-                });
-            }
-            else
-            {
-                current.BankingDetailId = detailId;
-                current.Version = version;
-            }
-        }
-
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            SupplierId = supplierId,
+            ChangeKey = changeKey,
+            BankingDetailId = detailId,
+            Version = version,
+            ActorUserId = actorUserId,
+            CreatedAt = record.OccurredAt
+        });
         persistence.AddAudit(
             organizationId, SupplierCodes.ActionUpdated, Actor(actorUserId), null,
             ["banking_details"], correlationReference, $"{changeKey}:banking",
@@ -222,6 +245,103 @@ public sealed class SupplierBankingService(
             "Supplier {SupplierId} banking detail {DetailId} version {Version} stored.",
             supplierId, detailId, version);
         return new SupplierBankingRef(detailId, version);
+    }
+
+    /// <summary>
+    /// Publishes the defaults of an operational supplier version (REQ-05): the effective default of a
+    /// currency is the flagged version the approved supplier references, so a staged envelope never
+    /// becomes the default of the organization.
+    /// </summary>
+    public async Task ApplyOperationalDefaultsAsync(
+        Guid organizationId,
+        Guid supplierId,
+        IEnumerable<SupplierBankingRef> references,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(references);
+        var materialized = references.ToArray();
+        var current = await dbContext.SupplierBankingDefaults
+            .Where(row => row.SupplierId == supplierId)
+            .ToArrayAsync(cancellationToken);
+        foreach (var row in current)
+        {
+            if (!materialized.Any(reference =>
+                    reference.Id == row.BankingDetailId && reference.Version == row.Version))
+            {
+                dbContext.SupplierBankingDefaults.Remove(row);
+            }
+        }
+
+        foreach (var reference in materialized)
+        {
+            var stored = await dbContext.SupplierBankingVersions
+                .AsNoTracking()
+                .SingleOrDefaultAsync(
+                    row => row.BankingDetailId == reference.Id && row.Version == reference.Version &&
+                           row.OrganizationId == organizationId,
+                    cancellationToken)
+                ?? throw new SupplierDependencyUnavailableException(
+                    "The banking version referenced by the approved supplier does not exist.");
+            if (!stored.IsDefault)
+            {
+                continue;
+            }
+
+            var existing = await dbContext.SupplierBankingDefaults
+                .SingleOrDefaultAsync(
+                    row => row.SupplierId == supplierId && row.Currency == stored.Currency,
+                    cancellationToken);
+            if (existing is null)
+            {
+                dbContext.SupplierBankingDefaults.Add(new SupplierBankingDefaultRecord
+                {
+                    SupplierId = supplierId,
+                    Currency = stored.Currency,
+                    BankingDetailId = stored.BankingDetailId,
+                    Version = stored.Version
+                });
+            }
+            else
+            {
+                existing.BankingDetailId = stored.BankingDetailId;
+                existing.Version = stored.Version;
+            }
+        }
+    }
+
+    /// <summary>
+    /// At most one default per currency across the accounts a supplier version references (REQ-05):
+    /// the incoming flag must not collide with another referenced account of the same currency.
+    /// </summary>
+    private async Task EnsureSingleDefaultPerCurrencyAsync(
+        Guid organizationId,
+        Guid supplierId,
+        Guid detailId,
+        int version,
+        SupplierBankingContent content,
+        CancellationToken cancellationToken)
+    {
+        if (!content.IsDefault)
+        {
+            return;
+        }
+
+        var rows = await dbContext.SupplierBankingVersions
+            .AsNoTracking()
+            .Where(row => row.OrganizationId == organizationId && row.SupplierId == supplierId)
+            .ToArrayAsync(cancellationToken);
+        var latestByDetail = rows
+            .GroupBy(row => row.BankingDetailId)
+            .Select(group => group.OrderByDescending(row => row.Version).First())
+            .Where(row => !(row.BankingDetailId == detailId && row.Version == version))
+            .ToArray();
+        var conflict = latestByDetail.Any(row =>
+            row.IsDefault && string.Equals(row.Currency, content.Currency, StringComparison.Ordinal));
+        if (conflict)
+        {
+            throw new DomainConflictException(
+                "Another banking detail of this supplier is already the default of that currency.");
+        }
     }
 
     /// <summary>Masked current projection of one supplier: never carries the account number.</summary>

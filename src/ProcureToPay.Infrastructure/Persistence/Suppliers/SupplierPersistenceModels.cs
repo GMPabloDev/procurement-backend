@@ -93,12 +93,14 @@ public sealed class SupplierBankingVersionRecord
     public int Version { get; set; }
     public Guid OrganizationId { get; set; }
     public Guid SupplierId { get; set; }
-    public string AccountHolder { get; set; } = null!;
+    // R11 (revisión independiente): el titular forma parte del plaintext bancario cifrado y no se
+    // persiste en claro; solo metadata no secreta acompaña al sobre.
     public string BankName { get; set; } = null!;
     public string BankCountryCode { get; set; } = null!;
     public string Currency { get; set; } = null!;
     public int AccountType { get; set; }
     public string MaskedSuffix { get; set; } = null!;
+    public bool IsDefault { get; set; }
     public byte[] Ciphertext { get; set; } = [];
     public byte[] Nonce { get; set; } = [];
     public byte[] Tag { get; set; } = [];
@@ -110,6 +112,22 @@ public sealed class SupplierBankingVersionRecord
     public string ChangeKey { get; set; } = null!;
 
     public SupplierBankingDetailRecord Detail { get; set; } = null!;
+}
+
+/// <summary>
+/// Durable attempt of one banking command (REQ-05): the key and the referenced version are
+/// persisted before the envelope, so a retry replays the same version or refuses a different payload.
+/// </summary>
+public sealed class SupplierBankingCommandRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid SupplierId { get; set; }
+    public string ChangeKey { get; set; } = null!;
+    public Guid BankingDetailId { get; set; }
+    public int Version { get; set; }
+    public Guid ActorUserId { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
 }
 
 /// <summary>Current default account of one supplier and currency; at most one row per pair (REQ-05).</summary>

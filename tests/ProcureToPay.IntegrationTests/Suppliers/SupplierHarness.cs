@@ -156,8 +156,11 @@ public sealed class SupplierHarness : IAsyncDisposable
         var submissions = new ApprovalSubmissionService(
             context, adapters, ownerWorkloads, allowlist, assignmentEngine,
             NullLogger<ApprovalSubmissionService>.Instance);
+        var keys = new ConfigurationSupplierBankingKeyProvider(configuration);
+        var banking = new SupplierBankingService(
+            context, persistence, keys, NullLogger<SupplierBankingService>.Instance);
         var governance = new SupplierGovernanceService(
-            context, persistence, submissions, configuration,
+            context, persistence, submissions, banking, configuration,
             NullLogger<SupplierGovernanceService>.Instance);
         var storageProvider = new ServiceCollection()
             .AddSingleton<IFileStorage>(Storage)
@@ -170,9 +173,6 @@ public sealed class SupplierHarness : IAsyncDisposable
                 new ProductReferenceOwner()
             ]),
             storageProvider, configuration, NullLogger<ApprovedSupplierCatalogGovernanceService>.Instance);
-        var keys = new ConfigurationSupplierBankingKeyProvider(configuration);
-        var banking = new SupplierBankingService(
-            context, persistence, keys, NullLogger<SupplierBankingService>.Instance);
         var workflow = new ApprovalWorkflowService(
             context, allowlist, assignmentEngine, NullLogger<ApprovalWorkflowService>.Instance);
         var processor = new SupplierPrerequisiteProcessor(
@@ -277,6 +277,81 @@ public sealed class SupplierHarness : IAsyncDisposable
         var outcome = await DispatchResultsAsync(cancellationToken);
         await AssertDeliveryAsync(outcome, cancellationToken);
         return task.Id;
+    }
+
+    /// <summary>Decides the pending task without dispatching, so a test can replay the delivery.</summary>
+    public async Task<Guid> DecideFirstPendingAsyncCoreAsync(CancellationToken cancellationToken)
+    {
+        await using var context = CreateContext();
+        var task = await context.ApprovalTasks
+            .AsNoTracking()
+            .Where(record => record.Status == (int)ApprovalTaskStatus.Pending)
+            .OrderBy(record => record.Id)
+            .FirstAsync(cancellationToken);
+        var assignment = await context.ApprovalAssignments
+            .AsNoTracking()
+            .SingleAsync(record => record.TaskId == task.Id && record.ReleasedAt == null, cancellationToken);
+        var services = CreateServices(context);
+        await new ApprovalDecisionService(
+                context, services.AssignmentEngine, NullLogger<ApprovalDecisionService>.Instance)
+            .DecideAsync(
+                new ApprovalDecisionCommand(
+                    task.Id, ApprovalDecisionAction.Approve, "Approved by the hardening suite",
+                    $"decide-{Guid.NewGuid():N}", task.Version, assignment.AssigneeUserId, "corr-decision"),
+                DateTimeOffset.UtcNow,
+                cancellationToken);
+        return task.Id;
+    }
+
+    /// <summary>
+    /// Redelivers the newest recorded outbox event by clearing its delivery checkpoint, which is the
+    /// at-least-once redelivery a real dispatcher performs after a lost acknowledgement (REQ-03).
+    /// </summary>
+    public async Task<ApprovalDispatchOutcome> RedispatchLastEventAsync(CancellationToken cancellationToken)
+    {
+        await using (var reset = CreateContext())
+        {
+            var eventId = await reset.ApprovalOutboxEvents
+                .AsNoTracking()
+                .OrderByDescending(record => record.CreatedAt)
+                .Select(record => record.Id)
+                .FirstAsync(cancellationToken);
+            await reset.Database.ExecuteSqlRawAsync(
+                "UPDATE [Approval].[ApprovalOutboxEvents] SET [State] = 0, [DeliveredAt] = NULL, " +
+                "[NextAttemptAt] = SYSUTCDATETIME(), [LockedUntil] = NULL, [LockOwner] = NULL " +
+                "WHERE [Id] = {0}",
+                [eventId],
+                cancellationToken);
+        }
+
+        return await DispatchResultsAsync(cancellationToken);
+    }
+
+    /// <summary>Activates the policy that requires an active supplier for every covered line.</summary>
+    public async Task ActivatePolicyAsync(ProcureToPayDbContext context, CancellationToken cancellationToken)
+    {
+        var policy = new PolicySetVersion(Guid.NewGuid(), OrganizationId, 1, [PolicyScope.Line, PolicyScope.Request]);
+        policy.AddRule(new PolicyRule(
+            "ACTIVE_SUPPLIER",
+            PolicyScope.Line,
+            [],
+            [new PolicyEffect(PolicyEffectType.RequireActiveSupplier, "ACTIVE_SUPPLIER")]));
+        policy.AddRule(new PolicyRule(
+            "LINE_FALLBACK", PolicyScope.Line, [], [new PolicyEffect(PolicyEffectType.Allow, "LINE_ALLOW")],
+            isFallback: true));
+        policy.AddRule(new PolicyRule(
+            "REQUEST_FALLBACK", PolicyScope.Request, [],
+            [new PolicyEffect(PolicyEffectType.Allow, "REQUEST_ALLOW")], isFallback: true));
+        policy.Publish(PolicyCanonicalizer.ComputePolicyDigest(policy));
+        var persistence = new PolicyPersistenceService(context);
+        var actor = new PolicyActor("USER", BuyerId);
+        var appended = await persistence.AppendVersionAsync(
+            policy, DateTimeOffset.UtcNow, actor, "Supplier hardening policy", "corr-policy-append",
+            cancellationToken);
+        await persistence.ActivateAsync(
+            OrganizationId, appended.Id, DateTimeOffset.UtcNow.AddSeconds(1), actor,
+            "Activate supplier hardening policy", "corr-policy-activate", cancellationToken);
+        await Task.Delay(TimeSpan.FromMilliseconds(1_100), cancellationToken);
     }
 
     /// <summary>Decides and returns the delivery outcome so a test can assert it explicitly.</summary>

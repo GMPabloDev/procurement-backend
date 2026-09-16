@@ -116,8 +116,16 @@ public sealed class SupplierController(
         var projection = await governance.ReadProjectionAsync(organizationId, supplierId, cancellationToken);
         var operational = projection.Operational;
         var role = await HighestBusinessRoleAsync(actor.Id, cancellationToken);
-        if (role is SystemRole.ApSpecialist or SystemRole.Auditor or SystemRole.ProcurementBuyer or
-            SystemRole.ProcurementApprover)
+        var organizationScoped = await HasAnyOrganizationRoleAsync(
+            actor.Id,
+            [
+                SystemRole.ApSpecialist, SystemRole.Auditor, SystemRole.ProcurementBuyer,
+                SystemRole.ProcurementApprover
+            ],
+            cancellationToken);
+        if (organizationScoped &&
+            role is SystemRole.ApSpecialist or SystemRole.Auditor or SystemRole.ProcurementBuyer or
+                SystemRole.ProcurementApprover)
         {
             return Ok(new SupplierDetailResponse(
                 supplierId,
@@ -260,7 +268,7 @@ public sealed class SupplierController(
 
     private async Task RequireProcurementOrAuditorAsync(Guid userId, CancellationToken cancellationToken)
     {
-        if (await HasAnyRoleAsync(
+        if (await HasAnyOrganizationRoleAsync(
                 userId,
                 [SystemRole.ProcurementBuyer, SystemRole.ProcurementApprover, SystemRole.Auditor],
                 cancellationToken))
@@ -273,7 +281,7 @@ public sealed class SupplierController(
 
     private async Task RequireProcurementApOrAuditorAsync(Guid userId, CancellationToken cancellationToken)
     {
-        if (await HasAnyRoleAsync(
+        if (await HasAnyOrganizationRoleAsync(
                 userId,
                 [
                     SystemRole.ProcurementBuyer, SystemRole.ProcurementApprover, SystemRole.ApSpecialist,
@@ -287,7 +295,11 @@ public sealed class SupplierController(
         throw new DomainForbiddenException("The actor cannot read the supplier banking projection.");
     }
 
-    private Task<bool> HasAnyRoleAsync(
+    /// <summary>
+    /// Role with an organization assignment (SPEC 09 REQ-11): the master and the banking projection
+    /// are organization-scoped, so a narrower assignment never grants them.
+    /// </summary>
+    private Task<bool> HasAnyOrganizationRoleAsync(
         Guid userId,
         SystemRole[] roles,
         CancellationToken cancellationToken) =>
@@ -296,7 +308,8 @@ public sealed class SupplierController(
             .AnyAsync(
                 assignment => assignment.UserProfileId == userId &&
                               roles.Contains((SystemRole)assignment.Role) &&
-                              assignment.Status == (int)AssignmentStatus.Active,
+                              assignment.Status == (int)AssignmentStatus.Active &&
+                              assignment.ScopeJson == "[{\"dimension\":\"ORGANIZATION\",\"reference\":null}]",
                 cancellationToken);
 
     private async Task<SystemRole> HighestBusinessRoleAsync(Guid userId, CancellationToken cancellationToken)

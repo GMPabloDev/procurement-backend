@@ -25,6 +25,9 @@ public sealed class SupplierHealthCheck(
     /// <summary>Budget of one due attempt before readiness degrades (REQ-10, NFR-05).</summary>
     public static readonly TimeSpan DueBudget = TimeSpan.FromSeconds(60);
 
+    private static ProcureToPayDbContext dbContextSupplier(IServiceScope scope) =>
+        scope.ServiceProvider.GetRequiredService<ProcureToPayDbContext>();
+
     public async Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context,
         CancellationToken cancellationToken = default)
@@ -65,20 +68,60 @@ public sealed class SupplierHealthCheck(
                 reasons.Add($"POLICY_REFERENCE_CATALOG_UNAVAILABLE:{SupplierPolicyReferenceCatalog.Catalog}");
             }
 
-            var factOwner = scope.ServiceProvider.GetService<IApprovedSupplierFactOwner>();
-            if (factOwner is null ||
-                !string.Equals(factOwner.OwnerId, SupplierCodes.ApprovedSupplierFactOwnerId, StringComparison.Ordinal))
+            var factOwners = scope.ServiceProvider.GetServices<IApprovedSupplierFactOwner>().ToArray();
+            if (factOwners.Length != 1 ||
+                !string.Equals(
+                    factOwners[0].OwnerId, SupplierCodes.ApprovedSupplierFactOwnerId, StringComparison.Ordinal))
             {
                 reasons.Add("APPROVED_SUPPLIER_CATALOG_CORRUPTED");
             }
 
+            ISupplierBankingKeyProvider? keyProvider = null;
             try
             {
-                _ = scope.ServiceProvider.GetRequiredService<ISupplierBankingKeyProvider>().KeyVersion;
+                keyProvider = scope.ServiceProvider.GetRequiredService<ISupplierBankingKeyProvider>();
+                _ = keyProvider.KeyVersion;
             }
-            catch (DomainException)
+            catch (Exception)
             {
                 reasons.Add("SUPPLIER_ENCRYPTION_UNAVAILABLE");
+            }
+
+            // R15: an authenticated probe of every stored envelope proves the key can actually open
+            // what the deployment persisted; a tampered ciphertext, nonce or tag degrades readiness.
+            if (keyProvider is not null)
+            {
+                var envelopes = await dbContextSupplier(scope).SupplierBankingVersions
+                    .AsNoTracking()
+                    .Select(record => new
+                    {
+                        record.OrganizationId,
+                        record.SupplierId,
+                        record.BankingDetailId,
+                        record.Version,
+                        record.Ciphertext,
+                        record.Nonce,
+                        record.Tag
+                    })
+                    .ToArrayAsync(cancellationToken);
+                foreach (var envelope in envelopes)
+                {
+                    try
+                    {
+                        _ = keyProvider.Decrypt(
+                            envelope.Ciphertext,
+                            envelope.Nonce,
+                            envelope.Tag,
+                            SupplierBankingService.AssociatedData(
+                                envelope.OrganizationId, envelope.SupplierId,
+                                envelope.BankingDetailId, envelope.Version));
+                    }
+                    catch (Exception)
+                    {
+                        reasons.Add("SUPPLIER_DATA_CORRUPTED");
+                        break;
+                    }
+                }
             }
 
             var adapters = scope.ServiceProvider.GetRequiredService<IApprovalSubmissionAdapterRegistry>();
@@ -110,8 +153,14 @@ public sealed class SupplierHealthCheck(
                 reasons.Add("ACTIVE_SUPPLIER_PROCESSOR_UNAVAILABLE");
             }
 
-            var attachmentStorage = scope.ServiceProvider.GetService<IFileStorage>();
-            if (attachmentStorage is null)
+            try
+            {
+                var attachmentStorage = scope.ServiceProvider.GetRequiredService<IFileStorage>();
+                // A read-only probe of the object storage: generating a URL never touches the network
+                // but proves the storage implementation is configured and usable.
+                _ = attachmentStorage.GenerateTemporaryDownloadUrl("supplier-health/probe");
+            }
+            catch (Exception)
             {
                 reasons.Add("SUPPLIER_ATTACHMENT_STORAGE_UNAVAILABLE");
             }
@@ -120,7 +169,7 @@ public sealed class SupplierHealthCheck(
             var diagnostics = await new SupplierPersistenceService(
                     dbContext, Microsoft.Extensions.Logging.Abstractions.NullLogger<SupplierPersistenceService>.Instance)
                 .DiagnoseAsync(cancellationToken);
-            if (diagnostics.CorruptedPointers > 0)
+            if (diagnostics.CorruptedPointers > 0 || diagnostics.CorruptedDigests > 0)
             {
                 reasons.Add("SUPPLIER_DATA_CORRUPTED");
             }

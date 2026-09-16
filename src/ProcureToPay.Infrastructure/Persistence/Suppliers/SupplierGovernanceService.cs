@@ -29,6 +29,7 @@ public sealed class SupplierGovernanceService(
     ProcureToPayDbContext dbContext,
     SupplierPersistenceService persistence,
     ApprovalSubmissionService approvalSubmissions,
+    SupplierBankingService banking,
     IConfiguration configuration,
     ILogger<SupplierGovernanceService> logger)
 {
@@ -414,6 +415,12 @@ public sealed class SupplierGovernanceService(
         DateTimeOffset occurredAt,
         CancellationToken cancellationToken = default)
     {
+        // R13 (revisión independiente): la aplicación de un resultado es una sola unidad atómica y
+        // reentrante: el lock del proveedor y la relectura del proposal dentro de la transacción
+        // impiden que un reintento o dos instancias materialicen dos versiones distintas.
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await SupplierPersistenceService.AcquireSupplierLockAsync(
+            dbContext, organizationId, supplierId, cancellationToken);
         var proposal = await dbContext.SupplierChangeProposals
             .SingleOrDefaultAsync(
                 row => row.Id == proposalId && row.OrganizationId == organizationId &&
@@ -456,6 +463,7 @@ public sealed class SupplierGovernanceService(
                 Target(SupplierCodes.TargetSupplier, supplierId, candidateVersion),
                 occurredAt);
             await persistence.SaveAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
             logger.LogInformation(
                 "Supplier {SupplierId} proposal {ProposalId} closed as {Result}.",
                 supplierId, proposalId, result);
@@ -473,7 +481,8 @@ public sealed class SupplierGovernanceService(
             SupplierApprovalTargets.ChangeKindCode(SupplierChangeKind.StatusChange), proposal.ChangeKey,
             decisionActorUserId ?? Guid.Empty, candidate.Reason, occurredAt, "approval");
         approved.ApprovalCaseId = proposal.ApprovalCaseId;
-        // The materialized version must exist before the approved pointer references it.
+        // The materialized version must exist before the approved pointer references it, and both
+        // steps stay inside one transaction so a crash never leaves an orphan version.
         await persistence.SaveAsync(cancellationToken);
         var previousStatus = (SupplierOperationalStatus?)null;
         if (root.OperationalVersion is not null)
@@ -481,23 +490,29 @@ public sealed class SupplierGovernanceService(
             previousStatus = (SupplierOperationalStatus)(
                 await RequireVersionRowAsync(supplierId, root.OperationalVersion.Value, cancellationToken)).Status;
         }
+
         root.OperationalVersion = latest + 1;
         root.WorkingProposalId = null;
         proposal.State = (int)SupplierProposalState.Approved;
         proposal.UpdatedAt = occurredAt;
         await RecordIdentityAsync(root, materialized, organizationId, latest + 1, cancellationToken);
+        await banking.ApplyOperationalDefaultsAsync(
+            organizationId, supplierId, materialized.BankingRefs, cancellationToken);
+        var eventId = Guid.NewGuid();
         dbContext.SupplierStatusOutbox.Add(new SupplierStatusOutboxRecord
         {
-            EventId = Guid.NewGuid(),
+            EventId = eventId,
             OrganizationId = organizationId,
             SupplierId = supplierId,
             SupplierVersion = latest + 1,
             PreviousStatus = previousStatus is null ? null : (int)previousStatus.Value,
             Status = (int)requested,
             OccurredAt = occurredAt,
+            // The payload publishes the same event identity as the row so a consumer can deduplicate
+            // exactly once by event id (REQ-10).
             PayloadJson = new SupplierStatusChangedEvent(
                 SupplierCodes.SupplierStatusChangedContract,
-                Guid.NewGuid(),
+                eventId,
                 occurredAt,
                 organizationId,
                 previousStatus,
@@ -510,6 +525,7 @@ public sealed class SupplierGovernanceService(
             SupplierPersistenceService.ReadSensitiveFields(proposal.SensitiveFieldsJson), "approval",
             effectKey, Target(SupplierCodes.TargetSupplier, supplierId, latest + 1), occurredAt);
         await persistence.SaveAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         logger.LogInformation(
             "Supplier {SupplierId} version {Version} materialized as {Status}.",
             supplierId, latest + 1, SupplierStatusCodes.Code(requested));

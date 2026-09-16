@@ -387,8 +387,12 @@ public sealed class SupplierE2ETests
         {
             var persistence = new SupplierPersistenceService(
                 context, Microsoft.Extensions.Logging.Abstractions.NullLogger<SupplierPersistenceService>.Instance);
+            var banking = new SupplierBankingService(
+                context, persistence,
+                new ConfigurationSupplierBankingKeyProvider(configuration),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<SupplierBankingService>.Instance);
             return new SupplierGovernanceService(
-                context, persistence, ApprovalSubmissionServices(context, configuration), configuration,
+                context, persistence, ApprovalSubmissionServices(context, configuration), banking, configuration,
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<SupplierGovernanceService>.Instance);
         }
 
@@ -416,6 +420,8 @@ public sealed class SupplierE2ETests
         private static IConfiguration Configuration() => new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
+                ["Supplier:Banking:KeyBase64"] = TestApiFactory.BankingKeyBase64,
+                ["Supplier:Banking:KeyVersion"] = "e2e-v1",
                 ["Approval:Workloads:0:Issuer"] = "internal://procure-to-pay",
                 ["Approval:Workloads:0:ClientId"] = SupplierCodes.SupplierOwnerId,
                 ["Approval:OwnerWorkloads:0:AdapterId"] = SupplierCodes.ActiveSupplierOwnerAdapterId,
@@ -541,9 +547,13 @@ public sealed class SupplierE2ETests
                     cancellationToken);
             var persistence = new SupplierPersistenceService(
                 context, Microsoft.Extensions.Logging.Abstractions.NullLogger<SupplierPersistenceService>.Instance);
+            var banking = new SupplierBankingService(
+                context, persistence,
+                new ConfigurationSupplierBankingKeyProvider(configuration),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<SupplierBankingService>.Instance);
             var governance = new SupplierGovernanceService(
                 context, persistence,
-                SupplierEnvironment.ApprovalSubmissionServices(context, configuration), configuration,
+                SupplierEnvironment.ApprovalSubmissionServices(context, configuration), banking, configuration,
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<SupplierGovernanceService>.Instance);
             var storageProvider = new ServiceCollection()
                 .AddSingleton<IFileStorage, InMemoryAgreementStorage>()
@@ -632,7 +642,7 @@ public sealed class SupplierE2ETests
                     ["Approval:OwnerWorkloads:0:ClientId"] = SupplierCodes.ActiveSupplierProcessorId,
                     ["Policy:Workloads:0:Issuer"] = "internal://procure-to-pay",
                     ["Policy:Workloads:0:ClientId"] = "purchase-request-domain",
-                    ["Supplier:Banking:KeyBase64"] = SupplierHarnessKey,
+                    ["Supplier:Banking:KeyBase64"] = BankingKeyBase64,
                     ["Supplier:Banking:KeyVersion"] = "e2e-v1"
                 });
             });
@@ -659,6 +669,6 @@ public sealed class SupplierE2ETests
             });
         }
 
-        private const string SupplierHarnessKey = "F0oXa2lQ0Z4c7pM6sT9uVwYx1B3dE5gH7jK9mN1pQ3s=";
+        internal const string BankingKeyBase64 = "F0oXa2lQ0Z4c7pM6sT9uVwYx1B3dE5gH7jK9mN1pQ3s=";
     }
 }

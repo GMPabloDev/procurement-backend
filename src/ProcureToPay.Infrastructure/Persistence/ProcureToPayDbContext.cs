@@ -93,6 +93,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<SupplierBankingDetailRecord> SupplierBankingDetails => Set<SupplierBankingDetailRecord>();
     public DbSet<SupplierBankingVersionRecord> SupplierBankingVersions => Set<SupplierBankingVersionRecord>();
     public DbSet<SupplierBankingDefaultRecord> SupplierBankingDefaults => Set<SupplierBankingDefaultRecord>();
+    public DbSet<SupplierBankingCommandRecord> SupplierBankingCommands => Set<SupplierBankingCommandRecord>();
     public DbSet<SupplierChangeProposalRecord> SupplierChangeProposals => Set<SupplierChangeProposalRecord>();
     public DbSet<ApprovedSupplierCatalogEntryRecord> ApprovedSupplierCatalogEntries =>
         Set<ApprovedSupplierCatalogEntryRecord>();

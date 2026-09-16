@@ -158,13 +158,11 @@ public sealed class PurchaseRequestPolicyFactProvider(
                 reference.Version,
                 facts,
                 manifest.ReferenceAttestationDigest,
-                // The provenance of both supplier facts points at the frozen catalogue decision,
-                // not at the attestation instant: a retained line keeps its materiality digest when
-                // neither its content nor the catalogue state changed, so SPEC 04 carry-forward is
-                // preserved instead of being invalidated by every re-attestation (SPEC 06 REQ-08).
+                // Exact provenance published by SPEC 09 REQ-09: the frozen supplier fact snapshot
+                // set of the request version plus the snapshot of this line.
                 supplierSnapshot is null
                     ? null
-                    : $"supplier-facts/{supplierSnapshot.CatalogContentDigest ?? "NONE"}#{reference.Id:D}");
+                    : $"supplier-facts/{supplierFactSnapshotsDigest}#{reference.Id:D}/{supplierSnapshot.Digest}");
             foreach (var pair in lineProvenance)
             {
                 // Line facts repeat their key across lines: the persisted provenance map keeps the
