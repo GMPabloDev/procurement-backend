@@ -13,7 +13,7 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-16 10:31 -0500
-> **Actualizado:** 2026-09-16 11:43 -0500
+> **Actualizado:** 2026-09-16 12:12 -0500
 > **HEAD verificado:** Pendiente
 > **Commit de integración:** Pendiente
 
@@ -31,7 +31,7 @@
 | T-01 | Verificada | Sourcing, takeover y RFQ: `src/ProcureToPay.Domain/Modules/Sourcing/{SourcingCodes,SourcingModels,SourcingCanonicalizer,SourcingCommandFingerprints,SourcingExceptions}.cs`, `src/ProcureToPay.Infrastructure/Persistence/Sourcing/{SourcingPersistenceModels,SourcingModelConfiguration,SourcingSerialization,SourcingProcessService}.cs`, migración `20260916154457_Spec10SourcingCore`, guardas de takeover en `PurchaseRequestPersistenceService`, `SourcingController` (procesos/RFQ). Pruebas: `SourcingCanonicalizerTests` (unitarias) y `SourcingProcessIntegrationTests` (SQL: takeover, carrera de versión, append-only). | working-tree sobre 6e26b72 · CP-01 |
 | T-02 | Verificada | Quotations y attachments: `SourcingQuotationService` (staging/confirmación/descarga, versiones append-only, puntualidad contra el deadline vigente, review server-side, conteo por línea/Supplier), `QuotationLineScopeRecord`, endpoints de quotation/attachments. Pruebas: unitarias de reloj/dinero/reconciliación y `SourcingProcessIntegrationTests` (conteo, extensión no retroactiva, attachment sellado). | working-tree sobre 6e26b72 · CP-01 |
 | T-03 | Pendiente | — | — |
-| T-04 | Parcial | Motor reproducible de evaluación: `src/ProcureToPay.Domain/Modules/Sourcing/SourcingEvaluation.cs` (`sourcing-fx-snapshot/v1`, `manual-criterion-input/v1`, `criterion-score/v1`, `quotation-score/v1`, `evaluation-line-result/v1`, `quote-evaluation-version/v1`, orden UUID canónico) y `SourcingEvaluationEngine.cs` (REQ-07 fórmulas y acotado 0–100, redondeo 4 decimales `ToEven`, REQ-08 rate 1 o snapshot obligatorio y normalización a 12 decimales, criterio con peso positivo sin dato bloquea, REQ-09 empate conserva el conjunto recomendado). Pruebas: `SourcingEvaluationEngineTests` (13 goldens). Pendiente: persistencia de `QuoteEvaluationVersion`/FX/manuales, servicio de evaluación versionada y API. | working-tree sobre 6e26b72 · CP-02 |
+| T-04 | Verificada | Motor reproducible (`SourcingEvaluation.cs`, `SourcingEvaluationEngine.cs`) y persistencia versionada: `SourcingEvaluationService` (FX con evidencia confirmada, score manual con quotation válida, una versión por comando, reemplazo rechazado si la current fue consumida, digest recomputado al leer), `SourcingQuotationQueries` compartida con el conteo, migración `20260916165427_Spec10SourcingEvaluation` (append-only + CHECK de rate/score), endpoints de FX/manual/evaluación. Pruebas: `SourcingEvaluationEngineTests` (13 unitarias) y `SourcingEvaluationIntegrationTests` (5 sobre SQL Server, 12 en la clase). | working-tree sobre 6e26b72 · CP-03 |
 | T-05 | Pendiente | — | — |
 | T-06 | Pendiente | — | — |
 | T-07 | Pendiente | — | — |
@@ -49,6 +49,10 @@
   - Tests ejecutados: `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore` → 252/252 correctos (13 nuevos del motor); `dotnet build ProcureToPay.sln --no-restore` → 0 errores (27 avisos preexistentes); `git diff --check` limpio.
   - Delta aditivo respecto de CP-01: solo tipos nuevos de dominio y pruebas unitarias nuevas; no hay cableado nuevo, por lo que la certificación de integración/E2E de CP-01 sigue siendo válida para el código existente. La próxima suite completa se ejecutará sobre el árbol estable del gate.
   - Pendiente de T-04: persistencia (`QuoteEvaluationVersion`, `SourcingFxSnapshot`, `manual-criterion-input`), servicio de evaluación versionada que invalide/versione en cada cambio material y endpoints de lectura; después T-03, T-05 y Bloques 3–4.
+- **CP-03 (2026-09-16 12:12 -0500) · T-04 verificado (evaluación versionada)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+  - Tests ejecutados: `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore` → 252/252; `dotnet test --project tests/ProcureToPay.IntegrationTests/ProcureToPay.IntegrationTests.csproj --no-restore --filter-class "*Sourcing*"` → 12/12 sobre SQL Server 2022 con la migración nueva; `dotnet build ProcureToPay.sln --no-restore` → 0 errores; `git diff --check` limpio.
+  - Correcciones derivadas de las pruebas: el motor deduplica participants por identidad de quotation (una oferta sirve varias líneas sin repetir el mismo score), y el trigger de `QuoteEvaluationVersions` pasó de bloquear todo update a admitir solo la transición de consumo en un sentido.
+  - Pendiente inmediato: suite completa sobre el árbol estable antes del gate, y los bloques 2 restantes (T-03 waiver, T-05 catálogo/selección) y 3–4.
 
 ## Evidencia de aceptación
 
@@ -58,7 +62,7 @@
 | CA-02 | Parcial | Unitarias: reconciliación monetaria `decimal(38,12)`/ToEven, límites de peso/decimal, revisión VALID/INVALID/WITHDRAWN. Integración: extensión no reclasifica, respuesta un minuto después del deadline queda LATE, versiones y audit append-only, attachment sellado. Falta la matriz API/E2E. | SourcingCanonicalizerTests + SourcingProcessIntegrationTests |
 | CA-03 | Parcial | Integración: conteo por línea con versiones current ON_TIME+VALID, excluye LATE/PENDING/retiradas, y el same-supplier no cuenta dos veces. Faltan API/E2E y captura negativa de logs/trazas. | SourcingProcessIntegrationTests |
 | CA-04 | Pendiente | — | — |
-| CA-05 | Parcial | Goldens unitarios: normalización FX a 12 decimales, `PRICE` como menor/actual, `DELIVERY_TIME` con `lowest_days=0`, `WARRANTY` con `highest_days=0`, acotado 0–100, redondeo a 4 decimales `ToEven`, empate conserva el conjunto recomendado y permutar entradas no cambia el digest. Faltan selección humana, versión esperada y auditoría de la justificación de desviación. | SourcingEvaluationEngineTests |
+| CA-05 | Parcial | Goldens unitarios: normalización FX a 12 decimales, `PRICE` como menor/actual, `DELIVERY_TIME` con `lowest_days=0`, `WARRANTY` con `highest_days=0`, acotado 0–100, redondeo a 4 decimales `ToEven`, empate conserva el conjunto recomendado y permutar entradas no cambia el digest. Integración: documento persistido igual a su preimagen de digest, versión consumida irreemplazable y append-only, FX exige evidencia confirmada, score manual exige quotation válida. Falta la selección humana (versión esperada y auditoría de la justificación de desviación). | SourcingEvaluationEngineTests + SourcingEvaluationIntegrationTests |
 | CA-06 | Pendiente | — | — |
 | CA-07 | Pendiente | — | — |
 | CA-08 | Pendiente | — | — |
