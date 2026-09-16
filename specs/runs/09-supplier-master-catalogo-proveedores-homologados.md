@@ -1,7 +1,7 @@
 # RUN SPEC 09 — Supplier Master y catálogo de proveedores homologados
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** Lista para integrar
+> **Estado del run:** Integrado
 > **Spec:** specs/09-supplier-master-catalogo-proveedores-homologados.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** e52e9789f475dc53885da7212d6dec699166b165
@@ -13,9 +13,9 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-15 15:47 -0500
-> **Actualizado:** 2026-09-15 15:47 -0500
+> **Actualizado:** 2026-09-16 09:05 -0500
 > **HEAD verificado:** 3e0db5e2665c573ae32f007935c254079d32971e
-> **Commit de integración:** Pendiente
+> **Commit de integración:** 93099eacb0165831151f1054c0e78dc0ab258eb1
 
 ## Línea base
 
@@ -95,6 +95,14 @@ Ejecutada sobre el commit base `e52e978` con el árbol limpio, antes de cualquie
 - Desviaciones ampliadas: además de las de CP-01, la provenance de `PREFERRED_SUPPLIER`/`EXTERNAL_AGREEMENT_STATUS` usa `supplier-facts/<catalog_content_digest|NONE>#<line-id>` en lugar de la forma con el digest del set por versión, porque esa forma invalidaba la materialidad de líneas retenidas en cada re-attestación y rompía el carry-forward de SPEC 04; el digest del set sigue entrando en el manifiesto v2 y el contrato de facts no cambia.
 - HEAD: working tree sin commit sobre `e52e978`.
 - Próximo paso: commit del árbol probado por el usuario y verificación independiente.
+
+## Cierre
+
+- **Integración:** `git merge --no-ff` de `spec-09-supplier-master-catalogo-proveedores-homologados` sobre `main`, materializada en `93099eacb0165831151f1054c0e78dc0ab258eb1` el 2026-09-16 08:59 -0500.
+- **Procedencia:** `HEAD verificado` `3e0db5e2665c573ae32f007935c254079d32971e` es ancestro de `main` (`git merge-base --is-ancestor`), sin squash ni rebase. Los únicos cambios posteriores al árbol verificado son administrativos: `edb6f4f` (metadatos del run y de la spec) y el propio merge.
+- **Base sin drift:** `git log e52e978..HEAD` contiene solo la cadena de SPEC 09, así que no hubo cambios ajenos que exigieran comprobaciones de compatibilidad adicionales.
+- **Evidencia sobre el árbol revisado:** build 0 errores; Unit `222/222`; Integración `127/127`; API/E2E `30/30`; `git diff --check` limpio; `specctl run-lint 09` válido; `specctl preflight 09` coherente.
+- **Vigencia:** la entrega integrada vuelve vigente su contrato y deja declarados como `Sustituida parcialmente por SPEC 09` los contratos de SPEC 05, SPEC 06, SPEC 07 y SPEC 08. No se modifica el comportamiento de ninguna spec anterior.
 
 ## Verificación independiente
 

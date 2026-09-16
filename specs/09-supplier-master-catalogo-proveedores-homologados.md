@@ -1,13 +1,13 @@
 # SPEC 09 — Supplier Master y catálogo de proveedores homologados
 
 > **Formato:** sdd/v3
-> **Estado:** Aprobada
-> **Ejecución:** Lista para integrar
-> **Vigencia:** Pendiente
+> **Estado:** Implementada
+> **Ejecución:** Integrada
+> **Vigencia:** Vigente
 > **Revisión:** 1
 > **Digest contractual:** 338d7c40ad2d45979e5b053006f3a2f2283f0e9bfc0faa5bd1f0e144754f7faa
 > **Fecha:** 2026-09-15
-> **Actualizada:** 2026-09-15
+> **Actualizada:** 2026-09-16
 > **Aprobada el:** 2026-09-15
 > **Aprobada por:** osiosad mediante specctl approve
 > **Objetivo:** Proveer proveedores versionados, gobernados y verificables, junto con homologaciones y acuerdos externos reproducibles, para que Purchase Requests y Policy dejen de usar facts sintéticos y las futuras Sourcing/PO puedan fallar cerrado ante proveedores no elegibles.
