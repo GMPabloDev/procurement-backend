@@ -13,7 +13,7 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-16 10:31 -0500
-> **Actualizado:** 2026-09-16 12:12 -0500
+> **Actualizado:** 2026-09-16 12:32 -0500
 > **HEAD verificado:** Pendiente
 > **Commit de integración:** Pendiente
 
@@ -32,7 +32,7 @@
 | T-02 | Verificada | Quotations y attachments: `SourcingQuotationService` (staging/confirmación/descarga, versiones append-only, puntualidad contra el deadline vigente, review server-side, conteo por línea/Supplier), `QuotationLineScopeRecord`, endpoints de quotation/attachments. Pruebas: unitarias de reloj/dinero/reconciliación y `SourcingProcessIntegrationTests` (conteo, extensión no retroactiva, attachment sellado). | working-tree sobre 6e26b72 · CP-01 |
 | T-03 | Pendiente | — | — |
 | T-04 | Verificada | Motor reproducible (`SourcingEvaluation.cs`, `SourcingEvaluationEngine.cs`) y persistencia versionada: `SourcingEvaluationService` (FX con evidencia confirmada, score manual con quotation válida, una versión por comando, reemplazo rechazado si la current fue consumida, digest recomputado al leer), `SourcingQuotationQueries` compartida con el conteo, migración `20260916165427_Spec10SourcingEvaluation` (append-only + CHECK de rate/score), endpoints de FX/manual/evaluación. Pruebas: `SourcingEvaluationEngineTests` (13 unitarias) y `SourcingEvaluationIntegrationTests` (5 sobre SQL Server, 12 en la clase). | working-tree sobre 6e26b72 · CP-03 |
-| T-05 | Pendiente | — | — |
+| T-05 | Verificada | Catálogo y selección: `SourcingSelection.cs` (recomendado decidido por el servidor, desviación con justificación 1–1.000, partición por Supplier/moneda/términos y orden UUID canónico), `SourcingEvaluationDocument` (reconstruye el resultado por línea desde el documento persistido y verifica el digest), `SourcingSelectionService` (una selección current por línea, versión esperada, elegibilidad por quotation `ON_TIME+VALID`, restricción `supplier_ref` de la PR, partition) y migración `20260916173711_Spec10SourcingSelection`. Pruebas: `SourcingSelectionTests` (8 unitarias) y `SourcingSelectionIntegrationTests` (4 SQL). Ruta de catálogo sin RFQ (REQ-06) queda para el bloque 3 | working-tree sobre 6e26b72 · CP-04 |
 | T-06 | Pendiente | — | — |
 | T-07 | Pendiente | — | — |
 | T-08 | Pendiente | — | — |
@@ -53,6 +53,9 @@
   - Tests ejecutados: `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore` → 252/252; `dotnet test --project tests/ProcureToPay.IntegrationTests/ProcureToPay.IntegrationTests.csproj --no-restore --filter-class "*Sourcing*"` → 12/12 sobre SQL Server 2022 con la migración nueva; `dotnet build ProcureToPay.sln --no-restore` → 0 errores; `git diff --check` limpio.
   - Correcciones derivadas de las pruebas: el motor deduplica participants por identidad de quotation (una oferta sirve varias líneas sin repetir el mismo score), y el trigger de `QuoteEvaluationVersions` pasó de bloquear todo update a admitir solo la transición de consumo en un sentido.
   - Pendiente inmediato: suite completa sobre el árbol estable antes del gate, y los bloques 2 restantes (T-03 waiver, T-05 catálogo/selección) y 3–4.
+- **CP-04 (2026-09-16 12:32 -0500) · T-05 verificado (selección humana)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+  - Tests ejecutados sobre el árbol estable: unitarias 260/260; integración completa 143/143 sobre SQL Server 2022 (16 de Sourcing); API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
+  - Alcance de T-05 en este checkpoint: selección por línea, desviación auditada, partición y elegibilidad; la omisión gobernada de RFQ por catálogo (REQ-06) se implementará junto al provider `SOURCING_PO` (bloque 3) porque comparte el hecho de catálogo congelado y la evaluación Policy.
 
 ## Evidencia de aceptación
 
@@ -62,7 +65,7 @@
 | CA-02 | Parcial | Unitarias: reconciliación monetaria `decimal(38,12)`/ToEven, límites de peso/decimal, revisión VALID/INVALID/WITHDRAWN. Integración: extensión no reclasifica, respuesta un minuto después del deadline queda LATE, versiones y audit append-only, attachment sellado. Falta la matriz API/E2E. | SourcingCanonicalizerTests + SourcingProcessIntegrationTests |
 | CA-03 | Parcial | Integración: conteo por línea con versiones current ON_TIME+VALID, excluye LATE/PENDING/retiradas, y el same-supplier no cuenta dos veces. Faltan API/E2E y captura negativa de logs/trazas. | SourcingProcessIntegrationTests |
 | CA-04 | Pendiente | — | — |
-| CA-05 | Parcial | Goldens unitarios: normalización FX a 12 decimales, `PRICE` como menor/actual, `DELIVERY_TIME` con `lowest_days=0`, `WARRANTY` con `highest_days=0`, acotado 0–100, redondeo a 4 decimales `ToEven`, empate conserva el conjunto recomendado y permutar entradas no cambia el digest. Integración: documento persistido igual a su preimagen de digest, versión consumida irreemplazable y append-only, FX exige evidencia confirmada, score manual exige quotation válida. Falta la selección humana (versión esperada y auditoría de la justificación de desviación). | SourcingEvaluationEngineTests + SourcingEvaluationIntegrationTests |
+| CA-05 | Parcial | Goldens unitarios (FX 12 decimales, `PRICE`, `DELIVERY_TIME` con cero, `WARRANTY` con cero, acotado 0–100, redondeo `ToEven`, empate conserva el conjunto, digest invariante a permutación) y unitarias de selección (recomendado sin justificación, desviación con justificación obligatoria, partición por Supplier/moneda/términos, línea repetida). Integración: documento persistido == preimagen del digest, versión consumida irreemplazable, FX y score manual con evidencia/quotation válida, selección recomendada y partición, versión esperada, sucesor append-only, restricción `supplier_ref` de la PR. Falta la evidencia API/E2E de la desviación justificada. | SourcingEvaluation*Tests + SourcingSelectionTests + SourcingSelectionIntegrationTests |
 | CA-06 | Pendiente | — | — |
 | CA-07 | Pendiente | — | — |
 | CA-08 | Pendiente | — | — |
