@@ -162,7 +162,7 @@ public static class SourcingCanonicalizer
         return PolicyCanonicalizer.Hash(PolicyCanonicalizer.SerializeCanonical(preimage));
     }
 
-    internal static SortedDictionary<string, object?> ContentRef(SourcingContentRef reference) =>
+    public static SortedDictionary<string, object?> ContentRef(SourcingContentRef reference) =>
         new(StringComparer.Ordinal)
         {
             ["content_digest"] = reference.ContentDigest,
@@ -170,14 +170,14 @@ public static class SourcingCanonicalizer
             ["version"] = reference.Version
         };
 
-    internal static SortedDictionary<string, object?> EntityRef(SourcingEntityRef reference) =>
+    public static SortedDictionary<string, object?> EntityRef(SourcingEntityRef reference) =>
         new(StringComparer.Ordinal)
         {
             ["id"] = reference.Id.ToString("D"),
             ["version"] = reference.Version
         };
 
-    internal static SortedDictionary<string, object?> Terms(CommercialTerms terms) =>
+    public static SortedDictionary<string, object?> Terms(CommercialTerms terms) =>
         new(StringComparer.Ordinal)
         {
             ["delivery_days"] = terms.DeliveryDays,
@@ -186,7 +186,7 @@ public static class SourcingCanonicalizer
             ["warranty_days"] = terms.WarrantyDays
         };
 
-    internal static SortedDictionary<string, object?> Attachment(SourcingAttachmentRef attachment) =>
+    public static SortedDictionary<string, object?> Attachment(SourcingAttachmentRef attachment) =>
         new(StringComparer.Ordinal)
         {
             ["content_type"] = attachment.ContentType,
@@ -197,7 +197,7 @@ public static class SourcingCanonicalizer
             ["version"] = attachment.Version
         };
 
-    internal static SortedDictionary<string, object?> Review(QuotationReview review) =>
+    public static SortedDictionary<string, object?> Review(QuotationReview review) =>
         new(StringComparer.Ordinal)
         {
             ["codes"] = Set(review.Codes.Select(code => (object?)SourcingStateCodes.ReviewCode(code))),
@@ -208,7 +208,7 @@ public static class SourcingCanonicalizer
         };
 
     /// <summary>Canonical set: ordered by the serialized bytes of each element, duplicates rejected.</summary>
-    internal static object?[] Set(IEnumerable<object?> values)
+    public static object?[] Set(IEnumerable<object?> values)
     {
         var materialized = (values ?? []).ToArray();
         var ordered = materialized

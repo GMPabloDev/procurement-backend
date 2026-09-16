@@ -303,7 +303,13 @@ public sealed record QuoteEvaluation
     public IReadOnlyList<SourcingEntityRef> Recommendations { get; }
 
     /// <summary><c>evaluation_content_digest</c> of the published preimage (REQ-07).</summary>
-    public string ComputeDigest()
+    public string ComputeDigest() => PolicyCanonicalizer.Hash(CanonicalDocument());
+
+    /// <summary>
+    /// Canonical <c>quote-evaluation-version/v1</c> document: exactly the digest preimage. It is the
+    /// persisted form of the evaluation, so rehashing the stored bytes detects any tampering.
+    /// </summary>
+    public string CanonicalDocument()
     {
         var preimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -322,9 +328,11 @@ public sealed record QuoteEvaluation
                 {
                     ["base_currency"] = snapshot.BaseCurrency,
                     ["digest"] = snapshot.Digest,
+                    ["effective_at"] = SourcingCodes.FormatUtc(snapshot.EffectiveAt),
                     ["id"] = snapshot.Id.ToString("D"),
                     ["rate"] = SourcingCodes.Decimal(snapshot.Rate),
                     ["source_currency"] = snapshot.SourceCurrency,
+                    ["source_reference"] = snapshot.SourceReference,
                     ["version"] = snapshot.Version
                 })),
             ["organization_id"] = OrganizationId.ToString("D"),
@@ -353,7 +361,7 @@ public sealed record QuoteEvaluation
                     ["weight"] = weight.Weight
                 }))
         };
-        return PolicyCanonicalizer.Hash(PolicyCanonicalizer.SerializeCanonical(preimage));
+        return PolicyCanonicalizer.SerializeCanonical(preimage);
     }
 
     private static SortedDictionary<string, object?> CriterionTable(QuotationScore score) =>

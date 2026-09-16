@@ -43,7 +43,10 @@ public static class SourcingEvaluationEngine
             throw new DomainValidationException("An evaluation requires the lines of its RFQ.");
         }
 
-        var participants = (quotes ?? []).ToImmutableArray();
+        var participants = (quotes ?? [])
+            .DistinctBy(quote => (quote.QuotationRef.Id, quote.QuotationRef.Version))
+            .ToImmutableArray();
+
         var manual = (manualInputs ?? []).ToImmutableArray();
         var results = ImmutableArray.CreateBuilder<EvaluationLineResult>(lines.Length);
         var usedFx = new List<SourcingFxSnapshot>();

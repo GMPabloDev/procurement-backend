@@ -321,6 +321,8 @@ public static class DependencyInjection
         // SPEC 10: sourcing processes, RFQ lifecycle, quotation evidence and the quotation count.
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingProcessService>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingQuotationService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingQuotationQueries>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingEvaluationService>();
 
         services.AddDefaultAWSOptions(configuration.GetAWSOptions());
         services.AddAWSService<IAmazonS3>();

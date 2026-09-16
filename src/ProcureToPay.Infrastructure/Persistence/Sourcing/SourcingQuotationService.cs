@@ -537,101 +537,22 @@ public sealed class SourcingQuotationService(
     }
 
     /// <summary>
-    /// Valid quotations per line of one RFQ (REQ-04): only the current version of a quotation counts,
-    /// only when it is <c>ON_TIME+VALID</c> and covers that line, and every distinct supplier counts
-    /// at most once per line. The query never aggregates across lines.
+    /// Valid quotations per line of one RFQ (REQ-04). The read is delegated to the shared query so
+    /// the evaluation and the owner processors count exactly the same way.
     /// </summary>
     public async Task<IReadOnlyDictionary<Guid, int>> CountValidQuotationsAsync(
         Guid organizationId,
         Guid rfqId,
-        CancellationToken cancellationToken = default)
-    {
-        var currentVersions = await (
-            from quotation in dbContext.Quotations.AsNoTracking()
-            join version in dbContext.QuotationVersions.AsNoTracking()
-                on new { Id = quotation.Id, Version = quotation.CurrentVersion }
-                equals new { Id = version.QuotationId, version.Version }
-            where quotation.OrganizationId == organizationId && quotation.RfqId == rfqId
-            select new
-            {
-                quotation.Id,
-                quotation.SupplierId,
-                version.Timeliness,
-                version.ReviewStatus
-            }).ToArrayAsync(cancellationToken);
-        var valid = currentVersions
-            .Where(version => version.Timeliness == (int)QuotationTimeliness.OnTime &&
-                              version.ReviewStatus == (int)QuotationReviewStatus.Valid)
-            .ToArray();
-        if (valid.Length == 0)
-        {
-            return new Dictionary<Guid, int>();
-        }
-
-        var validIds = valid.Select(version => version.Id).ToArray();
-        var suppliers = valid.ToDictionary(version => version.Id, version => version.SupplierId);
-        var scopes = await dbContext.QuotationLineScopes
-            .AsNoTracking()
-            .Where(scope => validIds.Contains(scope.QuotationId) &&
-                            scope.Version == dbContext.Quotations
-                                .Where(quotation => quotation.Id == scope.QuotationId)
-                                .Select(quotation => quotation.CurrentVersion)
-                                .First())
-            .Select(scope => new { scope.QuotationId, scope.LineId })
-            .ToArrayAsync(cancellationToken);
-        return scopes
-            .GroupBy(scope => scope.LineId)
-            .ToDictionary(
-                group => group.Key,
-                group => group.Select(scope => suppliers[scope.QuotationId]).Distinct().Count());
-    }
+        CancellationToken cancellationToken = default) =>
+        await new SourcingQuotationQueries(dbContext).CountValidAsync(organizationId, rfqId, cancellationToken);
 
     /// <summary>Ordered valid quotes of one RFQ and line, for evaluation and recommendation (REQ-07).</summary>
     public async Task<IReadOnlyList<SourcingSupplierQuote>> ListValidQuotesAsync(
         Guid organizationId,
         Guid rfqId,
         Guid lineId,
-        CancellationToken cancellationToken = default)
-    {
-        var currentVersions = await (
-            from quotation in dbContext.Quotations.AsNoTracking()
-            join version in dbContext.QuotationVersions.AsNoTracking()
-                on new { Id = quotation.Id, Version = quotation.CurrentVersion }
-                equals new { Id = version.QuotationId, version.Version }
-            where quotation.OrganizationId == organizationId &&
-                  quotation.RfqId == rfqId &&
-                  version.Timeliness == (int)QuotationTimeliness.OnTime &&
-                  version.ReviewStatus == (int)QuotationReviewStatus.Valid
-            select version).ToArrayAsync(cancellationToken);
-        if (currentVersions.Length == 0)
-        {
-            return [];
-        }
-
-        var quotes = new List<SourcingSupplierQuote>(currentVersions.Length);
-        foreach (var version in currentVersions)
-        {
-            var lines = SourcingSerialization.ReadQuotationLines(version.LinesJson);
-            if (!lines.Any(line => line.LineRef.Id == lineId))
-            {
-                continue;
-            }
-
-            quotes.Add(new SourcingSupplierQuote(
-                version.QuotationId,
-                version.SupplierId,
-                version.SupplierVersion,
-                new SourcingEntityRef(version.SupplierId, version.SupplierVersion),
-                version.Version,
-                version.Currency,
-                SourcingSerialization.ReadTerms(version.TermsJson),
-                lines,
-                (QuotationTimeliness)version.Timeliness,
-                version.ContentDigest));
-        }
-
-        return quotes;
-    }
+        CancellationToken cancellationToken = default) =>
+        await new SourcingQuotationQueries(dbContext).ListValidAsync(organizationId, rfqId, lineId, cancellationToken);
 
     /// <summary>Signed, audited download of one confirmed attachment (REQ-14).</summary>
     public async Task<SourcingAttachmentDownload> DownloadAttachmentAsync(

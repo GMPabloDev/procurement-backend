@@ -238,3 +238,86 @@ public sealed class SourcingOutboxRecord
     public DateTimeOffset OccurredAt { get; set; }
     public DateTimeOffset? DispatchedAt { get; set; }
 }
+
+/// <summary>
+/// Root of the weighted evaluation of one RFQ (REQ-07, REQ-08). Evaluation versions are append-only
+/// and only a current version that no proposal consumed may be replaced by a successor.
+/// </summary>
+public sealed class SourcingEvaluationRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid RfqId { get; set; }
+    public int CurrentVersion { get; set; }
+    public int? ConsumedVersion { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+}
+
+/// <summary>
+/// Append-only evaluation version (<c>quote-evaluation-version/v1</c>, REQ-07). The stored document
+/// is exactly the digest preimage, so rehydration recomputes the digest and detects tampering.
+/// </summary>
+public sealed class QuoteEvaluationVersionRecord
+{
+    public Guid EvaluationId { get; set; }
+    public int Version { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid RfqId { get; set; }
+    public int RfqVersion { get; set; }
+    public string RfqContentDigest { get; set; } = null!;
+    public string BaseCurrency { get; set; } = null!;
+    public string DocumentJson { get; set; } = null!;
+    public string ContentDigest { get; set; } = null!;
+    public string RecommendationsJson { get; set; } = null!;
+    public string QuotationRefsJson { get; set; } = null!;
+    public string FxSnapshotRefsJson { get; set; } = null!;
+    public DateTimeOffset? ConsumedAt { get; set; }
+    public Guid ActorUserId { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
+
+    public SourcingEvaluationRecord Evaluation { get; set; } = null!;
+}
+
+/// <summary>
+/// Immutable FX snapshot of one currency pair used by an evaluation (REQ-08). It is not a general FX
+/// catalog: it exists only for the evaluation that froze it and never mutates.
+/// </summary>
+public sealed class SourcingFxSnapshotRecord
+{
+    public Guid Id { get; set; }
+    public int Version { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid RfqId { get; set; }
+    public string BaseCurrency { get; set; } = null!;
+    public string SourceCurrency { get; set; } = null!;
+    public decimal Rate { get; set; }
+    public DateTimeOffset EffectiveAt { get; set; }
+    public string SourceReference { get; set; } = null!;
+    public string AttachmentJson { get; set; } = null!;
+    public string DocumentJson { get; set; } = null!;
+    public string ContentDigest { get; set; } = null!;
+    public Guid ActorUserId { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
+}
+
+/// <summary>
+/// Append-only manual score of one criterion only a human judges (REQ-07): payment terms or
+/// technical compliance, always with a motive and confirmed evidence.
+/// </summary>
+public sealed class SourcingManualScoreRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid RfqId { get; set; }
+    public Guid LineId { get; set; }
+    public int LineVersion { get; set; }
+    public Guid SupplierId { get; set; }
+    public int SupplierVersion { get; set; }
+    public int Criterion { get; set; }
+    public decimal Score { get; set; }
+    public string Justification { get; set; } = null!;
+    public string EvidenceJson { get; set; } = null!;
+    public string ContentDigest { get; set; } = null!;
+    public Guid ActorUserId { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
+}

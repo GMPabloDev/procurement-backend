@@ -72,6 +72,9 @@ public static class SourcingCodes
     public const string ActionAttachmentStaged = "SOURCING_ATTACHMENT_STAGED";
     public const string ActionAttachmentConfirmed = "SOURCING_ATTACHMENT_CONFIRMED";
     public const string ActionAttachmentDownloaded = "SOURCING_ATTACHMENT_DOWNLOADED";
+    public const string ActionFxRegistered = "SOURCING_FX_SNAPSHOT_REGISTERED";
+    public const string ActionManualScoreRecorded = "SOURCING_MANUAL_SCORE_RECORDED";
+    public const string ActionEvaluationCreated = "SOURCING_RFQ_EVALUATED";
 
     public const string TargetProcess = "SourcingProcess";
     public const string TargetRfq = "RfqVersion";

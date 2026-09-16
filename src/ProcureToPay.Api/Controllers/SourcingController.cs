@@ -18,7 +18,11 @@ namespace ProcureToPay.Api.Controllers;
 [ApiController]
 [Authorize]
 [Route("api/v1/sourcing")]
-public sealed class SourcingController(ProcureToPayDbContext dbContext, SourcingProcessService processes, SourcingQuotationService quotations)
+public sealed class SourcingController(
+    ProcureToPayDbContext dbContext,
+    SourcingProcessService processes,
+    SourcingQuotationService quotations,
+    SourcingEvaluationService evaluations)
     : ControllerBase
 {
     [HttpPost("processes")]
@@ -436,10 +440,120 @@ public sealed class SourcingController(ProcureToPayDbContext dbContext, Sourcing
             .ToArray());
     }
 
-    private TService Resolve<TService>(TService service) where TService : notnull => service;
+    /// <summary>
+    /// Evidence references travel with the metadata the caller already received from the staging
+    /// endpoint; the server still matches every field against the confirmed attachment it stored.
+    /// </summary>
+    private static SourcingAttachmentRef ToAttachmentRef(QuotationAttachmentRequest? attachment)
+    {
+        if (attachment is null)
+        {
+            throw new DomainValidationException("The command requires its evidence attachment reference.");
+        }
+
+        return new SourcingAttachmentRef(
+            attachment.ContentType ?? string.Empty,
+            attachment.FileId,
+            attachment.FileName ?? string.Empty,
+            attachment.Length,
+            attachment.Sha256 ?? string.Empty,
+            attachment.Version);
+    }
 
     private Task<Guid> OrganizationIdAsync(CancellationToken cancellationToken) =>
         dbContext.Organizations.AsNoTracking().Select(record => record.Id).SingleAsync(cancellationToken);
+
+    [HttpPost("rfqs/{rfqId:guid}/fx-snapshots")]
+    public async Task<ActionResult<SourcingFxSnapshotView>> RegisterFxSnapshot(
+        Guid rfqId,
+        RegisterFxSnapshotRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await RequireBuyerAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        var snapshot = await evaluations.RegisterFxSnapshotAsync(
+            new RegisterFxSnapshotCommand(
+                organizationId,
+                rfqId,
+                request.SourceCurrency ?? string.Empty,
+                request.Rate,
+                request.EffectiveAt,
+                request.SourceReference ?? string.Empty,
+                ToAttachmentRef(request.Attachment),
+                request.CommandKey ?? string.Empty),
+            actor.Id,
+            HttpContext.TraceIdentifier,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        return Created($"/api/v1/sourcing/rfqs/{rfqId}/fx-snapshots/{snapshot.Id}", snapshot);
+    }
+
+    [HttpPost("rfqs/{rfqId:guid}/manual-scores")]
+    public async Task<ActionResult<SourcingManualScoreView>> RecordManualScore(
+        Guid rfqId,
+        RecordManualScoreRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await RequireBuyerAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        var score = await evaluations.RecordManualScoreAsync(
+            new RecordManualScoreCommand(
+                organizationId,
+                rfqId,
+                request.LineId,
+                request.SupplierId,
+                request.Criterion,
+                request.Score,
+                request.Justification ?? string.Empty,
+                ToAttachmentRef(request.Evidence),
+                request.CommandKey ?? string.Empty),
+            actor.Id,
+            HttpContext.TraceIdentifier,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        return Created($"/api/v1/sourcing/rfqs/{rfqId}/manual-scores/{score.Id}", score);
+    }
+
+    [HttpPost("rfqs/{rfqId:guid}/evaluations")]
+    public async Task<ActionResult<SourcingEvaluationView>> EvaluateRfq(
+        Guid rfqId,
+        EvaluateRfqRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await RequireBuyerAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        var evaluation = await evaluations.EvaluateAsync(
+            new EvaluateRfqCommand(organizationId, rfqId, request.CommandKey ?? string.Empty),
+            actor.Id,
+            HttpContext.TraceIdentifier,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        return Created(
+            $"/api/v1/sourcing/evaluations/{evaluation.EvaluationId}/versions/{evaluation.Version}",
+            evaluation);
+    }
+
+    [HttpGet("rfqs/{rfqId:guid}/evaluations/current")]
+    public async Task<ActionResult<SourcingEvaluationView>> GetCurrentEvaluation(
+        Guid rfqId,
+        CancellationToken cancellationToken)
+    {
+        await RequireBuyerOrAuditorAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        return Ok(await evaluations.GetCurrentEvaluationAsync(organizationId, rfqId, cancellationToken));
+    }
+
+    [HttpGet("evaluations/{evaluationId:guid}/versions/{version:int}")]
+    public async Task<ActionResult<SourcingEvaluationView>> GetEvaluation(
+        Guid evaluationId,
+        int version,
+        CancellationToken cancellationToken)
+    {
+        await RequireBuyerOrAuditorAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        return Ok(await evaluations.GetEvaluationAsync(
+            organizationId, evaluationId, version, cancellationToken));
+    }
 
     private async Task<UserProfileRecord> RequireBuyerAsync(CancellationToken cancellationToken)
     {
@@ -612,6 +726,25 @@ public sealed record ReviewQuotationRequest(
     IReadOnlyList<string>? Codes,
     string? Motive,
     string? CommandKey);
+
+public sealed record RegisterFxSnapshotRequest(
+    string? SourceCurrency,
+    decimal Rate,
+    DateTimeOffset EffectiveAt,
+    string? SourceReference,
+    QuotationAttachmentRequest? Attachment,
+    string? CommandKey);
+
+public sealed record RecordManualScoreRequest(
+    Guid LineId,
+    Guid SupplierId,
+    SourcingEvaluationCriterion Criterion,
+    decimal Score,
+    string? Justification,
+    QuotationAttachmentRequest? Evidence,
+    string? CommandKey);
+
+public sealed record EvaluateRfqRequest(string? CommandKey);
 
 public sealed record SourcingProcessLineResponse(
     Guid LineId,

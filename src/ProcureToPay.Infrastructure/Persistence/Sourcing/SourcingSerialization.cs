@@ -227,6 +227,64 @@ public static class SourcingSerialization
     public static string Decimal(decimal value) =>
         value.ToString("0.############################", CultureInfo.InvariantCulture);
 
+    /// <summary>Set of versioned entity references, stored as its canonical elements.</summary>
+    public static string EntityRefs(IEnumerable<SourcingEntityRef> references) =>
+        new JsonArray((references ?? [])
+            .OrderBy(reference => reference.Id)
+            .Select(reference => (JsonNode)new JsonObject
+            {
+                ["id"] = reference.Id.ToString("D"),
+                ["version"] = reference.Version
+            }).ToArray()).ToJsonString(Options);
+
+    public static IReadOnlyList<SourcingEntityRef> ReadEntityRefs(string json)
+    {
+        var array = Root(json).AsArray();
+        var references = new List<SourcingEntityRef>(array.Count);
+        foreach (var node in array)
+        {
+            var item = RequireObject(node, ["id", "version"]);
+            references.Add(new SourcingEntityRef(
+                Guid.Parse(item["id"]!.GetValue<string>()), item["version"]!.GetValue<int>()));
+        }
+
+        return references;
+    }
+
+    /// <summary>Set of versioned content references, stored as its canonical elements.</summary>
+    public static string ContentRefs(IEnumerable<SourcingContentRef> references) =>
+        new JsonArray((references ?? [])
+            .OrderBy(reference => reference.Id)
+            .Select(reference => (JsonNode)ContentRefNode(reference)).ToArray()).ToJsonString(Options);
+
+    public static IReadOnlyList<SourcingContentRef> ReadContentRefs(string json)
+    {
+        var array = Root(json).AsArray();
+        var references = new List<SourcingContentRef>(array.Count);
+        foreach (var node in array)
+        {
+            references.Add(ReadContentRef(node));
+        }
+
+        return references;
+    }
+
+    /// <summary>Set of FX snapshot references used by one evaluation (REQ-08).</summary>
+    public static string FxRefs(IEnumerable<SourcingFxSnapshot> snapshots) =>
+        new JsonArray((snapshots ?? [])
+            .OrderBy(snapshot => snapshot.Id)
+            .Select(snapshot => (JsonNode)new JsonObject
+            {
+                ["base_currency"] = snapshot.BaseCurrency,
+                ["digest"] = snapshot.Digest,
+                ["effective_at"] = SourcingCodes.FormatUtc(snapshot.EffectiveAt),
+                ["id"] = snapshot.Id.ToString("D"),
+                ["rate"] = Decimal(snapshot.Rate),
+                ["source_currency"] = snapshot.SourceCurrency,
+                ["source_reference"] = snapshot.SourceReference,
+                ["version"] = snapshot.Version
+            }).ToArray()).ToJsonString(Options);
+
     public static decimal ParseDecimal(string value) =>
         decimal.Parse(value, CultureInfo.InvariantCulture);
 

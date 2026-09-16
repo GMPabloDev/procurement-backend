@@ -27,6 +27,10 @@ public static class SourcingModelConfiguration
         ConfigureCommand(modelBuilder);
         ConfigureAudit(modelBuilder);
         ConfigureOutbox(modelBuilder);
+        ConfigureEvaluation(modelBuilder);
+        ConfigureEvaluationVersion(modelBuilder);
+        ConfigureFxSnapshot(modelBuilder);
+        ConfigureManualScore(modelBuilder);
     }
 
     private static void ConfigureProcess(ModelBuilder modelBuilder)
@@ -198,6 +202,63 @@ public static class SourcingModelConfiguration
         entity.Property(record => record.TargetJson).HasMaxLength(2_000).IsRequired();
         // One effect key produces exactly one audit row even under redelivery (NFR-03).
         entity.HasIndex(record => new { record.OrganizationId, record.Action, record.EffectKey }).IsUnique();
+    }
+
+    private static void ConfigureEvaluation(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingEvaluationRecord>();
+        entity.ToTable("SourcingEvaluations", Schema);
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        // One evaluation root per RFQ: every material change appends a successor version (REQ-07).
+        entity.HasIndex(record => record.RfqId).IsUnique();
+        entity.HasIndex(record => record.OrganizationId);
+    }
+
+    private static void ConfigureEvaluationVersion(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<QuoteEvaluationVersionRecord>();
+        entity.ToTable("QuoteEvaluationVersions", Schema, table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => new { record.EvaluationId, record.Version });
+        entity.Property(record => record.RfqContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.BaseCurrency).HasMaxLength(3).IsRequired();
+        entity.Property(record => record.DocumentJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.RecommendationsJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.QuotationRefsJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.FxSnapshotRefsJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.RfqId });
+        entity.HasOne(record => record.Evaluation)
+            .WithMany()
+            .HasForeignKey(record => record.EvaluationId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureFxSnapshot(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingFxSnapshotRecord>();
+        entity.ToTable("SourcingFxSnapshots", Schema, table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => new { record.Id, record.Version });
+        entity.Property(record => record.BaseCurrency).HasMaxLength(3).IsRequired();
+        entity.Property(record => record.SourceCurrency).HasMaxLength(3).IsRequired();
+        entity.Property(record => record.Rate).HasPrecision(38, 12);
+        entity.Property(record => record.SourceReference).HasMaxLength(300).IsRequired();
+        entity.Property(record => record.AttachmentJson).HasMaxLength(2_000).IsRequired();
+        entity.Property(record => record.DocumentJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.RfqId, record.SourceCurrency });
+    }
+
+    private static void ConfigureManualScore(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingManualScoreRecord>();
+        entity.ToTable("SourcingManualScores", Schema, table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.Score).HasPrecision(9, 4);
+        entity.Property(record => record.Justification).HasMaxLength(4_000).IsRequired();
+        entity.Property(record => record.EvidenceJson).HasMaxLength(2_000).IsRequired();
+        entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.RfqId, record.LineId, record.SupplierId, record.Criterion });
     }
 
     private static void ConfigureOutbox(ModelBuilder modelBuilder)
