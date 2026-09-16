@@ -411,24 +411,28 @@ public sealed record SourcingProposalVersion
         return PolicyCanonicalizer.SerializeCanonical(preimage);
     }
 
+    /// <summary>One <c>award-line/v1</c> document, shared by the candidate, the proposal and the award.</summary>
+    public static SortedDictionary<string, object?> AwardLineDocument(AwardLine line) =>
+        new(StringComparer.Ordinal)
+        {
+            ["base_currency"] = line.BaseCurrency,
+            ["base_gross_total"] = SourcingCodes.Decimal(line.BaseGrossTotal),
+            ["fx_snapshot_ref"] = line.FxSnapshotRef is null
+                ? null
+                : SourcingCanonicalizer.ContentRef(line.FxSnapshotRef),
+            ["line_ref"] = SourcingCanonicalizer.ContentRef(line.LineRef),
+            ["quantity"] = SourcingCodes.Decimal(line.Quantity),
+            ["source_currency"] = line.SourceCurrency,
+            ["source_gross_total"] = SourcingCodes.Decimal(line.SourceGrossTotal),
+            ["unit_code"] = line.UnitCode,
+            ["unit_price"] = SourcingCodes.Decimal(line.UnitPrice)
+        };
+
     public static SortedDictionary<string, object?> AwardCandidateDocument(AwardCandidate candidate) =>
         new(StringComparer.Ordinal)
         {
             ["award_lines"] = SourcingCanonicalizer.Set(candidate.Lines.Select(line =>
-                (object?)new SortedDictionary<string, object?>(StringComparer.Ordinal)
-                {
-                    ["base_currency"] = line.BaseCurrency,
-                    ["base_gross_total"] = SourcingCodes.Decimal(line.BaseGrossTotal),
-                    ["fx_snapshot_ref"] = line.FxSnapshotRef is null
-                        ? null
-                        : SourcingCanonicalizer.ContentRef(line.FxSnapshotRef),
-                    ["line_ref"] = SourcingCanonicalizer.ContentRef(line.LineRef),
-                    ["quantity"] = SourcingCodes.Decimal(line.Quantity),
-                    ["source_currency"] = line.SourceCurrency,
-                    ["source_gross_total"] = SourcingCodes.Decimal(line.SourceGrossTotal),
-                    ["unit_code"] = line.UnitCode,
-                    ["unit_price"] = SourcingCodes.Decimal(line.UnitPrice)
-                })),
+                (object?)AwardLineDocument(line))),
             ["base_amount"] = SourcingCodes.Decimal(candidate.BaseAmount),
             ["base_currency"] = candidate.BaseCurrency,
             ["canonicalization_version"] = PolicyCanonicalizer.Version,
