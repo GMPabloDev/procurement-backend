@@ -318,6 +318,10 @@ public static class DependencyInjection
         services.AddSingleton<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierProcessorIdentity>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierPrerequisiteProcessor>();
 
+        // SPEC 10: sourcing processes, RFQ lifecycle, quotation evidence and the quotation count.
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingProcessService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingQuotationService>();
+
         services.AddDefaultAWSOptions(configuration.GetAWSOptions());
         services.AddAWSService<IAmazonS3>();
         services.AddSingleton(S3StorageOptions.FromConfiguration(configuration));

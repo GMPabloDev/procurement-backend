@@ -272,6 +272,7 @@ public sealed class PurchaseRequestPersistenceService(
                 "The purchase request changed under the command; reload and retry.");
         }
 
+        await RequireNoSourcingTakeoverAsync(request.Id, cancellationToken);
         var status = (PurchaseRequestStatus)request.Status;
         if (status is PurchaseRequestStatus.Rejected or PurchaseRequestStatus.Cancelled)
         {
@@ -521,6 +522,8 @@ public sealed class PurchaseRequestPersistenceService(
             throw new DomainConflictException(
                 "The purchase request changed under the command; reload and retry.");
         }
+
+        await RequireNoSourcingTakeoverAsync(request.Id, cancellationToken);
 
         var status = (PurchaseRequestStatus)request.Status;
         if (status is PurchaseRequestStatus.Rejected or PurchaseRequestStatus.Cancelled)
@@ -783,6 +786,22 @@ public sealed class PurchaseRequestPersistenceService(
             ActorUserId = actorUserId,
             CreatedAt = createdAt
         };
+
+    private async Task RequireNoSourcingTakeoverAsync(Guid requestId, CancellationToken cancellationToken)
+    {
+        // SPEC 10 REQ-01 protects the exact request version consumed by a live sourcing takeover:
+        // revising or cancelling it would orphan the proposal/award that is being built.
+        var consumed = await dbContext.SourcingTakeovers
+            .AsNoTracking()
+            .AnyAsync(
+                takeover => takeover.RequestId == requestId && takeover.ReleasedAt == null,
+                cancellationToken);
+        if (consumed)
+        {
+            throw new DomainConflictException(
+                "The purchase request is consumed by a live sourcing takeover and cannot change.");
+        }
+    }
 
     private static PurchaseRequestRevisionDelta ReadDelta(string json)
     {
