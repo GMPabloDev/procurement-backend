@@ -1,0 +1,102 @@
+{
+  "format": "sdd-review/v1",
+  "spec": "10-sourcing-rfq-cotizaciones-award.md",
+  "revision": 1,
+  "digest": "6172c3d26718271b05ad262636f6410fc0d8a5d70a2a4e868ba136a111a070f3",
+  "dependencies": {
+    "01-organizacion-identidad-roles-autoridades-aprobacion.md": "c5f194a4dca2597aff6cbbace581b1f9212197416c2918559e1a124484de458e",
+    "02-motor-de-politicas.md": "63fec425400bc197524e23cb3a130ab2d7d64f6eba823944b3ebee8923e6d688",
+    "03-approval-workflow.md": "f0b61a917c4c4b4adcaee598c75352ef93d03c3bf25b76d15f80177ba3446234",
+    "04-delegacion-y-evolucion-de-aprobaciones.md": "0ffbc76e8ef5a1c88d251ebad74a99d6cb45cebffd0b6f553fddc5210049933f",
+    "05-integracion-policy-approval-workflow.md": "001c559d72845b0f77919df50bad5e7b74eeecb5e6dc8921d52bba932cb20f70",
+    "06-purchase-requests-versionadas.md": "f8c570320cc1093698b8b2998c83eee168335c5345236a2fe457755bf4a41dd8",
+    "07-catalogos-referencia-purchase-requests.md": "64daf9c60d28f2d9a2dc6c286a8e2f12d83dd97a01a7651a3a72e73681f0eed1",
+    "08-budgets-movimientos-presupuestarios.md": "f381a0a03d09ebf344504cc47a64ac6ebcbe20078d143b57af4226012c883326",
+    "09-supplier-master-catalogo-proveedores-homologados.md": "338d7c40ad2d45979e5b053006f3a2f2283f0e9bfc0faa5bd1f0e144754f7faa"
+  },
+  "verdict": "PASS",
+  "mode": "delta",
+  "baseline_digest": "6172c3d26718271b05ad262636f6410fc0d8a5d70a2a4e868ba136a111a070f3",
+  "review_count": 5,
+  "reviewer": "sdd-contract-reviewer · openai-codex/gpt-5.6-luna · effort high",
+  "reviewed_at": "2026-09-16",
+  "coverage": {
+    "behavior": "La cobertura full previa de REQ-01..REQ-14 y CA-01..CA-10 se conserva; el delta final verificó REQ-01/12/14 para líneas, publicación, cancelación y consumo sin reauditar lo no afectado.",
+    "boundaries": "Se conservó el contraste de SPEC 01–09, Policy/Approval/owners y Supplier/Catálogo; el delta confirmó productores, refs y consumidor de sourcing-process-line, RFQ, quotation/catalog, FX, award-line y award-consumption.",
+    "failure_modes": "Además de la cobertura previa, el delta confirmó CAS `ACTIVE`, carrera cancel/publish, replay/conflicto, stale refs y FX inconsistente con resultados `409/422` fail-closed.",
+    "acceptance": "CA-01 y CA-08 cierran R3/R8 con SQL concurrente, E2E, igualdad por línea, reconstrucción del award y una sola rama lifecycle; CA-02..CA-07/09/10 conservan la cobertura full previa.",
+    "implementation_readiness": "El delta contrastó los contratos corregidos con refs de Purchase Request y catálogo de SPEC 09; se conserva el recorrido PR→Policy/Approval→Sourcing→award→owners→PR y la implementación aún no iniciada no se trató como defecto."
+  },
+  "findings": [
+    {
+      "id": "R1",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Los schemas/digests de terms, quotation, evaluation y manifest eran incompletos.",
+      "resolution": "La spec fija propiedades/nulabilidad/preimages y fixtures Sourcing v1; la ronda 3 verificó el manifest y sus goldens."
+    },
+    {
+      "id": "R2",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Las fórmulas de scoring no definían precio o denominadores cero.",
+      "resolution": "REQ-03/REQ-07 exigen importes positivos, definen delivery/warranty cero, acotación y ToEven(4); la ronda 2 cerró el hallazgo."
+    },
+    {
+      "id": "R3",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "La ronda 4 observó que award-line no ligaba quantity/unit/unit price a quotation o cantidad solicitada.",
+      "resolution": "El delta final verificó sourcing-process-line/v1, equivalencia RFQ, igualdad del award con quotation o process+catalog, sumas/FX y respuesta award-consumption reconstruible."
+    },
+    {
+      "id": "R4",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Faltaba contrato exact-one/binding de los processors de prerequisites.",
+      "resolution": "REQ-13 publica registration, unicidad, owner workload persistido y readiness; la ronda 2 confirmó compatibilidad con el registry existente."
+    },
+    {
+      "id": "R5",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "El seam productivo de SOURCING_PO no podía representarse con el provider PR-shaped actual.",
+      "resolution": "La spec añade ISourcingPolicyFactProvider/registry, Envelope tipado, mapping exacto y dispatch HTTP separado; la ronda 4 lo verificó."
+    },
+    {
+      "id": "R6",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "El adapter de proposal carecía inicialmente de descriptor/fingerprint cerrados.",
+      "resolution": "REQ-11 fija descriptor v1, subject/operation, actores, targets, source snapshot y preimage SPEC 03; la ronda 2 lo cerró."
+    },
+    {
+      "id": "R7",
+      "severity": "question",
+      "status": "resolved",
+      "evidence": "La ruta de catálogo no cerraba nulabilidad ni schema de catalog snapshots.",
+      "resolution": "selection_basis fija combinaciones RFQ/Catalog y catalog-snapshot/v1 es set presente con cardinalidad/digest; la ronda 3 lo verificó."
+    },
+    {
+      "id": "R8",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "La ronda 4 observó que expected_process_version no tenía versión contractual ni regla de avance para serializar cancel/publish.",
+      "resolution": "El delta final verificó versión contractual desde 1, incremento lifecycle, CAS `state=ACTIVE AND version=expected`, una sola rama `version+1` y process_ref hacia AWARDED."
+    },
+    {
+      "id": "R9",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Cancelación podía confundirse entre casos proposal y prerequisites PR, y la ref Policy usaba una version inexistente.",
+      "resolution": "REQ-01/13 separan case CANCELLED de attempts ABANDONED/PR WAITING; policy-evaluation-ref/v1 usa evaluation_sequence. Las rondas 3–4 cerraron ambos efectos."
+    },
+    {
+      "id": "R10",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "award-consumption y el owner Procurement no tenían frontera exacta y podían crear ciclo.",
+      "resolution": "Request/response y schemas anidados quedaron cerrados; Procurement distingue proposal pre-award de PR post-award. La ronda 3 no observó circularidad."
+    }
+  ]
+}
