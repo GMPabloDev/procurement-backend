@@ -70,6 +70,14 @@ Ejecutada sobre el commit base `e52e978` con el árbol limpio, antes de cualquie
 
 - Ninguno bloqueante. Véanse las desviaciones internas registradas en CP-01 y CP-02.
 
+### CP-04 — 2026-09-16 09:05 -0500 — Correcciones de la ronda 2 (R10, R12, R15)
+
+- Tareas: T-01–T-08 verificadas; CA-01–CA-08 cumplidos.
+- Cambios: `IFileStorage.IsAvailableAsync` con sonda real de `S3FileStorage` y consumo en readiness (R15); exclusión del propio root en el default bancario (R10); solape contra todas las versiones ACTIVE del selector (R12); dos casos nuevos en `SupplierHardeningIntegrationTests` (8 en total) y `Readiness_degrades_when_the_agreement_storage_is_unreachable` en API/E2E (30).
+- Tests y checks: build 0 errores; Unit `222/222`; Integración `127/127`; API/E2E `30/30`; `git diff --check` limpio; `specctl run-lint 09` válido.
+- HEAD: working tree sin commit sobre `c979d8e`; requiere commit del usuario.
+- Próximo paso: commit, y decidir con el usuario si autoriza una ronda delta acotada a R10/R12/R15 o si se acepta la evidencia propia.
+
 ### CP-03 — 2026-09-16 07:25 -0500 — Correcciones de la revisión independiente (ronda 1)
 
 - Tareas: T-01–T-08 verificadas tras las correcciones; CA-01–CA-08 cumplidos.
@@ -89,12 +97,23 @@ Ejecutada sobre el commit base `e52e978` con el árbol limpio, antes de cualquie
 
 ## Verificación independiente
 
-> **Resultado:** BLOCK (ronda 1) → correcciones aplicadas, pendiente ronda 2
-> **Rondas:** 1/2
-> **Triaje:** R9–R16 aceptados y corregidos
+> **Resultado:** BLOCK (ronda 1) → BLOCK acotado (ronda 2) → correcciones R10/R12/R15 aplicadas, sin tercera ronda autorizada
+> **Rondas:** 2/2
+> **Triaje:** R9–R16 aceptados; ronda 2 cerró R9/R11/R13/R14/R16 y abrió R10/R12/R15, ya corregidos y cubiertos por pruebas propias
 > **Modelo efectivo:** `sdd-implementation-reviewer` · `openai-codex/gpt-5.6-sol` · effort high
-> **Método:** revisión independiente de solo lectura sobre el candidato `2b6954e` (tree `820b6e4`), base `e52e978`, sin modificar archivos
+> **Método:** revisión independiente de solo lectura sobre los candidatos `2b6954e` (ronda 1) y `c979d8e` (ronda 2), base `e52e978`, sin modificar archivos
 > **Fecha:** 2026-09-16
+
+### Ronda 2 (delta de R9–R16) — hallazgos y resolución
+
+| ID | Estado ronda 2 | Decisión y corrección |
+|---|---|---|
+| R9, R11, R13, R14, R16 | Resueltos por el revisor | Sin acción adicional. |
+| R10 | Abierto | Aceptado. `EnsureSingleDefaultPerCurrencyAsync` excluye ahora todas las versiones del mismo root: una cuenta default puede revisarse conservando su condición, y solo otra cuenta de la misma moneda conflictúa. Evidencia: `Revising_the_default_account_keeps_its_condition_and_another_account_conflicts`. |
+| R12 | Abierto | Aceptado. El control de solape recorre todas las versiones ACTIVE del selector, no solo el puntero current, así que retirar con una versión INACTIVE no reabre la ventana histórica. Evidencia: `An_active_window_overlapping_a_retired_active_version_is_rejected`. |
+| R15 | Abierto | Aceptado. `IFileStorage` expone `IsAvailableAsync`: `S3FileStorage` hace una lectura real de una clave y readiness degrada con `SUPPLIER_ATTACHMENT_STORAGE_UNAVAILABLE` cuando el bucket es inalcanzable. Evidencia: `Readiness_degrades_when_the_agreement_storage_is_unreachable` (E2E con storage no disponible) y `S3FileStorage.IsAvailableAsync`. |
+
+Presupuesto de revisión agotado (2/2 llamadas automáticas): la corrección de R10/R12/R15 está respaldada por pruebas propias y por el contraste con los hallazgos, pero no por una tercera ronda automática. Una ronda adicional exige autorización explícita del usuario.
 
 ### Ronda 1 — hallazgos y resolución
 

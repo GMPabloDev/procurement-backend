@@ -156,9 +156,12 @@ public sealed class SupplierHealthCheck(
             try
             {
                 var attachmentStorage = scope.ServiceProvider.GetRequiredService<IFileStorage>();
-                // A read-only probe of the object storage: generating a URL never touches the network
-                // but proves the storage implementation is configured and usable.
-                _ = attachmentStorage.GenerateTemporaryDownloadUrl("supplier-health/probe");
+                // A real read-only probe of the object storage: an unreachable or forbidden bucket
+                // degrades readiness instead of reporting a healthy module (R15).
+                if (!await attachmentStorage.IsAvailableAsync(cancellationToken))
+                {
+                    reasons.Add("SUPPLIER_ATTACHMENT_STORAGE_UNAVAILABLE");
+                }
             }
             catch (Exception)
             {

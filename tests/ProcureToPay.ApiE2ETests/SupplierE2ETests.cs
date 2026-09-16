@@ -229,6 +229,19 @@ public sealed class SupplierE2ETests
         Assert.DoesNotContain("00123456789012345678", audits[0].TargetJson, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Readiness_degrades_when_the_agreement_storage_is_unreachable()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var environment = await SupplierEnvironment.StartAsync(
+            cancellationToken, storageAvailable: false);
+
+        using var health = await environment.CreateClient().GetAsync("/health/supplier", cancellationToken);
+        var body = await health.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        Assert.Equal("SUPPLIER_ATTACHMENT_STORAGE_UNAVAILABLE", body.GetProperty("code").GetString());
+        Assert.Equal("DEGRADED", body.GetProperty("status").GetString());
+    }
+
     private static StringContent JsonContent(object value) => new(
         JsonSerializer.Serialize(value), Encoding.UTF8, "application/json");
 
@@ -248,7 +261,12 @@ public sealed class SupplierE2ETests
 
         public string SpendCategoryDigest { get; private set; } = string.Empty;
 
-        public static async Task<SupplierEnvironment> StartAsync(CancellationToken cancellationToken)
+        public static Task<SupplierEnvironment> StartAsync(CancellationToken cancellationToken) =>
+            StartAsync(cancellationToken, storageAvailable: true);
+
+        public static async Task<SupplierEnvironment> StartAsync(
+            CancellationToken cancellationToken,
+            bool storageAvailable)
         {
             var environment = new SupplierEnvironment
             {
@@ -280,7 +298,7 @@ public sealed class SupplierE2ETests
                 organization.Id, environment.users["buyer"], "HARDWARE", "Hardware", "Seed", "corr-seed",
                 cancellationToken);
             environment.SpendCategoryDigest = category.Digest;
-            environment.factory = new TestApiFactory(connectionString);
+            environment.factory = new TestApiFactory(connectionString, storageAvailable);
             return environment;
         }
 
@@ -605,15 +623,19 @@ public sealed class SupplierE2ETests
         }
     }
 
-    private sealed class InMemoryAgreementStorage : IFileStorage
+    private sealed class InMemoryAgreementStorage(bool available = true) : IFileStorage
     {
         public Task UploadAsync(FileUploadRequest request, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
         public Uri GenerateTemporaryDownloadUrl(string objectKey) => new($"https://agreements.test/{objectKey}");
+
+        public Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(available);
     }
 
-    private sealed class TestApiFactory(string connectionString) : WebApplicationFactory<Program>
+    private sealed class TestApiFactory(string connectionString, bool storageAvailable = true)
+        : WebApplicationFactory<Program>
     {
         internal static readonly SymmetricSecurityKey SigningKey =
             new(Encoding.UTF8.GetBytes("procure-to-pay-e2e-signing-key-2026-32-bytes!"));
@@ -649,7 +671,7 @@ public sealed class SupplierE2ETests
             builder.ConfigureTestServices(services =>
             {
                 services.RemoveAll<IFileStorage>();
-                services.AddSingleton<IFileStorage, InMemoryAgreementStorage>();
+                services.AddSingleton<IFileStorage>(new InMemoryAgreementStorage(storageAvailable));
                 services.AddAuthentication(options =>
                 {
                     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;

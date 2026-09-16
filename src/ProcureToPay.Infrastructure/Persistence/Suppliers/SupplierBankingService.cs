@@ -330,10 +330,12 @@ public sealed class SupplierBankingService(
             .AsNoTracking()
             .Where(row => row.OrganizationId == organizationId && row.SupplierId == supplierId)
             .ToArrayAsync(cancellationToken);
+        // The account being revised is the same account: a new version of its own root may keep the
+        // default flag. Only another root of the same currency conflicts (REQ-05).
         var latestByDetail = rows
             .GroupBy(row => row.BankingDetailId)
             .Select(group => group.OrderByDescending(row => row.Version).First())
-            .Where(row => !(row.BankingDetailId == detailId && row.Version == version))
+            .Where(row => row.BankingDetailId != detailId)
             .ToArray();
         var conflict = latestByDetail.Any(row =>
             row.IsDefault && string.Equals(row.Currency, content.Currency, StringComparison.Ordinal));

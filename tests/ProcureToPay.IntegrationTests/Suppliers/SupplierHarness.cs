@@ -37,6 +37,12 @@ public sealed class InMemoryFileStorage : IFileStorage
 
     public Uri GenerateTemporaryDownloadUrl(string objectKey) =>
         new($"https://agreements.test/{Uri.EscapeDataString(objectKey)}");
+
+    /// <summary>Configurable probe so a suite can assert the readiness degradation.</summary>
+    public bool Available { get; set; } = true;
+
+    public Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(Available);
 }
 
 /// <summary>

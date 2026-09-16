@@ -280,17 +280,21 @@ public sealed class ApprovedSupplierCatalogGovernanceService(
                     "A catalogue version must keep the exact selector of its root.");
             }
 
-            if (entry.CurrentVersion > 0)
+            // REQ-06: no two ACTIVE versions of one selector may overlap, so the check covers every
+            // persisted ACTIVE version and not only the current pointer (a retired INACTIVE version
+            // in between does not reopen the window).
+            var activeWindows = await dbContext.ApprovedSupplierCatalogVersions
+                .AsNoTracking()
+                .Where(record => record.CatalogEntryId == entry.Id &&
+                                 record.Status == (int)ApprovedCatalogEntryStatus.Active)
+                .Select(record => new { record.ValidFrom, record.ValidTo })
+                .ToArrayAsync(cancellationToken);
+            if (status == ApprovedCatalogEntryStatus.Active &&
+                activeWindows.Any(window =>
+                    content.ValidFrom < window.ValidTo && window.ValidFrom < content.ValidTo))
             {
-                var current = await LoadVersionAsync(entry.Id, entry.CurrentVersion, cancellationToken);
-                if (current.Content.Status == ApprovedCatalogEntryStatus.Active &&
-                    status == ApprovedCatalogEntryStatus.Active &&
-                    content.ValidFrom < current.Content.ValidTo &&
-                    current.Content.ValidFrom < content.ValidTo)
-                {
-                    throw new DomainConflictException(
-                        "An active catalogue version of that selector already covers the requested window.");
-                }
+                throw new DomainConflictException(
+                    "An active catalogue version of that selector already covers the requested window.");
             }
         }
 

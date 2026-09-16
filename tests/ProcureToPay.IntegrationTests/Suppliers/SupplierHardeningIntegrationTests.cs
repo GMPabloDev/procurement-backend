@@ -138,6 +138,89 @@ public sealed class SupplierHardeningIntegrationTests
     }
 
     [Fact]
+    public async Task Revising_the_default_account_keeps_its_condition_and_another_account_conflicts()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await SupplierHarness.StartAsync(cancellationToken);
+        var supplierId = await ApprovedSupplierAsync(harness, cancellationToken);
+        await using var context = harness.CreateContext();
+        var services = harness.CreateServices(context);
+        var first = new SupplierBankingContent(
+            "ABC Tech SAC", "Banco de Prueba", "PE", "PEN", SupplierBankingAccountType.Checking,
+            "00123456789012345678", null, "BANKPEPL", IsDefault: true);
+
+        var initial = await services.Banking.SaveAsync(
+            harness.OrganizationId, supplierId, harness.BuyerId, null, first,
+            "Initial", "banking-default-1", "corr-1", cancellationToken);
+
+        // R10: a new version of the same account may keep the default condition.
+        var revised = await services.Banking.SaveAsync(
+            harness.OrganizationId, supplierId, harness.BuyerId, initial.Id,
+            first with { AccountNumber = "00123456789012345679" },
+            "Transfer to the new account number", "banking-default-2", "corr-2", cancellationToken);
+        Assert.Equal(initial.Id, revised.Id);
+        Assert.Equal(initial.Version + 1, revised.Version);
+
+        // R10: another account of the same currency cannot also be the default.
+        await Assert.ThrowsAsync<DomainConflictException>(() => services.Banking.SaveAsync(
+            harness.OrganizationId, supplierId, harness.BuyerId, null,
+            first with { BankName = "Otro Banco", AccountNumber = "00999999999999999999" },
+            "Second account", "banking-default-3", "corr-3", cancellationToken));
+
+        // A different currency is a different default and is admitted.
+        var dollars = await services.Banking.SaveAsync(
+            harness.OrganizationId, supplierId, harness.BuyerId, null,
+            first with { Currency = "USD", AccountNumber = "00111111111111111111" },
+            "Dollar account", "banking-default-4", "corr-4", cancellationToken);
+        Assert.NotEqual(initial.Id, dollars.Id);
+    }
+
+    [Fact]
+    public async Task An_active_window_overlapping_a_retired_active_version_is_rejected()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await SupplierHarness.StartAsync(cancellationToken);
+        var supplierId = await ApprovedSupplierAsync(harness, cancellationToken);
+        var supplierVersion = (await harness.CreateServices(harness.CreateContext())
+            .Persistence.FindOperationalAsync(harness.OrganizationId, supplierId, cancellationToken))!.Version;
+        await using var context = harness.CreateContext();
+        var services = harness.CreateServices(context);
+        var attachment = await StageAsync(harness, context, services, supplierId, cancellationToken);
+        var from = DateTimeOffset.UtcNow.AddDays(-1);
+        var to = DateTimeOffset.UtcNow.AddDays(60);
+        var supplierRef = new VersionedEntityRef("SUPPLIER", supplierId, supplierVersion);
+
+        var active = await services.Catalog.SaveAsync(
+            harness.OrganizationId, harness.BuyerId, null, null, supplierRef, Category(harness), null,
+            900m, "PEN", "UNIT", "ACME-2026-001", from, to, ApprovedCatalogEntryStatus.Active,
+            attachment.Id, attachment.Version, "First active window", "catalog-w1", "corr-w1", cancellationToken);
+        await services.Catalog.SubmitAsync(
+            harness.OrganizationId, harness.BuyerId, active.Version.CatalogEntryId, active.Version.Version,
+            "submit-w1", "corr-submit-w1", cancellationToken);
+        await harness.DecideAndDispatchAsync(ApprovalDecisionAction.Approve, cancellationToken);
+        context.ChangeTracker.Clear();
+
+        // A retired INACTIVE version closes the effective window...
+        var retired = await services.Catalog.SaveAsync(
+            harness.OrganizationId, harness.BuyerId, active.Version.CatalogEntryId, 1, supplierRef,
+            Category(harness), null, 900m, "PEN", "UNIT", "ACME-2026-001", from, to,
+            ApprovedCatalogEntryStatus.Inactive, attachment.Id, attachment.Version,
+            "Retire the window", "catalog-w2", "corr-w2", cancellationToken);
+        await services.Catalog.SubmitAsync(
+            harness.OrganizationId, harness.BuyerId, retired.Version.CatalogEntryId, retired.Version.Version,
+            "submit-w2", "corr-submit-w2", cancellationToken);
+        await harness.DecideAndDispatchAsync(ApprovalDecisionAction.Approve, cancellationToken);
+        context.ChangeTracker.Clear();
+
+        // ...but it does not reopen the historical ACTIVE window for a new overlapping one.
+        await Assert.ThrowsAsync<DomainConflictException>(() => services.Catalog.SaveAsync(
+            harness.OrganizationId, harness.BuyerId, active.Version.CatalogEntryId, 2, supplierRef,
+            Category(harness), null, 950m, "PEN", "UNIT", "ACME-2026-002", DateTimeOffset.UtcNow,
+            to.AddDays(30), ApprovedCatalogEntryStatus.Active, attachment.Id, attachment.Version,
+            "Reopen the window", "catalog-w3", "corr-w3", cancellationToken));
+    }
+
+    [Fact]
     public async Task A_duplicate_general_entry_a_selector_change_and_an_overlap_are_rejected()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

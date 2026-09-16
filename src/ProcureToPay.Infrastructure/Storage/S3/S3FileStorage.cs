@@ -49,6 +49,23 @@ internal sealed class S3FileStorage(IAmazonS3 s3Client, S3StorageOptions options
         return new Uri(s3Client.GetPreSignedURL(request));
     }
 
+    public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // A single-key listing is a real read-only round trip to the bucket: an unreachable or
+            // forbidden bucket fails here instead of being reported as available.
+            await s3Client.ListObjectsV2Async(
+                new ListObjectsV2Request { BucketName = GetBucketName(), MaxKeys = 1 },
+                cancellationToken);
+            return true;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
     private void ValidateUpload(FileUploadRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
