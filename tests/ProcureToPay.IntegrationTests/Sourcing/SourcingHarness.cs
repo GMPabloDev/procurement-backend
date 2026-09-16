@@ -84,6 +84,8 @@ public sealed class SourcingHarness : IAsyncDisposable
 
     public SourcingEvaluationService CreateEvaluationService(ProcureToPayDbContext context) => new(context);
 
+    public SourcingSelectionService CreateSelectionService(ProcureToPayDbContext context) => new(context);
+
     public async ValueTask DisposeAsync()
     {
         await container.DisposeAsync();

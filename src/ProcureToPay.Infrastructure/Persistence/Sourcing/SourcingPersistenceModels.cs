@@ -321,3 +321,45 @@ public sealed class SourcingManualScoreRecord
     public Guid ActorUserId { get; set; }
     public DateTimeOffset OccurredAt { get; set; }
 }
+
+/// <summary>
+/// Root of the human selection of one line (REQ-09). Exactly one current selection exists per line,
+/// and every change appends a successor instead of rewriting the previous decision.
+/// </summary>
+public sealed class SourcingSelectionRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid ProcessId { get; set; }
+    public Guid RfqId { get; set; }
+    public Guid LineId { get; set; }
+    public int CurrentVersion { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+}
+
+/// <summary>Append-only selection version (<c>sourcing-selection/v1</c>, REQ-09).</summary>
+public sealed class SourcingSelectionVersionRecord
+{
+    public Guid SelectionId { get; set; }
+    public int Version { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid ProcessId { get; set; }
+    public Guid RfqId { get; set; }
+    public Guid LineId { get; set; }
+    public int LineVersion { get; set; }
+    public string LineContentDigest { get; set; } = null!;
+    public Guid SupplierId { get; set; }
+    public int SupplierVersion { get; set; }
+    public Guid QuotationId { get; set; }
+    public int QuotationVersion { get; set; }
+    public string QuotationContentDigest { get; set; } = null!;
+    public Guid? EvaluationId { get; set; }
+    public int? EvaluationVersion { get; set; }
+    public string? EvaluationContentDigest { get; set; }
+    public bool Recommended { get; set; }
+    public string? DeviationJustification { get; set; }
+    public Guid ActorUserId { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
+
+    public SourcingSelectionRecord Selection { get; set; } = null!;
+}

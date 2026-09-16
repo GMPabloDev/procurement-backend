@@ -22,7 +22,8 @@ public sealed class SourcingController(
     ProcureToPayDbContext dbContext,
     SourcingProcessService processes,
     SourcingQuotationService quotations,
-    SourcingEvaluationService evaluations)
+    SourcingEvaluationService evaluations,
+    SourcingSelectionService selections)
     : ControllerBase
 {
     [HttpPost("processes")]
@@ -555,6 +556,51 @@ public sealed class SourcingController(
             organizationId, evaluationId, version, cancellationToken));
     }
 
+    [HttpPost("rfqs/{rfqId:guid}/selections")]
+    public async Task<ActionResult<SourcingSelectionView>> SelectLine(
+        Guid rfqId,
+        SelectLineRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await RequireBuyerAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        var selection = await selections.SelectAsync(
+            new SelectLineCommand(
+                organizationId,
+                rfqId,
+                request.LineId,
+                request.SupplierId,
+                request.ExpectedSelectionVersion,
+                request.DeviationJustification,
+                request.CommandKey ?? string.Empty),
+            actor.Id,
+            HttpContext.TraceIdentifier,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        return Created(
+            $"/api/v1/sourcing/rfqs/{rfqId}/selections/{selection.SelectionId}", selection);
+    }
+
+    [HttpGet("rfqs/{rfqId:guid}/selections")]
+    public async Task<ActionResult<IReadOnlyList<SourcingSelectionView>>> ListSelections(
+        Guid rfqId,
+        CancellationToken cancellationToken)
+    {
+        await RequireBuyerOrAuditorAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        return Ok(await selections.ListSelectionsAsync(organizationId, rfqId, cancellationToken));
+    }
+
+    [HttpGet("rfqs/{rfqId:guid}/proposal-drafts")]
+    public async Task<ActionResult<IReadOnlyList<SourcingProposalDraft>>> ListProposalDrafts(
+        Guid rfqId,
+        CancellationToken cancellationToken)
+    {
+        await RequireBuyerOrAuditorAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        return Ok(await selections.PartitionAsync(organizationId, rfqId, cancellationToken));
+    }
+
     private async Task<UserProfileRecord> RequireBuyerAsync(CancellationToken cancellationToken)
     {
         var actor = await RequireAuthenticatedAsync(cancellationToken);
@@ -745,6 +791,13 @@ public sealed record RecordManualScoreRequest(
     string? CommandKey);
 
 public sealed record EvaluateRfqRequest(string? CommandKey);
+
+public sealed record SelectLineRequest(
+    Guid LineId,
+    Guid SupplierId,
+    int? ExpectedSelectionVersion,
+    string? DeviationJustification,
+    string? CommandKey);
 
 public sealed record SourcingProcessLineResponse(
     Guid LineId,

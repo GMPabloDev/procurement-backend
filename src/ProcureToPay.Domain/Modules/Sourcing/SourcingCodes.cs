@@ -75,11 +75,13 @@ public static class SourcingCodes
     public const string ActionFxRegistered = "SOURCING_FX_SNAPSHOT_REGISTERED";
     public const string ActionManualScoreRecorded = "SOURCING_MANUAL_SCORE_RECORDED";
     public const string ActionEvaluationCreated = "SOURCING_RFQ_EVALUATED";
+    public const string ActionLineSelected = "SOURCING_LINE_SELECTED";
 
     public const string TargetProcess = "SourcingProcess";
     public const string TargetRfq = "RfqVersion";
     public const string TargetQuotation = "QuotationVersion";
     public const string TargetAttachment = "SourcingAttachment";
+    public const string TargetSelection = "SourcingSelection";
 
     public const int MaxLinesPerProcess = 500;
     public const int MaxSuppliersPerRfq = 100;

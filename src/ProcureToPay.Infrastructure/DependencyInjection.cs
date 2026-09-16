@@ -323,6 +323,7 @@ public static class DependencyInjection
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingQuotationService>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingQuotationQueries>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingEvaluationService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingSelectionService>();
 
         services.AddDefaultAWSOptions(configuration.GetAWSOptions());
         services.AddAWSService<IAmazonS3>();

@@ -31,6 +31,8 @@ public static class SourcingModelConfiguration
         ConfigureEvaluationVersion(modelBuilder);
         ConfigureFxSnapshot(modelBuilder);
         ConfigureManualScore(modelBuilder);
+        ConfigureSelection(modelBuilder);
+        ConfigureSelectionVersion(modelBuilder);
     }
 
     private static void ConfigureProcess(ModelBuilder modelBuilder)
@@ -259,6 +261,32 @@ public static class SourcingModelConfiguration
         entity.Property(record => record.EvidenceJson).HasMaxLength(2_000).IsRequired();
         entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
         entity.HasIndex(record => new { record.OrganizationId, record.RfqId, record.LineId, record.SupplierId, record.Criterion });
+    }
+
+    private static void ConfigureSelection(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingSelectionRecord>();
+        entity.ToTable("SourcingSelections", Schema);
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        // REQ-09: exactly one current selection per line, which is what makes the award unambiguous.
+        entity.HasIndex(record => new { record.OrganizationId, record.RfqId, record.LineId }).IsUnique();
+    }
+
+    private static void ConfigureSelectionVersion(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingSelectionVersionRecord>();
+        entity.ToTable("SourcingSelectionVersions", Schema, table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => new { record.SelectionId, record.Version });
+        entity.Property(record => record.LineContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.QuotationContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.EvaluationContentDigest).HasMaxLength(64);
+        entity.Property(record => record.DeviationJustification).HasMaxLength(4_000);
+        entity.HasIndex(record => new { record.OrganizationId, record.RfqId });
+        entity.HasOne(record => record.Selection)
+            .WithMany()
+            .HasForeignKey(record => record.SelectionId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 
     private static void ConfigureOutbox(ModelBuilder modelBuilder)
