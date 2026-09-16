@@ -10,6 +10,7 @@ using ProcureToPay.Domain.Modules.Suppliers;
 using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
+using Microsoft.Extensions.Logging.Abstractions;
 using ProcureToPay.Infrastructure.Persistence.Sourcing;
 using ProcureToPay.Infrastructure.Persistence.Suppliers;
 using Testcontainers.MsSql;
@@ -72,7 +73,11 @@ public sealed class SourcingHarness : IAsyncDisposable
     public IConfiguration Configuration => new ConfigurationBuilder()
         .AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["Storage:S3:TemporaryUrlLifetimeMinutes"] = "15"
+            ["Storage:S3:TemporaryUrlLifetimeMinutes"] = "15",
+            ["Sourcing:Waiver:ValidityDays"] = "7",
+            // The sourcing domain is the only workload allowed to open a quotation waiver (REQ-05).
+            ["Approval:Workloads:0:Issuer"] = SourcingWaiverService.Workload.Issuer,
+            ["Approval:Workloads:0:ClientId"] = SourcingWaiverService.Workload.ClientId
         })
         .Build();
 
@@ -85,6 +90,27 @@ public sealed class SourcingHarness : IAsyncDisposable
     public SourcingEvaluationService CreateEvaluationService(ProcureToPayDbContext context) => new(context);
 
     public SourcingSelectionService CreateSelectionService(ProcureToPayDbContext context) => new(context);
+
+    /// <summary>
+    /// Real SPEC 05 submission service over the in-memory configuration: the waiver suite proves the
+    /// recalculation and the fail-closed behaviour, not a fake submitter.
+    /// </summary>
+    public SourcingWaiverService CreateWaiverService(ProcureToPayDbContext context) =>
+        new(context, WaiverSubmissionService(context), Configuration);
+
+    private PolicyExceptionSubmissionService WaiverSubmissionService(ProcureToPayDbContext context)
+    {
+        var configuration = Configuration;
+        var allowlist = new ApprovalWorkloadAllowlist(configuration);
+        var ownerWorkloads = new ApprovalOwnerWorkloadRegistry(configuration, allowlist);
+        var assignmentEngine = new ApprovalAssignmentEngine(
+            context, new OrganizationEligibilityService(context), new ApprovalScopeResolver(context));
+        var submissions = new ApprovalSubmissionService(
+            context, new ApprovalSubmissionAdapterRegistry([]), ownerWorkloads, allowlist, assignmentEngine,
+            NullLogger<ApprovalSubmissionService>.Instance);
+        return new PolicyExceptionSubmissionService(
+            context, submissions, allowlist, NullLogger<PolicyExceptionSubmissionService>.Instance);
+    }
 
     public async ValueTask DisposeAsync()
     {

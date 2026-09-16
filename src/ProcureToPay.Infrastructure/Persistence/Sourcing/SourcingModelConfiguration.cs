@@ -32,6 +32,7 @@ public static class SourcingModelConfiguration
         ConfigureFxSnapshot(modelBuilder);
         ConfigureManualScore(modelBuilder);
         ConfigureSelection(modelBuilder);
+        ConfigureWaiverFacts(modelBuilder);
         ConfigureSelectionVersion(modelBuilder);
     }
 
@@ -261,6 +262,23 @@ public static class SourcingModelConfiguration
         entity.Property(record => record.EvidenceJson).HasMaxLength(2_000).IsRequired();
         entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
         entity.HasIndex(record => new { record.OrganizationId, record.RfqId, record.LineId, record.SupplierId, record.Criterion });
+    }
+
+    private static void ConfigureWaiverFacts(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingWaiverFactsRecord>();
+        entity.ToTable("SourcingWaiverFacts", Schema, table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.RequirementKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.BaseResultDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.PolicyContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ManifestDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.TargetsJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.DocumentJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.CommandKey).HasMaxLength(128).IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.RfqId });
+        entity.HasIndex(record => new { record.OrganizationId, record.ActorUserId, record.CommandKey }).IsUnique();
     }
 
     private static void ConfigureSelection(ModelBuilder modelBuilder)

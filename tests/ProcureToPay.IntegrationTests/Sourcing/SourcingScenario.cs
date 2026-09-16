@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using ProcureToPay.Domain.Modules.Sourcing;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Sourcing;
@@ -24,6 +25,33 @@ public static class SourcingScenario
         ProcureToPayDbContext context,
         CancellationToken cancellationToken) =>
         await OpenAsync(harness, context, priceOnly: false, quotation: true, cancellationToken);
+
+    /// <summary>Opens an RFQ that received no response yet, to prove the zero-quote rules (REQ-05).</summary>
+    public static async Task<(SourcingProcessView Process, SourcingRfqOutcome Rfq)> OpenRfqWithoutQuotationAsync(
+        SourcingHarness harness,
+        ProcureToPayDbContext context,
+        CancellationToken cancellationToken) =>
+        await OpenAsync(harness, context, priceOnly: true, quotation: false, cancellationToken);
+
+    /// <summary>
+    /// Publishes the quotation allowance of the seeded prerequisite: the minimum the case demands and
+    /// the floor a waiver can never cross (REQ-05).
+    /// </summary>
+    public static async Task SetQuotationAllowanceAsync(
+        SourcingHarness harness,
+        ProcureToPayDbContext context,
+        int minimum,
+        int? floor,
+        CancellationToken cancellationToken)
+    {
+        var parameters = floor is null
+            ? $"{{\"minimum_allowed_quotations\":null,\"minimum_quotations\":{minimum}}}"
+            : $"{{\"minimum_allowed_quotations\":{floor.Value},\"minimum_quotations\":{minimum}}}";
+        await context.Database.ExecuteSqlRawAsync(
+            "UPDATE [Approval].[ApprovalPrerequisites] SET [ParametersJson] = {0} WHERE [Key] = {1}",
+            [parameters, "QUOTES"],
+            cancellationToken);
+    }
 
     /// <summary>Persists one evaluated version of an RFQ that already carries a valid quotation.</summary>
     public static async Task<SourcingEvaluationView> EvaluateAsync(

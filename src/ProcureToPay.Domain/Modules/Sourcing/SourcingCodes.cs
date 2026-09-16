@@ -76,6 +76,7 @@ public static class SourcingCodes
     public const string ActionManualScoreRecorded = "SOURCING_MANUAL_SCORE_RECORDED";
     public const string ActionEvaluationCreated = "SOURCING_RFQ_EVALUATED";
     public const string ActionLineSelected = "SOURCING_LINE_SELECTED";
+    public const string ActionWaiverRequested = "SOURCING_QUOTATION_WAIVER_REQUESTED";
 
     public const string TargetProcess = "SourcingProcess";
     public const string TargetRfq = "RfqVersion";

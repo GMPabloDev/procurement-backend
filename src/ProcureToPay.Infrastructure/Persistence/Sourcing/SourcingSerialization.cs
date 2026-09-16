@@ -227,6 +227,69 @@ public static class SourcingSerialization
     public static string Decimal(decimal value) =>
         value.ToString("0.############################", CultureInfo.InvariantCulture);
 
+    /// <summary>Targets of one quotation waiver: line reference, count and exact quotation versions.</summary>
+    public static string WaiverTargets(IEnumerable<SourcingWaiverTarget> targets) => new JsonArray(
+        (targets ?? []).OrderBy(target => target.LineRef.Id).Select(target => (JsonNode)new JsonObject
+        {
+            ["line_ref"] = ContentRefNode(target.LineRef),
+            ["quotation_refs"] = new JsonArray(target.QuotationRefs
+                .OrderBy(reference => reference.Id)
+                .Select(reference => (JsonNode)ContentRefNode(reference)).ToArray()),
+            ["valid_quotations"] = target.ValidQuotations
+        }).ToArray()).ToJsonString(Options);
+
+    public static IReadOnlyList<SourcingWaiverTarget> ReadWaiverTargets(string json)
+    {
+        var array = Root(json).AsArray();
+        var targets = new List<SourcingWaiverTarget>(array.Count);
+        foreach (var node in array)
+        {
+            var item = RequireObject(node, ["line_ref", "quotation_refs", "valid_quotations"]);
+            targets.Add(new SourcingWaiverTarget(
+                ReadContentRef(item["line_ref"]),
+                item["quotation_refs"]!.AsArray().Select(ReadContentRef).ToArray()));
+        }
+
+        return targets;
+    }
+
+    /// <summary>
+    /// Rehydrates <c>quotation-waiver-facts/v1</c> from its stored canonical document and recomputes
+    /// the digest, so a tampered row cannot be interpreted as a valid waiver (REQ-05).
+    /// </summary>
+    public static SourcingWaiverFacts ReadWaiverFacts(string json)
+    {
+        var item = RequireObject(JsonNode.Parse(json), [
+            "base_bundle_id", "base_result_digest", "canonicalization_version", "computed_at",
+            "contract_version", "floor", "from", "manifest_digest", "organization_id",
+            "policy_content_digest", "policy_version_id", "prerequisite_id", "process_id",
+            "requirement_key", "rfq_ref", "targets", "to"
+        ]);
+        var targetNodes = item["targets"]!.AsArray();
+        var wrapper = new JsonObject
+        {
+            ["targets"] = new JsonArray(targetNodes.Select(node => node!.DeepClone()).ToArray())
+        };
+        return new SourcingWaiverFacts(
+            Guid.Parse(item["organization_id"]!.GetValue<string>()),
+            Guid.Parse(item["process_id"]!.GetValue<string>()),
+            ReadContentRef(item["rfq_ref"]),
+            Guid.Parse(item["prerequisite_id"]!.GetValue<string>()),
+            item["requirement_key"]!.GetValue<string>(),
+            Guid.Parse(item["base_bundle_id"]!.GetValue<string>()),
+            item["base_result_digest"]!.GetValue<string>(),
+            Guid.Parse(item["policy_version_id"]!.GetValue<string>()),
+            item["policy_content_digest"]!.GetValue<string>(),
+            item["manifest_digest"]!.GetValue<string>(),
+            item["from"]!.GetValue<int>(),
+            item["to"]!.GetValue<int>(),
+            item["floor"]!.GetValue<int>(),
+            ReadWaiverTargets(wrapper.ToJsonString(Options)),
+            DateTimeOffset.Parse(
+                item["computed_at"]!.GetValue<string>(), CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal));
+    }
+
     /// <summary>Set of versioned entity references, stored as its canonical elements.</summary>
     public static string EntityRefs(IEnumerable<SourcingEntityRef> references) =>
         new JsonArray((references ?? [])

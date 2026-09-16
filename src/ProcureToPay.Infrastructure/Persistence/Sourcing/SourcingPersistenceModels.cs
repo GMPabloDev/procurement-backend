@@ -363,3 +363,34 @@ public sealed class SourcingSelectionVersionRecord
 
     public SourcingSelectionRecord Selection { get; set; } = null!;
 }
+
+/// <summary>
+/// Persisted facts of one quotation waiver request (REQ-05). They are written before the approval
+/// case exists, so the recalculated counts are auditable even when the submission fails closed.
+/// </summary>
+public sealed class SourcingWaiverFactsRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid ProcessId { get; set; }
+    public Guid RfqId { get; set; }
+    public int RfqVersion { get; set; }
+    public Guid PrerequisiteId { get; set; }
+    public string RequirementKey { get; set; } = null!;
+    public Guid BaseBundleId { get; set; }
+    public string BaseResultDigest { get; set; } = null!;
+    public Guid PolicyVersionId { get; set; }
+    public string PolicyContentDigest { get; set; } = null!;
+    public string ManifestDigest { get; set; } = null!;
+    public int From { get; set; }
+    public int To { get; set; }
+    public int Floor { get; set; }
+    public string TargetsJson { get; set; } = null!;
+    public string DocumentJson { get; set; } = null!;
+    public string ContentDigest { get; set; } = null!;
+    public string CommandKey { get; set; } = null!;
+    public Guid? ApprovalCaseId { get; set; }
+    public Guid? ApprovalRequirementId { get; set; }
+    public Guid ActorUserId { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
+}

@@ -23,7 +23,8 @@ public sealed class SourcingController(
     SourcingProcessService processes,
     SourcingQuotationService quotations,
     SourcingEvaluationService evaluations,
-    SourcingSelectionService selections)
+    SourcingSelectionService selections,
+    SourcingWaiverService waivers)
     : ControllerBase
 {
     [HttpPost("processes")]
@@ -601,6 +602,37 @@ public sealed class SourcingController(
         return Ok(await selections.PartitionAsync(organizationId, rfqId, cancellationToken));
     }
 
+    [HttpPost("rfqs/{rfqId:guid}/waivers")]
+    public async Task<ActionResult<SourcingWaiverView>> RequestWaiver(
+        Guid rfqId,
+        RequestWaiverRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await RequireBuyerAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        var waiver = await waivers.RequestReductionAsync(
+            new RequestQuotationWaiverCommand(
+                organizationId,
+                rfqId,
+                request.RequirementKey ?? string.Empty,
+                request.CommandKey ?? string.Empty),
+            actor.Id,
+            HttpContext.TraceIdentifier,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        return Created($"/api/v1/sourcing/waivers/{waiver.FactsId}", waiver);
+    }
+
+    [HttpGet("waivers/{factsId:guid}")]
+    public async Task<ActionResult<SourcingWaiverView>> GetWaiver(
+        Guid factsId,
+        CancellationToken cancellationToken)
+    {
+        await RequireBuyerOrAuditorAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        return Ok(await waivers.GetFactsAsync(organizationId, factsId, cancellationToken));
+    }
+
     private async Task<UserProfileRecord> RequireBuyerAsync(CancellationToken cancellationToken)
     {
         var actor = await RequireAuthenticatedAsync(cancellationToken);
@@ -791,6 +823,8 @@ public sealed record RecordManualScoreRequest(
     string? CommandKey);
 
 public sealed record EvaluateRfqRequest(string? CommandKey);
+
+public sealed record RequestWaiverRequest(string? RequirementKey, string? CommandKey);
 
 public sealed record SelectLineRequest(
     Guid LineId,
