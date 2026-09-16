@@ -6,11 +6,13 @@ using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
 using ProcureToPay.Domain.Modules.ReferenceCatalogs;
+using ProcureToPay.Domain.Modules.Suppliers;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
+using ProcureToPay.Infrastructure.Persistence.Suppliers;
 using System.Data.Common;
 
 namespace ProcureToPay.Api.Health;
@@ -33,14 +35,18 @@ public sealed class PurchaseRequestHealthCheck(
         (PurchaseRequestAssertionType.ActiveInOrganization, PurchaseRequestReferenceType.Department),
         (PurchaseRequestAssertionType.ActiveInOrganization, PurchaseRequestReferenceType.CostCenter),
         (PurchaseRequestAssertionType.ActiveInOrganization, PurchaseRequestReferenceType.SpendCategory),
-        (PurchaseRequestAssertionType.CostCenterOwnedByDepartment, PurchaseRequestReferenceType.CostCenter)
+        (PurchaseRequestAssertionType.CostCenterOwnedByDepartment, PurchaseRequestReferenceType.CostCenter),
+        // SPEC 09 REQ-09: the supplier slot is a mandatory readiness dependency of this delivery.
+        (PurchaseRequestAssertionType.ActiveInOrganization, PurchaseRequestReferenceType.Supplier)
     ];
 
     /// <summary>Policy catalogs the SPEC 07 reference catalogs must resolve exactly once (REQ-05).</summary>
     private static readonly string[] RequiredPolicyCatalogs =
     [
         CostCenterPolicyReferenceCatalog.Catalog,
-        SpendCategoryPolicyReferenceCatalog.Catalog
+        SpendCategoryPolicyReferenceCatalog.Catalog,
+        // SPEC 09 REQ-09: the supplier catalog is required by the same grammar as SPEC 07.
+        SupplierPolicyReferenceCatalog.Catalog
     ];
 
     private static readonly TimeSpan StuckAttemptBudget = TimeSpan.FromMinutes(15);
@@ -69,7 +75,7 @@ public sealed class PurchaseRequestHealthCheck(
             {
                 var adapter = adapters.ResolveExactlyOne(
                     PurchaseRequestCodes.SubjectType, PurchaseRequestCodes.SubmitOperation,
-                    PolicyApprovalAdapter.ContractVersion);
+                    PolicyApprovalAdapter.ContractVersionV4);
                 if (!adapter.Descriptor.RequesterRequired ||
                     !adapter.Descriptor.AllowsRequesterAsOriginator ||
                     !adapter.Descriptor.SupersessionDeltaSupported)
@@ -123,10 +129,12 @@ public sealed class PurchaseRequestHealthCheck(
                 try
                 {
                     var resolved = catalogRegistry.Resolve(catalog);
-                    var expectedVersion = string.Equals(
-                        catalog, CostCenterPolicyReferenceCatalog.Catalog, StringComparison.Ordinal)
-                        ? CostCenterPolicyReferenceCatalog.Version
-                        : SpendCategoryPolicyReferenceCatalog.Version;
+                    var expectedVersion = catalog switch
+                    {
+                        CostCenterPolicyReferenceCatalog.Catalog => CostCenterPolicyReferenceCatalog.Version,
+                        SpendCategoryPolicyReferenceCatalog.Catalog => SpendCategoryPolicyReferenceCatalog.Version,
+                        _ => SupplierCodes.SupplierOwnerContractVersion
+                    };
                     if (string.IsNullOrWhiteSpace(resolved.ContractVersion) ||
                         !string.Equals(resolved.ContractVersion, expectedVersion, StringComparison.Ordinal))
                     {
@@ -222,6 +230,8 @@ public sealed class PurchaseRequestHealthCheck(
             (ReferenceCatalogCodes.CostCenterOwnerId, ReferenceCatalogCodes.CostCenterOwnerContractVersion),
         PurchaseRequestReferenceType.SpendCategory =>
             (ReferenceCatalogCodes.SpendCategoryOwnerId, ReferenceCatalogCodes.SpendCategoryOwnerContractVersion),
+        PurchaseRequestReferenceType.Supplier =>
+            (SupplierCodes.SupplierOwnerId, SupplierCodes.SupplierOwnerContractVersion),
         PurchaseRequestReferenceType.LegalEntity or
         PurchaseRequestReferenceType.User or
         PurchaseRequestReferenceType.Department =>

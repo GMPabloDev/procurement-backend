@@ -131,7 +131,9 @@ builder.Services
     .AddCheck<ApprovalHealthCheck>("approval", tags: ["ready"])
     .AddCheck<PolicyExceptionHealthCheck>("policy-exception", tags: ["ready"])
     .AddCheck<PurchaseRequestHealthCheck>("purchase-request", tags: ["ready"])
-    .AddCheck<BudgetHealthCheck>("budget", tags: ["ready"]);
+    .AddCheck<BudgetHealthCheck>("budget", tags: ["ready"])
+    // SPEC 09 REQ-12: supplier owner, catalog, key provider, adapters, processor and storage.
+    .AddCheck<SupplierHealthCheck>("supplier", tags: ["ready"]);
 
 var telemetryServiceName = builder.Configuration["OpenTelemetry:ServiceName"]
     ?? builder.Environment.ApplicationName;
@@ -265,6 +267,23 @@ app.MapHealthChecks("/health/budget", new HealthCheckOptions
         var code = report.Status == HealthStatus.Healthy
             ? "BUDGET_OK"
             : entry.Description ?? "BUDGET_DEGRADED";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            status = report.Status.ToString().ToUpperInvariant(),
+            code
+        });
+    }
+});
+
+app.MapHealthChecks("/health/supplier", new HealthCheckOptions
+{
+    Predicate = registration => registration.Name == "supplier",
+    ResponseWriter = async (context, report) =>
+    {
+        var entry = report.Entries.Values.Single();
+        var code = report.Status == HealthStatus.Healthy
+            ? "SUPPLIER_OK"
+            : entry.Description ?? "SUPPLIER_DEGRADED";
         await context.Response.WriteAsJsonAsync(new
         {
             status = report.Status.ToString().ToUpperInvariant(),

@@ -1424,6 +1424,7 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
             var attestation = new PurchaseRequestAttestationService(
                 context,
                 new PurchaseRequestReferenceOwnerRegistry(owners),
+                NoApprovedSupplierCatalog.Instance,
                 persistence,
                 NullLogger<PurchaseRequestAttestationService>.Instance);
             var provider = new PurchaseRequestPolicyFactProvider(
@@ -1447,11 +1448,15 @@ public sealed class ReferenceCatalogSubmitIntegrationTests
             var budgetLedger = new ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetLedgerService(
                 context, budgetPersistence);
             var budgetBuilder = new PurchaseRequestBudgetDemandBuilder(context);
+            // SPEC 09 REQ-10: new submissions use v4; v2 and v3 stay resolvable for an attempt that
+            // was already persisted with them.
             var registry = new ApprovalSubmissionAdapterRegistry(
             [
                 new PolicyApprovalAdapter(context),
                 new PolicyApprovalAdapter(
-                    context, PolicyApprovalAdapter.ContractVersionV3, budgetBuilder)
+                    context, PolicyApprovalAdapter.ContractVersionV3, budgetBuilder),
+                new PolicyApprovalAdapter(
+                    context, PolicyApprovalAdapter.ContractVersionV4, budgetBuilder)
             ]);
             var assignmentEngine = new ApprovalAssignmentEngine(
                 context,

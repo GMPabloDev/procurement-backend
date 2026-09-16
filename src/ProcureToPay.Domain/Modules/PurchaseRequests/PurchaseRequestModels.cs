@@ -115,11 +115,17 @@ public static class PurchaseRequestCodes
     public const string RequestContentVersion = "purchase-request-version/v1";
     public const string AttestationVersion = "purchase-request-reference-attestation/v1";
     public const string ManifestVersion = "purchase-request-completeness-manifest/v1";
+
+    /// <summary>SPEC 09: the v2 manifest adds the frozen supplier fact snapshot set.</summary>
+    public const string ManifestVersionV2 = "purchase-request-completeness-manifest/v2";
     public const string SubmissionVersion = "purchase-request-submission/v1";
     public const string VerificationVersion = "purchase-request-reference-verification/v1";
     public const string MaterialityVersion = "purchase-request-materiality/v1";
     public const string ProviderId = "purchase-request-domain";
     public const string ProviderContractVersion = "purchase-request-policy-facts/v1";
+
+    /// <summary>SPEC 09: the v2 provider serves the real supplier preference and agreement facts.</summary>
+    public const string ProviderContractVersionV2 = "purchase-request-policy-facts/v2";
     public const string SubjectType = "PURCHASE_REQUEST";
     public const string EvaluationOperation = "REQUEST_EVALUATE";
     public const string SubmitOperation = "SUBMIT_PURCHASE_REQUEST";

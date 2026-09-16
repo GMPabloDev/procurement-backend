@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
+using ProcureToPay.Domain.Modules.Suppliers;
 using ProcureToPay.Domain.SharedKernel;
 
 namespace ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
@@ -195,6 +196,77 @@ public static class PurchaseRequestSerialization
     }
 
     public static string ManifestLines(IEnumerable<PurchaseRequestLineRef> lines) => LineRefs(lines);
+
+    /// <summary>
+    /// SPEC 09 REQ-09: the frozen supplier fact snapshot set of one presented version. Every property
+    /// is written explicitly so a reader can reject a tampered row by shape.
+    /// </summary>
+    public static string SupplierFactSnapshots(SupplierFactSnapshotSet set)
+    {
+        ArgumentNullException.ThrowIfNull(set);
+        return new JsonArray(set.Snapshots.Select(snapshot => (JsonNode)new JsonObject
+        {
+            ["agreement_status"] = snapshot.AgreementStatus,
+            ["catalog_content_digest"] = snapshot.CatalogContentDigest,
+            ["catalog_entry_id"] = snapshot.CatalogEntryRef?.Id.ToString("D"),
+            ["catalog_entry_version"] = snapshot.CatalogEntryRef?.Version,
+            ["evaluated_at"] = SupplierCodes.FormatUtc(snapshot.EvaluatedAt),
+            ["line_content_digest"] = snapshot.SourceLine.ContentDigest,
+            ["line_id"] = snapshot.SourceLine.Id.ToString("D"),
+            ["line_version"] = snapshot.SourceLine.Version,
+            ["preferred_supplier"] = snapshot.PreferredSupplier,
+            ["product_ref"] = snapshot.ProductRef is null ? null : JsonNode.Parse(EntityRef(snapshot.ProductRef)),
+            ["snapshot_digest"] = snapshot.Digest,
+            ["spend_category_ref"] = JsonNode.Parse(CodeRef(snapshot.SpendCategoryRef)),
+            ["supplier_ref"] = snapshot.SupplierRef is null ? null : JsonNode.Parse(EntityRef(snapshot.SupplierRef))
+        }).ToArray()).ToJsonString(Options);
+    }
+
+    public static IReadOnlyList<SupplierPolicyFactSnapshot> ReadSupplierFactSnapshots(
+        string? json,
+        Guid organizationId)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return [];
+        }
+
+        var array = JsonNode.Parse(json)?.AsArray()
+            ?? throw new JsonException("The stored supplier fact snapshot set is empty.");
+        var snapshots = new List<SupplierPolicyFactSnapshot>(array.Count);
+        foreach (var node in array)
+        {
+            var item = node?.AsObject()
+                ?? throw new JsonException("A stored supplier fact snapshot is not an object.");
+            var entryId = item["catalog_entry_id"]?.GetValue<string>();
+            var entryVersion = item["catalog_entry_version"]?.GetValue<int?>();
+            snapshots.Add(new SupplierPolicyFactSnapshot(
+                organizationId,
+                new SupplierFactSourceLine(
+                    Guid.Parse(item["line_id"]!.GetValue<string>()),
+                    item["line_version"]!.GetValue<int>(),
+                    item["line_content_digest"]!.GetValue<string>()),
+                item["supplier_ref"] is null || item["supplier_ref"]!.GetValueKind() == JsonValueKind.Null
+                    ? null
+                    : ReadEntityRef(item["supplier_ref"]!.ToJsonString(), "supplier"),
+                ReadCodeRef(item["spend_category_ref"]!.ToJsonString()),
+                item["product_ref"] is null || item["product_ref"]!.GetValueKind() == JsonValueKind.Null
+                    ? null
+                    : ReadEntityRef(item["product_ref"]!.ToJsonString(), "product"),
+                entryId is null ? null : new ApprovedCatalogEntryRef(Guid.Parse(entryId), entryVersion ?? 1),
+                item["catalog_content_digest"]?.GetValue<string>(),
+                item["preferred_supplier"]!.GetValue<bool>(),
+                item["agreement_status"]!.GetValue<string>(),
+                DateTimeOffset.Parse(
+                    item["evaluated_at"]!.GetValue<string>(),
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AdjustToUniversal |
+                    System.Globalization.DateTimeStyles.AssumeUniversal)));
+        }
+
+        return snapshots;
+    }
+
 
     private static JsonObject LineRefValue(PurchaseRequestLineRef reference) => new()
     {

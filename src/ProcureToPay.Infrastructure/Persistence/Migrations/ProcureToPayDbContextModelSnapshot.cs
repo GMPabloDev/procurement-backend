@@ -1700,7 +1700,7 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.ToTable("DecisionEvidenceRevocations", "Approval");
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetAllocationVersionRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetAllocationVersionRecord", b =>
                 {
                     b.Property<Guid>("PositionId")
                         .HasColumnType("uniqueidentifier");
@@ -1771,7 +1771,7 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.ToTable("AllocationVersions", "Budget");
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetAuditRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetAuditRecord", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -1831,7 +1831,7 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.ToTable("AuditRecords", "Budget");
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetBalanceRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetBalanceRecord", b =>
                 {
                     b.Property<Guid>("PositionId")
                         .HasColumnType("uniqueidentifier");
@@ -1869,7 +1869,7 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.ToTable("Balances", "Budget");
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetMovementProducerRegistrationRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetMovementProducerRegistrationRecord", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -1916,7 +1916,7 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.ToTable("MovementProducerRegistrations", "Budget");
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetMovementRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetMovementRecord", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -2019,7 +2019,7 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.ToTable("Movements", "Budget");
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetOperationRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetOperationRecord", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -2099,7 +2099,7 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.ToTable("Operations", "Budget");
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetPositionRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPositionRecord", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -2148,7 +2148,7 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetPrerequisiteAttemptRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPrerequisiteAttemptRecord", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -2275,7 +2275,7 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetPrerequisiteProcessorRegistrationRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPrerequisiteProcessorRegistrationRecord", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -2307,7 +2307,7 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.ToTable("PrerequisiteProcessorRegistrations", "Budget");
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.PurchaseRequestBudgetReleaseAttemptRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.PurchaseRequestBudgetReleaseAttemptRecord", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -3276,6 +3276,11 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.Property<int>("RequestVersion")
                         .HasColumnType("int");
 
+                    b.Property<string>("ContractVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
@@ -3305,6 +3310,9 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("SupplierFactSnapshotsJson")
+                        .HasColumnType("nvarchar(max)");
 
                     b.HasKey("RequestId", "RequestVersion");
 
@@ -3951,6 +3959,979 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.ToTable("SpendCategoryVersions", "ReferenceCatalog");
                 });
 
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.ApprovedSupplierCatalogEntryRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("CurrentVersion")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ProductId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("SpendCategoryCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrganizationId", "SupplierId", "SpendCategoryCode", "ProductId")
+                        .IsUnique()
+                        .HasFilter("[OrganizationId] IS NOT NULL");
+
+                    b.ToTable("ApprovedSupplierCatalogEntries", "Supplier");
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.ApprovedSupplierCatalogVersionRecord", b =>
+                {
+                    b.Property<Guid>("CatalogEntryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ApprovalCaseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AttachmentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AttachmentVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ContentDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)");
+
+                    b.Property<string>("ExternalContractReference")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<decimal>("NegotiatedPrice")
+                        .HasPrecision(38, 12)
+                        .HasColumnType("decimal(38,12)");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("PredecessorVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ProductJson")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<Guid?>("ProposalId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("SpendCategoryJson")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("SupplierVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("UnitCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTimeOffset>("ValidFrom")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("ValidTo")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("CatalogEntryId", "Version");
+
+                    b.HasIndex("AttachmentId");
+
+                    b.HasIndex("OrganizationId", "SupplierId");
+
+                    b.ToTable("ApprovedSupplierCatalogVersions", "Supplier");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierAgreementAttachmentRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("ConfirmedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<long>("Length")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ObjectKey")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int>("State")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id", "Version");
+
+                    b.HasIndex("OrganizationId", "SupplierId");
+
+                    b.ToTable("SupplierAgreementAttachments", "Supplier");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierApprovalResultRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CaseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ContractVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ProposalId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Result")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("TargetId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("TargetVersion")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EventId", "ContractVersion", "TargetId")
+                        .IsUnique();
+
+                    b.ToTable("SupplierApprovalResults", "Supplier");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierAuditRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("ActorJson")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("CauseJson")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("ChangedFieldsJson")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("CorrelationReference")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("EffectKey")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("TargetJson")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrganizationId", "Action", "EffectKey")
+                        .IsUnique();
+
+                    b.ToTable("SupplierAuditRecords", "Supplier");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierBankingCommandRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BankingDetailId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ChangeKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrganizationId", "SupplierId", "ChangeKey")
+                        .IsUnique();
+
+                    b.ToTable("SupplierBankingCommands", "Supplier");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierBankingDefaultRecord", b =>
+                {
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)");
+
+                    b.Property<Guid>("BankingDetailId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.HasKey("SupplierId", "Currency");
+
+                    b.ToTable("SupplierBankingDefaults", "Supplier");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierBankingDetailRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrganizationId", "SupplierId");
+
+                    b.ToTable("SupplierBankingDetails", "Supplier");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierBankingVersionRecord", b =>
+                {
+                    b.Property<Guid>("BankingDetailId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.Property<int>("AccountType")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("BankCountryCode")
+                        .IsRequired()
+                        .HasMaxLength(2)
+                        .HasColumnType("nvarchar(2)");
+
+                    b.Property<string>("BankName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("ChangeKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<byte[]>("Ciphertext")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("KeyVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("MaskedSuffix")
+                        .IsRequired()
+                        .HasMaxLength(4)
+                        .HasColumnType("nvarchar(4)");
+
+                    b.Property<byte[]>("Nonce")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("PredecessorVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("Tag")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.HasKey("BankingDetailId", "Version");
+
+                    b.HasIndex("OrganizationId", "SupplierId");
+
+                    b.ToTable("SupplierBankingVersions", "Supplier");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierChangeProposalRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ApprovalCaseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("BaseVersion")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CandidateVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CaseContractVersion")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("ChangeKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<int>("ChangeKind")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("EditorUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("RequestedStatus")
+                        .HasColumnType("int");
+
+                    b.Property<string>("RequirementKey")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("SensitiveFieldsJson")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<int>("State")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SubmissionKey")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApprovalCaseId");
+
+                    b.HasIndex("OrganizationId", "SupplierId")
+                        .IsUnique()
+                        .HasFilter("[State] IN (1, 2)");
+
+                    b.HasIndex("OrganizationId", "EditorUserId", "ChangeKey")
+                        .IsUnique();
+
+                    b.ToTable("SupplierChangeProposals", "Supplier");
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierFiscalIdentityRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("CountryCode")
+                        .IsRequired()
+                        .HasMaxLength(2)
+                        .HasColumnType("nvarchar(2)");
+
+                    b.Property<int?>("FirstApprovedVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("IdentityKeyDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int?>("LastApprovedVersion")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("TaxId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("TaxIdKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SupplierId")
+                        .IsUnique();
+
+                    b.HasIndex("OrganizationId", "IdentityKeyDigest")
+                        .IsUnique();
+
+                    b.ToTable("SupplierFiscalIdentities", "Supplier");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierPolicyFactSnapshotRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AgreementStatus")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("CatalogContentDigest")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid?>("CatalogEntryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("CatalogEntryVersion")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("EvaluatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("LineContentDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("LineId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("LineVersion")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("PreferredSupplier")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("ProductJson")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("RequestVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SnapshotDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("SpendCategoryJson")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<Guid?>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("SupplierVersion")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RequestId", "RequestVersion", "LineId")
+                        .IsUnique();
+
+                    b.ToTable("SupplierPolicyFactSnapshots", "Supplier");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierPrerequisiteAttemptRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("CaseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("CheckKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("DueAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("EvidenceDigest")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<long>("FencingToken")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("LastErrorCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTimeOffset>("NextAttemptAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("PrerequisiteId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("SignalKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("SignalResult")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("SupplierVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("TargetsJson")
+                        .IsRequired()
+                        .HasMaxLength(100000)
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DueAt");
+
+                    b.HasIndex("PrerequisiteId")
+                        .IsUnique();
+
+                    b.HasIndex("State");
+
+                    b.ToTable("SupplierPrerequisiteAttempts", "Supplier");
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierPrerequisiteProcessorRegistrationRecord", b =>
+                {
+                    b.Property<string>("AdapterId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("AdapterVersion")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("ProcessorId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("AdapterId", "AdapterVersion");
+
+                    b.ToTable("SupplierPrerequisiteProcessorRegistrations", "Supplier");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("FiscalIdentityId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("OperationalVersion")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<Guid?>("WorkingProposalId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FiscalIdentityId")
+                        .IsUnique();
+
+                    b.HasIndex("OrganizationId");
+
+                    b.ToTable("Suppliers", "Supplier");
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierStatusOutboxRecord", b =>
+                {
+                    b.Property<Guid>("EventId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("DispatchedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<int?>("PreviousStatus")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("SupplierVersion")
+                        .HasColumnType("int");
+
+                    b.HasKey("EventId");
+
+                    b.HasIndex("OrganizationId", "OccurredAt");
+
+                    b.ToTable("SupplierStatusOutbox", "Supplier");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierVersionRecord", b =>
+                {
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AddressesJson")
+                        .IsRequired()
+                        .HasMaxLength(100000)
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid?>("ApprovalCaseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("BankingRefsJson")
+                        .IsRequired()
+                        .HasMaxLength(20000)
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("CategoriesSuppliedJson")
+                        .IsRequired()
+                        .HasMaxLength(100000)
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ChangeKey")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("ContactsJson")
+                        .IsRequired()
+                        .HasMaxLength(100000)
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ContentDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("CountryCode")
+                        .IsRequired()
+                        .HasMaxLength(2)
+                        .HasColumnType("nvarchar(2)");
+
+                    b.Property<string>("LegalName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("PaymentTermsJson")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("PerformanceJson")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<int?>("PredecessorVersion")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("ProposalId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<int>("RiskStatus")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SupportedCurrenciesJson")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("TaxId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("TradeName")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.HasKey("SupplierId", "Version");
+
+                    b.HasIndex("OrganizationId", "SupplierId");
+
+                    b.ToTable("SupplierVersions", "Supplier");
+                });
+
             modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Approval.ApprovalPolicyExceptionRequestRecord", b =>
                 {
                     b.HasOne("ProcureToPay.Infrastructure.Persistence.Approval.ApprovalCaseRecord", null)
@@ -3975,9 +4956,9 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetAllocationVersionRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetAllocationVersionRecord", b =>
                 {
-                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetPositionRecord", "Position")
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPositionRecord", "Position")
                         .WithMany()
                         .HasForeignKey("PositionId")
                         .OnDelete(DeleteBehavior.Restrict)
@@ -3986,24 +4967,24 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.Navigation("Position");
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetBalanceRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetBalanceRecord", b =>
                 {
-                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetPositionRecord", null)
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPositionRecord", null)
                         .WithMany()
                         .HasForeignKey("PositionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetMovementRecord", b =>
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetMovementRecord", b =>
                 {
-                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetOperationRecord", "Operation")
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetOperationRecord", "Operation")
                         .WithMany()
                         .HasForeignKey("OperationId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Budgets.BudgetPositionRecord", "Position")
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPositionRecord", "Position")
                         .WithMany()
                         .HasForeignKey("PositionId")
                         .OnDelete(DeleteBehavior.Restrict)
@@ -4180,6 +5161,58 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                     b.Navigation("SpendCategory");
                 });
 
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.ApprovedSupplierCatalogVersionRecord", b =>
+                {
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Suppliers.ApprovedSupplierCatalogEntryRecord", "Entry")
+                        .WithMany()
+                        .HasForeignKey("CatalogEntryId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Entry");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierBankingVersionRecord", b =>
+                {
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierBankingDetailRecord", "Detail")
+                        .WithMany("Versions")
+                        .HasForeignKey("BankingDetailId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Detail");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierRecord", b =>
+                {
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierFiscalIdentityRecord", "FiscalIdentity")
+                        .WithOne("Supplier")
+                        .HasForeignKey("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierRecord", "FiscalIdentityId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Organization.OrganizationRecord", "Organization")
+                        .WithMany()
+                        .HasForeignKey("OrganizationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("FiscalIdentity");
+
+                    b.Navigation("Organization");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierVersionRecord", b =>
+                {
+                    b.HasOne("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierRecord", "Supplier")
+                        .WithMany("Versions")
+                        .HasForeignKey("SupplierId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Supplier");
+                });
+
             modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Organization.AuthorityLevelRecord", b =>
                 {
                     b.Navigation("Grants");
@@ -4224,6 +5257,22 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
                 });
 
             modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.ReferenceCatalogs.SpendCategoryRecord", b =>
+                {
+                    b.Navigation("Versions");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierBankingDetailRecord", b =>
+                {
+                    b.Navigation("Versions");
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierFiscalIdentityRecord", b =>
+                {
+                    b.Navigation("Supplier")
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierRecord", b =>
                 {
                     b.Navigation("Versions");
                 });

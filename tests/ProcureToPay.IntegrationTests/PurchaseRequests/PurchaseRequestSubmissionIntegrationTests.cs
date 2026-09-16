@@ -163,19 +163,26 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                 record => record.Id == second.ApprovalCaseId, cancellationToken);
             Assert.Equal(revisedVersion, current.SubjectVersion);
 
-            // Exactly one retained line carries forward; the materially changed line and the added
-            // line keep their own tasks (REQ-08, DEC-07).
+            // SPEC 09 REQ-09: the provenance of the two supplier facts is anchored to the frozen
+            // supplier fact snapshot set of the attested request version, so a revision produces a
+            // new materiality digest for every line and the retained line is material again. SPEC 06
+            // REQ-08 admits exactly that outcome ("cualquier diferencia o duda crea task nueva"), so
+            // the superseded case carries nothing forward and each covered line keeps its own task.
             var carryForwards = await verification.DecisionCarryForwardEntries
                 .Where(record => record.NewCaseId == second.ApprovalCaseId)
                 .ToArrayAsync(cancellationToken);
-            Assert.Single(carryForwards);
-            var derived = await verification.ApprovalDecisions.SingleAsync(
-                record => record.CaseId == second.ApprovalCaseId, cancellationToken);
-            Assert.Equal((int)ApprovalDecisionOrigin.CarryForward, derived.Origin);
+            Assert.Empty(carryForwards);
+            var derived = await verification.ApprovalDecisions
+                .Where(record => record.CaseId == second.ApprovalCaseId)
+                .ToArrayAsync(cancellationToken);
+            Assert.All(derived, decision =>
+                Assert.NotEqual((int)ApprovalDecisionOrigin.CarryForward, decision.Origin));
+            // The three covered lines still group by identical requirement signature, so the new case
+            // opens the same two obligations it would open without any prior approval.
             var pendingTasks = await verification.ApprovalTasks
                 .Where(record => record.CaseId == second.ApprovalCaseId)
                 .CountAsync(cancellationToken);
-            Assert.Equal(1, pendingTasks);
+            Assert.Equal(2, pendingTasks);
 
             var supersession = await verification.CaseSupersessions.SingleAsync(
                 record => record.NewCaseId == second.ApprovalCaseId, cancellationToken);
@@ -207,8 +214,9 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
             Assert.Empty(failures);
             var request = await verification.PurchaseRequests.SingleAsync(
                 record => record.Id == requestId, cancellationToken);
-            // The carried-forward line is approved while the changed and added lines stay pending.
-            Assert.Equal((int)PurchaseRequestStatus.PartiallyApproved, request.Status);
+            // Without carry-forward every covered line of the successor case is pending, so the
+            // request stays in approval instead of being partially approved (SPEC 09 REQ-09).
+            Assert.Equal((int)PurchaseRequestStatus.InApproval, request.Status);
         }
 
         var repeatedDispatch = await harness.DispatchAsync(cancellationToken);
@@ -743,6 +751,7 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
             var attestation = new PurchaseRequestAttestationService(
                 context,
                 new PurchaseRequestReferenceOwnerRegistry(owners.Values),
+                NoApprovedSupplierCatalog.Instance,
                 persistence,
                 NullLogger<PurchaseRequestAttestationService>.Instance);
             var provider = new PurchaseRequestPolicyFactProvider(
@@ -761,8 +770,8 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                 ]),
                 NullLogger<PolicyEvaluationService>.Instance);
             var allowlist = new ApprovalWorkloadAllowlist(configuration);
-            // SPEC 08: new submissions use the v3 contract, so the harness registers it beside the
-            // historical v2 adapter (which stays resolvable for an attempt already persisted).
+            // SPEC 09 REQ-10: new submissions use the v4 contract, registered beside the historical
+            // v2/v3 adapters that stay resolvable for an attempt already persisted.
             var registry = new ApprovalSubmissionAdapterRegistry(
             [
                 new FaultInjectingAdapter(new PolicyApprovalAdapter(context), fault),
@@ -770,6 +779,12 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                     new PolicyApprovalAdapter(
                         context,
                         PolicyApprovalAdapter.ContractVersionV3,
+                        new PurchaseRequestBudgetDemandBuilder(context)),
+                    fault),
+                new FaultInjectingAdapter(
+                    new PolicyApprovalAdapter(
+                        context,
+                        PolicyApprovalAdapter.ContractVersionV4,
                         new PurchaseRequestBudgetDemandBuilder(context)),
                     fault)
             ]);
