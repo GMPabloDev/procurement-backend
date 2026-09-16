@@ -8,7 +8,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Policy;
+using ProcureToPay.Domain.Modules.Sourcing;
 using ProcureToPay.Domain.SharedKernel;
+using ProcureToPay.Infrastructure.Persistence.Sourcing;
 
 namespace ProcureToPay.Infrastructure.Persistence.Policy;
 
@@ -108,7 +110,10 @@ public sealed class PolicyEvaluationService(
     PolicyFactProviderRegistry factProviderRegistry,
     PolicyExceptionVerifierRegistry exceptionVerifierRegistry,
     PolicyReferenceCatalogRegistry referenceCatalogRegistry,
-    ILogger<PolicyEvaluationService> logger) : IPolicyEvaluationPort
+    ILogger<PolicyEvaluationService> logger,
+    // Optional so a composition without sourcing (historical tests) still builds; an evaluation of
+    // SOURCING_PO without a registry fails closed instead of silently skipping the provider (REQ-10).
+    ISourcingPolicyFactProviderRegistry? sourcingFactProviderRegistry = null) : IPolicyEvaluationPort
 {
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> EvaluationGates = new(StringComparer.Ordinal);
     private static readonly Meter PolicyMeter = new("ProcureToPay.Policy", "1.0");
@@ -279,7 +284,10 @@ public sealed class PolicyEvaluationService(
         // The binding is recomputed from the persisted evaluation and must reproduce the request.
         var expectedBinding = new PolicyExceptionBindingRequest(
             persistedRecord.OrganizationId,
-            persistedBundle.Operation,
+            // REQ-05: the binding identifies the *subject* of the evaluation; the operation of the
+            // evaluation is not a subject type. The request carries the subject identity the
+            // exception was persisted with, and the persisted evaluation supplies the rest.
+            request.Binding.SubjectType,
             persistedBundle.Subject.Id,
             persistedBundle.Subject.Version,
             persistedRecord.Id,
@@ -484,6 +492,129 @@ public sealed class PolicyEvaluationService(
             throw new DomainConflictException("Policy and request organizations differ.");
         }
         return await EvaluateEnterprisePurchaseRequestAsync(factRequest, evaluationKey, cancellationToken);
+    }
+
+    /// <summary>
+    /// Enterprise evaluation of the <c>SOURCING_PO</c> operation (SPEC 10 REQ-10). The workload is
+    /// authenticated and allowlisted, exactly one typed sourcing provider is resolved, its envelope is
+    /// translated into <see cref="PolicySourcingInput"/> and the current request evaluation is verified
+    /// against persistence before the evaluation; a stale envelope, an absent provider or a
+    /// misclassified HTTP input fails closed without a partial bundle.
+    /// </summary>
+    public async Task<PolicyEvaluationBundle> EvaluateEnterpriseSourcingAsync(
+        PolicyFactRequest factRequest,
+        string evaluationKey,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(factRequest);
+        var workload = new PolicyWorkloadIdentity(factRequest.Workload.Issuer, factRequest.Workload.ClientId);
+        if (!workloadAllowlist.IsAllowed(workload))
+        {
+            throw new DomainForbiddenException("The workload is not allowlisted for policy evaluation.");
+        }
+
+        if (!string.Equals(factRequest.Operation, "SOURCING_PO", StringComparison.Ordinal))
+        {
+            throw new DomainValidationException("The sourcing evaluation only serves the SOURCING_PO operation.");
+        }
+
+        ValidateEvaluationKey(evaluationKey);
+        if (factRequest.OrganizationId is not Guid organizationId)
+        {
+            throw new DomainValidationException("Policy evaluation requires an organization scope.");
+        }
+
+        var provider = (sourcingFactProviderRegistry
+            ?? throw new PolicyDependencyUnavailableException(
+                "No sourcing fact provider registry is configured."))
+            .Resolve(factRequest.SubjectType, factRequest.Operation);
+        SourcingPolicyFactEnvelope envelope;
+        using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            try
+            {
+                envelope = await provider.GetFactsAsync(factRequest, timeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new PolicyDependencyUnavailableException("The sourcing fact provider timed out.");
+            }
+            catch (Exception exception) when (exception is not DomainException)
+            {
+                logger.LogWarning(exception, "The sourcing fact provider failed.");
+                throw new PolicyDependencyUnavailableException("The sourcing fact provider is unavailable.");
+            }
+        }
+
+        if (envelope.Request.OrganizationId != organizationId)
+        {
+            throw new DomainConflictException("Policy and sourcing organizations differ.");
+        }
+
+        // The request evaluation the envelope declares must still be the current persisted one: a new
+        // request evaluation, a different sequence or a different digest fails closed (REQ-10).
+        var current = await persistenceService.FindEvaluationAsync(
+            envelope.CurrentRequestEvaluationRef.Id, cancellationToken);
+        if (current is null ||
+            current.SubjectId != envelope.Request.Subject.Id ||
+            current.SubjectVersion != envelope.Request.Subject.Version ||
+            current.EvaluationSequence != envelope.CurrentRequestEvaluationRef.EvaluationSequence ||
+            !string.Equals(
+                current.InputDigest, envelope.CurrentRequestEvaluationRef.InputDigest,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                current.ResultDigest, envelope.CurrentRequestEvaluationRef.ResultDigest,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                current.PolicyContentDigest, envelope.CurrentRequestEvaluationRef.PolicyContentDigest,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainConflictException(
+                "The request evaluation of the sourcing envelope is not current.");
+        }
+
+        var latest = await persistenceService.FindLatestEvaluationAsync(
+            organizationId, envelope.Request.Subject.Id, envelope.Request.Subject.Version, cancellationToken);
+        if (latest is null || latest.Id != current.Id)
+        {
+            throw new DomainConflictException("The request evaluation of the sourcing envelope is stale.");
+        }
+
+        var requestBundle = ValidatePersistedEvaluation(current);
+        if (!string.Equals(
+                requestBundle.ResultDigest, envelope.CurrentRequestEvaluationRef.ResultDigest,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                requestBundle.FactsDigest, envelope.CurrentRequestEvaluationRef.FactsDigest,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                requestBundle.ManifestDigest, envelope.CurrentRequestEvaluationRef.ManifestDigest,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainConflictException(
+                "The persisted request evaluation evidence does not match the sourcing envelope.");
+        }
+
+        var activation = await persistenceService.FindActiveAsync(
+            organizationId, factRequest.RequestedAtUtc, cancellationToken)
+            ?? throw new PolicyConfigurationUnavailableException("No active policy version is available.");
+        var policy = PolicyDocumentParser.Parse(
+            activation.PolicySetVersion.ContentJson,
+            activation.PolicySetVersion.Id,
+            activation.PolicySetVersion.OrganizationId,
+            activation.PolicySetVersion.Sequence,
+            (PolicySetStatus)activation.PolicySetVersion.Status,
+            activation.PolicySetVersion.ContentDigest);
+
+        return await EvaluateSourcingAsync(
+            policy,
+            envelope.ToPolicyInput(requestBundle),
+            workload,
+            evaluationKey,
+            factRequest.RequestedAtUtc,
+            factRequest.CorrelationReference,
+            cancellationToken);
     }
 
     private async Task<PolicyEvaluationBundle> EvaluateEnterprisePurchaseRequestCoreAsync(

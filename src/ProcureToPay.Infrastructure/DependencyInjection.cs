@@ -326,6 +326,15 @@ public static class DependencyInjection
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingSelectionService>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingWaiverService>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingProposalService>();
+        // SPEC 10 REQ-10: the typed sourcing fact provider and its exact-one registry.
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.ISourcingPolicyFactProvider>(
+            provider => new ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingPolicyFactProvider(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<IPolicyFactProviderRegistry>()));
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.ISourcingPolicyFactProviderRegistry>(
+            provider => new ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingPolicyFactProviderRegistry(
+                provider.GetServices<
+                    ProcureToPay.Infrastructure.Persistence.Sourcing.ISourcingPolicyFactProvider>()));
 
         services.AddDefaultAWSOptions(configuration.GetAWSOptions());
         services.AddAWSService<IAmazonS3>();

@@ -11,6 +11,7 @@ using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 using Microsoft.Extensions.Logging.Abstractions;
+using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.Sourcing;
 using ProcureToPay.Infrastructure.Persistence.Suppliers;
 using Testcontainers.MsSql;
@@ -92,6 +93,26 @@ public sealed class SourcingHarness : IAsyncDisposable
     public SourcingSelectionService CreateSelectionService(ProcureToPayDbContext context) => new(context);
 
     public SourcingProposalService CreateProposalService(ProcureToPayDbContext context) => new(context);
+
+    /// <summary>
+    /// Provider over the real composition: it is wired to the same PR fact provider the production
+    /// registry resolves, so its envelope is built from attested facts instead of test doubles.
+    /// </summary>
+    public SourcingPolicyFactProvider CreateSourcingPolicyFactProvider(ProcureToPayDbContext context)
+    {
+        var configuration = Configuration;
+        var requestProvider = new ProcureToPay.Infrastructure.Persistence.PurchaseRequests
+            .PurchaseRequestPolicyFactProvider(
+                context,
+                new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestPersistenceService(
+                    context, NullLogger<
+                        ProcureToPay.Infrastructure.Persistence.PurchaseRequests
+                            .PurchaseRequestPersistenceService>.Instance),
+                NullLogger<ProcureToPay.Infrastructure.Persistence.PurchaseRequests
+                    .PurchaseRequestPolicyFactProvider>.Instance);
+        return new SourcingPolicyFactProvider(
+            context, new PolicyFactProviderRegistry([requestProvider]));
+    }
 
     /// <summary>
     /// Seeds the persisted facts the proposal builder consumes from other modules: the attested

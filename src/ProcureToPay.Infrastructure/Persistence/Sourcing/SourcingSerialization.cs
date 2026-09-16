@@ -290,6 +290,77 @@ public static class SourcingSerialization
                 DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal));
     }
 
+    /// <summary>
+    /// Rehydrates <c>sourcing-completeness-manifest/v1</c> from its canonical document and recomputes
+    /// the digest, so a tampered manifest cannot be served to Policy (REQ-10).
+    /// </summary>
+    public static SourcingCompletenessManifest ReadCompletenessManifest(string json)
+    {
+        var item = RequireObject(JsonNode.Parse(json), [
+            "award_candidate_digest", "canonicalization_version", "catalog_snapshots_digest",
+            "contract_version", "covered_lines", "evaluation_digest", "provider_contract_version",
+            "provider_id", "quotation_set_digest", "request_bundle_id", "request_id",
+            "request_manifest_digest", "request_result_digest", "request_version", "sourcing_proposal_id",
+            "sourcing_proposal_version", "terms_digest"
+        ]);
+        var manifest = new SourcingCompletenessManifest(
+            item["provider_id"]!.GetValue<string>(),
+            item["provider_contract_version"]!.GetValue<string>(),
+            Guid.Parse(item["request_id"]!.GetValue<string>()),
+            item["request_version"]!.GetValue<int>(),
+            item["request_manifest_digest"]!.GetValue<string>(),
+            item["request_result_digest"]!.GetValue<string>(),
+            Guid.Parse(item["request_bundle_id"]!.GetValue<string>()),
+            Guid.Parse(item["sourcing_proposal_id"]!.GetValue<string>()),
+            item["sourcing_proposal_version"]!.GetValue<int>(),
+            item["covered_lines"]!.AsArray().Select(ReadContentRef).ToArray(),
+            item["evaluation_digest"] is null ||
+            item["evaluation_digest"]!.GetValueKind() == JsonValueKind.Null
+                ? null
+                : item["evaluation_digest"]!.GetValue<string>(),
+            item["quotation_set_digest"]!.GetValue<string>(),
+            item["catalog_snapshots_digest"]!.GetValue<string>(),
+            item["award_candidate_digest"]!.GetValue<string>(),
+            item["terms_digest"]!.GetValue<string>());
+        if (!string.Equals(manifest.CanonicalDocument(), json, StringComparison.Ordinal))
+        {
+            throw new SourcingDependencyUnavailableException("The stored completeness manifest is corrupted.");
+        }
+
+        return manifest;
+    }
+
+    /// <summary>
+    /// Rehydrates <c>policy-evaluation-ref/v1</c> of the request bundle the proposal was built against
+    /// and checks it against the manifest that publishes the request digests (REQ-10).
+    /// </summary>
+    public static SourcingPolicyEvaluationRef ReadPolicyEvaluationRef(
+        string json,
+        SourcingCompletenessManifest manifest)
+    {
+        var item = RequireObject(JsonNode.Parse(json), [
+            "evaluation_sequence", "facts_digest", "id", "input_digest", "manifest_digest",
+            "policy_content_digest", "result_digest"
+        ]);
+        var reference = new SourcingPolicyEvaluationRef(
+            item["evaluation_sequence"]!.GetValue<long>(),
+            Guid.Parse(item["id"]!.GetValue<string>()),
+            item["facts_digest"]!.GetValue<string>(),
+            item["input_digest"]!.GetValue<string>(),
+            item["manifest_digest"]!.GetValue<string>(),
+            item["policy_content_digest"]!.GetValue<string>(),
+            item["result_digest"]!.GetValue<string>());
+        if (reference.Id != manifest.RequestBundleId ||
+            !string.Equals(reference.ResultDigest, manifest.RequestResultDigest, StringComparison.Ordinal) ||
+            !string.Equals(reference.ManifestDigest, manifest.RequestManifestDigest, StringComparison.Ordinal))
+        {
+            throw new SourcingDependencyUnavailableException(
+                "The stored policy evaluation reference does not match the manifest.");
+        }
+
+        return reference;
+    }
+
     /// <summary>Set of versioned entity references, stored as its canonical elements.</summary>
     public static string EntityRefs(IEnumerable<SourcingEntityRef> references) =>
         new JsonArray((references ?? [])

@@ -154,8 +154,18 @@ public sealed class PolicyController(
             Cause = request.Cause,
             PreviousResultDigest = request.PreviousResultDigest
         };
-        return Ok(await policyEvaluationService.EvaluateEnterprisePurchaseRequestAsync(
-            factRequest, request.EvaluationKey, cancellationToken));
+        // SPEC 10 REQ-10: the dispatch is explicit. REQUEST_EVALUATE reaches the Purchase Request
+        // evaluation and SOURCING_PO the sourcing one; any other operation is a client error and never
+        // falls back to a PR-shaped provider or to a direct input.
+        return request.Operation switch
+        {
+            "REQUEST_EVALUATE" => Ok(await policyEvaluationService.EvaluateEnterprisePurchaseRequestAsync(
+                factRequest, request.EvaluationKey, cancellationToken)),
+            "SOURCING_PO" => Ok(await policyEvaluationService.EvaluateEnterpriseSourcingAsync(
+                factRequest, request.EvaluationKey, cancellationToken)),
+            _ => throw new DomainValidationException(
+                $"The operation '{request.Operation}' is not a supported evaluation operation.")
+        };
     }
 
     [HttpPost("evaluations/{evaluationId:guid}/quotation-waiver")]
@@ -195,9 +205,21 @@ public sealed class PolicyController(
             .Select(line => new PolicyExceptionTarget(
                 line.Type, line.Id, line.Version, line.MaterialSnapshotDigest))
             .ToArray();
+        // REQ-05: the exception binding belongs to the *subject* of the evaluation, not to the
+        // operation of its evaluation. The persisted exception request is the only source of the
+        // subject identity, exactly as the verifier rebuilds it.
+        var exceptionRequest = await dbContext.ApprovalPolicyExceptionRequests
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                row => row.OrganizationId == record.OrganizationId &&
+                       row.BaseBundleId == record.Id &&
+                       row.TargetRequirementKey == request.TargetRequirementKey &&
+                       row.ReferenceId == request.ReferenceId,
+                cancellationToken)
+            ?? throw new DomainNotFoundException("The policy exception request is not visible.");
         var binding = new PolicyExceptionBindingRequest(
             record.OrganizationId,
-            bundle.Operation,
+            exceptionRequest.SubjectType,
             bundle.Subject.Id,
             bundle.Subject.Version,
             record.Id,
