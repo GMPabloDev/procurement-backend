@@ -91,6 +91,65 @@ public sealed class SourcingHarness : IAsyncDisposable
 
     public SourcingSelectionService CreateSelectionService(ProcureToPayDbContext context) => new(context);
 
+    public SourcingProposalService CreateProposalService(ProcureToPayDbContext context) => new(context);
+
+    /// <summary>
+    /// Seeds the persisted facts the proposal builder consumes from other modules: the attested
+    /// completeness manifest of the request version and the newest Policy evaluation bundle it binds.
+    /// </summary>
+    public async Task SeedProposalFixturesAsync(
+        ProcureToPayDbContext context,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var policyVersionId = Guid.NewGuid();
+        context.PolicySetVersions.Add(new ProcureToPay.Infrastructure.Persistence.Policy.PolicySetVersionRecord
+        {
+            Id = policyVersionId,
+            OrganizationId = OrganizationId,
+            Sequence = 1,
+            ScopesJson = "[\"LINE\"]",
+            ContentJson = "{}",
+            ContentDigest = Digest('1')
+        });
+        context.PurchaseRequestCompletenessManifests.Add(
+            new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestCompletenessManifestRecord
+            {
+                RequestId = RequestId,
+                RequestVersion = 1,
+                OrganizationId = OrganizationId,
+                RequestContentDigest = Digest('2'),
+                ReferenceAttestationDigest = Digest('3'),
+                PolicyManifestDigest = Digest('4'),
+                DomainAttestationDigest = Digest('5'),
+                LinesJson = "[]",
+                ContractVersion = "purchase-request-completeness-manifest/v2"
+            });
+        context.PolicyEvaluationBundles.Add(
+            new ProcureToPay.Infrastructure.Persistence.Policy.PolicyEvaluationBundleRecord
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = OrganizationId,
+                EvaluationKey = "sourcing-proposal-seed",
+                WorkloadIssuer = "internal://procure-to-pay",
+                WorkloadClientId = "purchase-request-domain",
+                Operation = "REQUEST_EVALUATE",
+                EvaluationSequence = 1,
+                SubjectId = RequestId,
+                SubjectVersion = 1,
+                PolicySetVersionId = policyVersionId,
+                EvaluatedAt = now,
+                PolicyContentDigest = Digest('6'),
+                InputDigest = Digest('7'),
+                Result = "ALLOW",
+                ResultDigest = Digest('8'),
+                BundleJson = "{}",
+                IdempotencyFingerprint = Digest('9'),
+                CorrelationReference = "seed-proposal"
+            });
+        await context.SaveChangesAsync(cancellationToken);
+    }
+
     /// <summary>
     /// Real SPEC 05 submission service over the in-memory configuration: the waiver suite proves the
     /// recalculation and the fail-closed behaviour, not a fake submitter.

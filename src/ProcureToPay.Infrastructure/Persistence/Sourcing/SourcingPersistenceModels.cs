@@ -394,3 +394,57 @@ public sealed class SourcingWaiverFactsRecord
     public Guid ActorUserId { get; set; }
     public DateTimeOffset OccurredAt { get; set; }
 }
+
+/// <summary>
+/// Root of the proposal of one supplier of an RFQ (REQ-10). A supplier has at most one proposal root
+/// per RFQ, and every material change appends a successor version instead of rewriting the decision.
+/// </summary>
+public sealed class SourcingProposalRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid ProcessId { get; set; }
+    public Guid RfqId { get; set; }
+    public Guid SupplierId { get; set; }
+    public int CurrentVersion { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+}
+
+/// <summary>
+/// Append-only proposal version (<c>sourcing-proposal-version/v1</c>, REQ-10). Only the approval
+/// bookkeeping of the case may change after the write; the content and its digest never do.
+/// </summary>
+public sealed class SourcingProposalVersionRecord
+{
+    public Guid ProposalId { get; set; }
+    public int Version { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid ProcessId { get; set; }
+    public Guid RfqId { get; set; }
+    public Guid RequestId { get; set; }
+    public int RequestVersion { get; set; }
+    public string RequestRefJson { get; set; } = null!;
+    public string RequestBundleRefJson { get; set; } = null!;
+    public int SelectionBasis { get; set; }
+    public Guid SupplierId { get; set; }
+    public int SupplierVersion { get; set; }
+    public Guid? EvaluationId { get; set; }
+    public int? EvaluationVersion { get; set; }
+    public string? EvaluationContentDigest { get; set; }
+    public Guid? WaiverFactsId { get; set; }
+    public string LineIdsJson { get; set; } = null!;
+    public string TermsJson { get; set; } = null!;
+    public string DocumentJson { get; set; } = null!;
+    public string ContentDigest { get; set; } = null!;
+    public string ManifestJson { get; set; } = null!;
+    public string ManifestDigest { get; set; } = null!;
+    public int State { get; set; }
+    public string? SubmissionKey { get; set; }
+    public Guid? ApprovalCaseId { get; set; }
+    public string? ErrorCode { get; set; }
+    public string CommandKey { get; set; } = null!;
+    public Guid ActorUserId { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
+
+    public SourcingProposalRecord Proposal { get; set; } = null!;
+}

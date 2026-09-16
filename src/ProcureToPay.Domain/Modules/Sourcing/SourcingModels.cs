@@ -626,6 +626,17 @@ public static class SourcingStateCodes
         _ => throw new DomainValidationException("The quotation review code is invalid.")
     };
 
+    public static string ProposalState(SourcingProposalState state) => state switch
+    {
+        SourcingProposalState.Draft => "DRAFT",
+        SourcingProposalState.Submitted => "SUBMITTED",
+        SourcingProposalState.Approved => "APPROVED",
+        SourcingProposalState.Rejected => "REJECTED",
+        SourcingProposalState.ChangesRequested => "CHANGES_REQUESTED",
+        SourcingProposalState.Cancelled => "CANCELLED",
+        _ => throw new DomainValidationException("The proposal state is invalid.")
+    };
+
     public static string SelectionBasis(SourcingSelectionBasis basis) => basis switch
     {
         SourcingSelectionBasis.Rfq => "RFQ",

@@ -24,7 +24,8 @@ public sealed class SourcingController(
     SourcingQuotationService quotations,
     SourcingEvaluationService evaluations,
     SourcingSelectionService selections,
-    SourcingWaiverService waivers)
+    SourcingWaiverService waivers,
+    SourcingProposalService proposals)
     : ControllerBase
 {
     [HttpPost("processes")]
@@ -633,6 +634,46 @@ public sealed class SourcingController(
         return Ok(await waivers.GetFactsAsync(organizationId, factsId, cancellationToken));
     }
 
+    [HttpPost("rfqs/{rfqId:guid}/proposals")]
+    public async Task<ActionResult<SourcingProposalView>> BuildProposal(
+        Guid rfqId,
+        BuildProposalRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await RequireBuyerAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        var proposal = await proposals.BuildAsync(
+            new BuildProposalCommand(
+                organizationId, rfqId, request.SupplierId, request.CommandKey ?? string.Empty),
+            actor.Id,
+            HttpContext.TraceIdentifier,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        return Created(
+            $"/api/v1/sourcing/proposals/{proposal.ProposalId}/versions/{proposal.Version}", proposal);
+    }
+
+    [HttpGet("rfqs/{rfqId:guid}/proposals")]
+    public async Task<ActionResult<IReadOnlyList<SourcingProposalView>>> ListProposals(
+        Guid rfqId,
+        CancellationToken cancellationToken)
+    {
+        await RequireBuyerOrAuditorAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        return Ok(await proposals.ListProposalsAsync(organizationId, rfqId, cancellationToken));
+    }
+
+    [HttpGet("proposals/{proposalId:guid}/versions/{version:int}")]
+    public async Task<ActionResult<SourcingProposalView>> GetProposal(
+        Guid proposalId,
+        int version,
+        CancellationToken cancellationToken)
+    {
+        await RequireBuyerOrAuditorAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        return Ok(await proposals.GetProposalAsync(organizationId, proposalId, version, cancellationToken));
+    }
+
     private async Task<UserProfileRecord> RequireBuyerAsync(CancellationToken cancellationToken)
     {
         var actor = await RequireAuthenticatedAsync(cancellationToken);
@@ -825,6 +866,8 @@ public sealed record RecordManualScoreRequest(
 public sealed record EvaluateRfqRequest(string? CommandKey);
 
 public sealed record RequestWaiverRequest(string? RequirementKey, string? CommandKey);
+
+public sealed record BuildProposalRequest(Guid SupplierId, string? CommandKey);
 
 public sealed record SelectLineRequest(
     Guid LineId,

@@ -66,6 +66,21 @@ public static class SourcingScenario
             DateTimeOffset.UtcNow,
             cancellationToken);
 
+    /// <summary>Selects the single valid supplier of the line with the recommendation (REQ-09).</summary>
+    public static async Task<SourcingSelectionView> SelectAsync(
+        SourcingHarness harness,
+        ProcureToPayDbContext context,
+        SourcingRfqOutcome rfq,
+        CancellationToken cancellationToken) =>
+        await harness.CreateSelectionService(context).SelectAsync(
+            new SelectLineCommand(
+                harness.OrganizationId, rfq.RfqId, harness.LineId, harness.SupplierId, null, null,
+                $"select-{Guid.NewGuid():N}"),
+            harness.BuyerId,
+            "corr-select",
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+
     /// <summary>Stages and confirms one evidence file of the RFQ, returning its exact reference (REQ-03).</summary>
     public static async Task<SourcingAttachmentRef> ConfirmedEvidenceAsync(
         SourcingHarness harness,

@@ -77,12 +77,14 @@ public static class SourcingCodes
     public const string ActionEvaluationCreated = "SOURCING_RFQ_EVALUATED";
     public const string ActionLineSelected = "SOURCING_LINE_SELECTED";
     public const string ActionWaiverRequested = "SOURCING_QUOTATION_WAIVER_REQUESTED";
+    public const string ActionProposalBuilt = "SOURCING_PROPOSAL_BUILT";
 
     public const string TargetProcess = "SourcingProcess";
     public const string TargetRfq = "RfqVersion";
     public const string TargetQuotation = "QuotationVersion";
     public const string TargetAttachment = "SourcingAttachment";
     public const string TargetSelection = "SourcingSelection";
+    public const string TargetProposal = "SourcingProposal";
 
     public const int MaxLinesPerProcess = 500;
     public const int MaxSuppliersPerRfq = 100;
@@ -123,6 +125,19 @@ public static class SourcingCodes
         value is null || !KeyPattern.IsMatch(value)
             ? throw new DomainValidationException(
                 $"{field} must contain 1-128 characters of [A-Za-z0-9._:-].")
+            : value;
+
+    private static readonly Regex ContractIdPattern =
+        new("^[A-Za-z0-9._:/-]{1,128}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Published contract identifier of a provider or adapter, which may carry a version slash such as
+    /// <c>sourcing-policy-facts/v1</c> (REQ-10).
+    /// </summary>
+    public static string ContractId(string? value, string field) =>
+        value is null || !ContractIdPattern.IsMatch(value)
+            ? throw new DomainValidationException(
+                $"{field} must contain 1-128 characters of [A-Za-z0-9._:/-].")
             : value;
 
     public static string Code(string? value, string field)

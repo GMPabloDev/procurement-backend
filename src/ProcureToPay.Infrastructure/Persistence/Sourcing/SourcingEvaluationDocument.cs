@@ -46,6 +46,36 @@ public static class SourcingEvaluationDocument
             .ToArray();
     }
 
+    /// <summary>
+    /// FX snapshot reference of one currency pair inside the frozen evaluation (REQ-08). The reference
+    /// carries the exact snapshot identity and digest an award line must point at.
+    /// </summary>
+    public static SourcingContentRef? ReadFxRef(string documentJson, string sourceCurrency, string baseCurrency)
+    {
+        if (string.Equals(sourceCurrency, baseCurrency, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var root = Parse(documentJson);
+        foreach (var snapshot in root.GetProperty("fx_snapshots").EnumerateArray())
+        {
+            if (string.Equals(snapshot.GetProperty("source_currency").GetString(), sourceCurrency,
+                    StringComparison.Ordinal) &&
+                string.Equals(snapshot.GetProperty("base_currency").GetString(), baseCurrency,
+                    StringComparison.Ordinal))
+            {
+                return new SourcingContentRef(
+                    snapshot.GetProperty("id").GetGuid(),
+                    snapshot.GetProperty("version").GetInt32(),
+                    snapshot.GetProperty("digest").GetString()!);
+            }
+        }
+
+        throw new SourcingDependencyUnavailableException(
+            "The evaluation has no FX snapshot for the awarded currency pair.");
+    }
+
     private static QuotationScore ReadQuotationScore(JsonElement element)
     {
         var lineRef = ReadContentRef(element.GetProperty("line_ref"));

@@ -33,6 +33,8 @@ public static class SourcingModelConfiguration
         ConfigureManualScore(modelBuilder);
         ConfigureSelection(modelBuilder);
         ConfigureWaiverFacts(modelBuilder);
+        ConfigureProposal(modelBuilder);
+        ConfigureProposalVersion(modelBuilder);
         ConfigureSelectionVersion(modelBuilder);
     }
 
@@ -262,6 +264,41 @@ public static class SourcingModelConfiguration
         entity.Property(record => record.EvidenceJson).HasMaxLength(2_000).IsRequired();
         entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
         entity.HasIndex(record => new { record.OrganizationId, record.RfqId, record.LineId, record.SupplierId, record.Criterion });
+    }
+
+    private static void ConfigureProposal(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingProposalRecord>();
+        entity.ToTable("SourcingProposals", Schema);
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        // REQ-10: one proposal root per supplier of the RFQ; its versions are the history.
+        entity.HasIndex(record => new { record.OrganizationId, record.RfqId, record.SupplierId }).IsUnique();
+    }
+
+    private static void ConfigureProposalVersion(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingProposalVersionRecord>();
+        entity.ToTable("SourcingProposalVersions", Schema, table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => new { record.ProposalId, record.Version });
+        entity.Property(record => record.RequestRefJson).HasMaxLength(2_000).IsRequired();
+        entity.Property(record => record.RequestBundleRefJson).HasMaxLength(2_000).IsRequired();
+        entity.Property(record => record.EvaluationContentDigest).HasMaxLength(64);
+        entity.Property(record => record.LineIdsJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.TermsJson).HasMaxLength(1_000).IsRequired();
+        entity.Property(record => record.DocumentJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ManifestJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.ManifestDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.SubmissionKey).HasMaxLength(128);
+        entity.Property(record => record.ErrorCode).HasMaxLength(64);
+        entity.Property(record => record.CommandKey).HasMaxLength(128).IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.RfqId });
+        entity.HasIndex(record => new { record.OrganizationId, record.ActorUserId, record.CommandKey }).IsUnique();
+        entity.HasOne(record => record.Proposal)
+            .WithMany()
+            .HasForeignKey(record => record.ProposalId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 
     private static void ConfigureWaiverFacts(ModelBuilder modelBuilder)
