@@ -5,6 +5,7 @@ using ProcureToPay.Domain.Modules.Budget;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
+using ProcureToPay.Domain.Modules.Suppliers;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Domain.SharedKernel;
 
@@ -36,11 +37,19 @@ public sealed class PolicyApprovalAdapter(
     /// </summary>
     public const string ContractVersionV3 = "v3";
     /// <summary>
+    /// SPEC 09 REQ-10: the v4 contract keeps the complete budget projection of v3 and partitions
+    /// every REQUIRE_ACTIVE_SUPPLIER control by supplier reference, so one combined control over
+    /// lines of different suppliers produces one prerequisite per supplier instead of failing closed
+    /// or validating a single arbitrary one. The DAG, actions, actors and snapshot are unchanged.
+    /// </summary>
+    public const string ContractVersionV4 = "v4";
+    /// <summary>
     /// SPEC 06 REQ-07: the v2 contract declares its requester, admits requester=originator for the
     /// Purchase Request flow and offers <c>REQUEST_CHANGES</c> beside APPROVE and REJECT.
     /// </summary>
     public const string AdapterIdentity = "policy-approval-adapter/v2";
     public const string AdapterIdentityV3 = "policy-approval-adapter/v3";
+    public const string AdapterIdentityV4 = "policy-approval-adapter/v4";
     public const string SubjectType = "PURCHASE_REQUEST";
     public const string Operation = "SUBMIT_PURCHASE_REQUEST";
     public const string SnapshotContractVersion = "policy-evaluation-snapshot/v1";
@@ -122,6 +131,7 @@ public sealed class PolicyApprovalAdapter(
                 record,
                 request,
                 budgetDemandBuilder: null,
+                supplierPartitioning: false,
                 CancellationToken.None).GetAwaiter().GetResult();
 
     /// <summary>
@@ -134,7 +144,7 @@ public sealed class PolicyApprovalAdapter(
         PolicyEvaluationBundleRecord record,
         ApprovalSubmissionRequest request,
         CancellationToken cancellationToken) =>
-        MapCore(dbContext, bundle, material, record, request, budgetDemandBuilder, cancellationToken);
+        MapCore(dbContext, bundle, material, record, request, budgetDemandBuilder, IsV4, cancellationToken);
 
     private static async Task<ApprovalSubmission> MapCore(
         ProcureToPayDbContext? dbContext,
@@ -143,6 +153,7 @@ public sealed class PolicyApprovalAdapter(
         PolicyEvaluationBundleRecord record,
         ApprovalSubmissionRequest request,
         IBudgetDemandBuilder? budgetDemandBuilder,
+        bool supplierPartitioning,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(bundle);
@@ -165,6 +176,10 @@ public sealed class PolicyApprovalAdapter(
                         $"The evaluation contains a blocking control '{control.RequirementKey}'.");
                 case PolicyEffectType.RequireApproval:
                     nodes.Add(RequirementNode(control, material, request));
+                    break;
+                case PolicyEffectType.RequireActiveSupplier when supplierPartitioning:
+                    // SPEC 09 REQ-10: one prerequisite per supplier reference of the covered targets.
+                    nodes.AddRange(SupplierPartitionNodes(control, material, bundle));
                     break;
                 default:
                     nodes.Add(await PrerequisiteNodeAsync(
@@ -209,6 +224,91 @@ public sealed class PolicyApprovalAdapter(
             requirements,
             prerequisites);
     }
+    /// <summary>True when this instance runs the supplier-partitioning contract (SPEC 09 REQ-10).</summary>
+    private bool IsV4 => string.Equals(
+        descriptorValue.ContractVersion, ContractVersionV4, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Deterministic partition of one active-supplier control by the supplier reference attested in
+    /// the confirmed snapshot. Every covered target appears exactly once, each partition keeps the
+    /// singular <c>active-supplier-owner/v1</c> parameters and a missing or unusable reference fails
+    /// closed before any case exists (SPEC 09 REQ-10).
+    /// </summary>
+    private static IReadOnlyList<Node> SupplierPartitionNodes(
+        PolicyGeneratedControl control,
+        IReadOnlyDictionary<Guid, ApprovalTarget> material,
+        PolicyEvaluationBundle bundle)
+    {
+        var targets = Targets(control, material).ToImmutableArray();
+        if (targets.Length == 0)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                $"The control '{control.RequirementKey}' has no confirmed target.");
+        }
+
+        var snapshot = bundle.RequestSnapshotJson
+            ?? throw new ApprovalDependencyUnavailableException(
+                "The evaluation has no persisted snapshot to partition the supplier control.");
+        var partitions = new SortedDictionary<string, List<ApprovalTarget>>(StringComparer.Ordinal);
+        var references = new Dictionary<string, (Guid Id, int Version)>(StringComparer.Ordinal);
+        foreach (var target in targets)
+        {
+            var reference = SupplierReferenceOf(snapshot, target)
+                ?? throw new ApprovalDependencyUnavailableException(
+                    $"The supplier control '{control.RequirementKey}' covers a line without a confirmed supplier.");
+            var key = $"{reference.Id:D}:{reference.Version}";
+            references[key] = reference;
+            if (!partitions.TryGetValue(key, out var bucket))
+            {
+                bucket = [];
+                partitions[key] = bucket;
+            }
+
+            bucket.Add(target);
+        }
+
+        var nodes = new List<Node>(partitions.Count);
+        foreach (var partition in partitions)
+        {
+            var supplier = references[partition.Key];
+            var parameters = SupplierCanonicalizer.SupplierParameters(
+                new ProcureToPay.Domain.Modules.Policy.VersionedEntityRef(
+                    "SUPPLIER", supplier.Id, supplier.Version));
+            var partitionTargets = partition.Value.ToImmutableArray();
+            var prerequisite = new ExternalPrerequisiteDefinition(
+                SupplierCanonicalizer.PartitionKey(control.RequirementKey, new ProcureToPay.Domain.Modules.Policy.VersionedEntityRef(
+                    "SUPPLIER", supplier.Id, supplier.Version)),
+                "active-supplier-owner",
+                "v1",
+                control.Type.ToString().ToUpperInvariant(),
+                SourceControlDigest(control, parameters, partitionTargets),
+                parameters,
+                partitionTargets);
+            nodes.Add(Node.ForPrerequisite(prerequisite, control.Phase, partitionTargets));
+        }
+
+        return nodes;
+    }
+
+    /// <summary>Supplier reference of one covered target in the persisted Policy snapshot.</summary>
+    private static (Guid Id, int Version)? SupplierReferenceOf(string requestSnapshotJson, ApprovalTarget target)
+    {
+        var references = VersionedEntityReferences(
+            requestSnapshotJson, [target], "SUPPLIER");
+        if (references.Count == 0)
+        {
+            return null;
+        }
+
+        if (references.Count > 1)
+        {
+            throw new ApprovalDependencyUnavailableException(
+                "A covered line cannot declare more than one supplier reference.");
+        }
+
+        return (references[0].Id, references[0].Version);
+    }
+
     private static PolicyEvaluationBundle Rehydrate(PolicyEvaluationBundleRecord record)
     {
         try

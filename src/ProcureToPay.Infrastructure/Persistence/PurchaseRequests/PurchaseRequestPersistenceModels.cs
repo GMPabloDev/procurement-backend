@@ -115,6 +115,13 @@ public sealed class PurchaseRequestCompletenessManifestRecord
     public string PolicyManifestDigest { get; set; } = string.Empty;
     public string DomainAttestationDigest { get; set; } = string.Empty;
     public string LinesJson { get; set; } = string.Empty;
+
+    /// <summary>SPEC 09 REQ-09: v1 for historical rows, v2 once the supplier snapshots are frozen.</summary>
+    public string ContractVersion { get; set; } = "purchase-request-completeness-manifest/v1";
+
+    /// <summary>Frozen supplier fact snapshot set of a v2 manifest; null for a historical v1 row.</summary>
+    public string? SupplierFactSnapshotsJson { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
 }
 

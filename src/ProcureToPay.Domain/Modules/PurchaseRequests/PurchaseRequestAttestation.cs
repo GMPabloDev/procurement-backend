@@ -349,4 +349,13 @@ public sealed record PurchaseRequestCompletenessManifest
     public string PolicyManifestDigest { get; }
     public string DomainAttestationDigest { get; }
     public IReadOnlyList<PurchaseRequestLineRef> Lines { get; }
+
+    /// <summary>
+    /// SPEC 09 REQ-09: new attestations freeze the supplier fact snapshot set and publish the v2
+    /// contract. Rows written before this spec keep the v1 value, so their digests stay verifiable.
+    /// </summary>
+    public string ContractVersion { get; init; } = PurchaseRequestCodes.ManifestVersion;
+
+    /// <summary>Digest of the frozen supplier fact snapshot set; null for a v1 manifest.</summary>
+    public string? SupplierFactSnapshotsDigest { get; init; }
 }

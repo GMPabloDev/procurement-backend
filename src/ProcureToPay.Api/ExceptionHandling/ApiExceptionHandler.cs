@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Budget;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
+using ProcureToPay.Domain.Modules.Suppliers;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
@@ -141,6 +142,15 @@ public sealed class ApiExceptionHandler(
                 Title = "Budget reference invalid",
                 Type = "/problems/budget-reference-invalid",
                 Detail = budgetReference.Message
+            },
+            // SPEC 09 REQ-11: an absent, ambiguous or corrupted supplier owner, catalog, lookup,
+            // key or evidence never enables a supplier, a reference or a signal.
+            SupplierDependencyUnavailableException supplierDependencyException => new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Supplier dependency unavailable",
+                Type = "/problems/supplier-dependency-unavailable",
+                Detail = supplierDependencyException.Message
             },
             PolicyDependencyUnavailableException dependencyException => new ProblemDetails
             {

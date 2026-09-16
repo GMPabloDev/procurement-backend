@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using ProcureToPay.Infrastructure.Persistence;
 
@@ -11,9 +12,11 @@ using ProcureToPay.Infrastructure.Persistence;
 namespace ProcureToPay.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ProcureToPayDbContext))]
-    partial class ProcureToPayDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260915211914_Spec09SupplierMaster")]
+    partial class Spec09SupplierMaster
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -4443,10 +4446,6 @@ namespace ProcureToPay.Infrastructure.Persistence.Migrations
 
                     b.Property<int>("State")
                         .HasColumnType("int");
-
-                    b.Property<string>("SubmissionKey")
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
 
                     b.Property<Guid>("SupplierId")
                         .HasColumnType("uniqueidentifier");

@@ -206,6 +206,53 @@ public static class PurchaseRequestCanonicalizer
         return PolicyCanonicalizer.Hash(PolicyCanonicalizer.SerializeCanonical(root));
     }
 
+    /// <summary>
+    /// <c>domain_attestation_digest</c> of the v2 completeness manifest (SPEC 09 REQ-09): the same
+    /// v1 preimage plus the frozen supplier fact snapshot set. Only the contract version and the
+    /// provider contract version change, so a v1 manifest keeps reproducing its original digest.
+    /// </summary>
+    public static string DomainAttestationDigestV2(
+        Guid requestId,
+        int requestVersion,
+        Guid organizationId,
+        string requestContentDigest,
+        string referenceAttestationDigest,
+        string policyManifestDigest,
+        string supplierFactSnapshotsDigest,
+        IEnumerable<PurchaseRequestLineRef> lines)
+    {
+        var materialized = (lines ?? []).ToArray();
+        var root = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["canonicalization_version"] = CanonicalizationVersion,
+            ["contract_version"] = PurchaseRequestCodes.ManifestVersionV2,
+            ["line_count"] = materialized.Length,
+            ["lines"] = materialized
+                .Select(line => (object?)new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["content_digest"] = line.ContentDigest,
+                    ["id"] = CanonicalGuid(line.Id),
+                    ["version"] = line.Version
+                })
+                .OrderBy(value => PolicyCanonicalizer.SerializeCanonical(value!), StringComparer.Ordinal)
+                .ToArray(),
+            ["organization_id"] = CanonicalGuid(organizationId),
+            ["policy_manifest_digest"] = PurchaseRequestLineRef.RequireDigest(
+                policyManifestDigest, "Policy manifest digest"),
+            ["provider_contract_version"] = PurchaseRequestCodes.ProviderContractVersionV2,
+            ["provider_id"] = PurchaseRequestCodes.ProviderId,
+            ["reference_attestation_digest"] = PurchaseRequestLineRef.RequireDigest(
+                referenceAttestationDigest, "Reference attestation digest"),
+            ["request_content_digest"] = PurchaseRequestLineRef.RequireDigest(
+                requestContentDigest, "Request content digest"),
+            ["request_id"] = CanonicalGuid(requestId),
+            ["request_version"] = requestVersion,
+            ["supplier_fact_snapshots_digest"] = PurchaseRequestLineRef.RequireDigest(
+                supplierFactSnapshotsDigest, "Supplier fact snapshots digest")
+        };
+        return PolicyCanonicalizer.Hash(PolicyCanonicalizer.SerializeCanonical(root));
+    }
+
     public static string SubmissionFingerprint(
         Guid requestId,
         int requestVersion,

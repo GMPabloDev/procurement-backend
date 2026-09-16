@@ -5,6 +5,7 @@ using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 using ProcureToPay.Infrastructure.Persistence.ReferenceCatalogs;
+using ProcureToPay.Infrastructure.Persistence.Suppliers;
 
 namespace ProcureToPay.Infrastructure.Persistence;
 
@@ -86,6 +87,28 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<BudgetPrerequisiteProcessorRegistrationRecord> BudgetPrerequisiteProcessorRegistrations =>
         Set<BudgetPrerequisiteProcessorRegistrationRecord>();
     public DbSet<BudgetAuditRecord> BudgetAuditRecords => Set<BudgetAuditRecord>();
+    public DbSet<SupplierRecord> Suppliers => Set<SupplierRecord>();
+    public DbSet<SupplierFiscalIdentityRecord> SupplierFiscalIdentities => Set<SupplierFiscalIdentityRecord>();
+    public DbSet<SupplierVersionRecord> SupplierVersions => Set<SupplierVersionRecord>();
+    public DbSet<SupplierBankingDetailRecord> SupplierBankingDetails => Set<SupplierBankingDetailRecord>();
+    public DbSet<SupplierBankingVersionRecord> SupplierBankingVersions => Set<SupplierBankingVersionRecord>();
+    public DbSet<SupplierBankingDefaultRecord> SupplierBankingDefaults => Set<SupplierBankingDefaultRecord>();
+    public DbSet<SupplierChangeProposalRecord> SupplierChangeProposals => Set<SupplierChangeProposalRecord>();
+    public DbSet<ApprovedSupplierCatalogEntryRecord> ApprovedSupplierCatalogEntries =>
+        Set<ApprovedSupplierCatalogEntryRecord>();
+    public DbSet<ApprovedSupplierCatalogVersionRecord> ApprovedSupplierCatalogVersions =>
+        Set<ApprovedSupplierCatalogVersionRecord>();
+    public DbSet<SupplierAgreementAttachmentRecord> SupplierAgreementAttachments =>
+        Set<SupplierAgreementAttachmentRecord>();
+    public DbSet<SupplierPolicyFactSnapshotRecord> SupplierPolicyFactSnapshots =>
+        Set<SupplierPolicyFactSnapshotRecord>();
+    public DbSet<SupplierPrerequisiteAttemptRecord> SupplierPrerequisiteAttempts =>
+        Set<SupplierPrerequisiteAttemptRecord>();
+    public DbSet<SupplierPrerequisiteProcessorRegistrationRecord> SupplierPrerequisiteProcessorRegistrations =>
+        Set<SupplierPrerequisiteProcessorRegistrationRecord>();
+    public DbSet<SupplierAuditRecord> SupplierAuditRecords => Set<SupplierAuditRecord>();
+    public DbSet<SupplierApprovalResultRecord> SupplierApprovalResults => Set<SupplierApprovalResultRecord>();
+    public DbSet<SupplierStatusOutboxRecord> SupplierStatusOutbox => Set<SupplierStatusOutboxRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -150,6 +173,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigureBudgetMovementProducerRegistration(modelBuilder);
         ConfigureBudgetPrerequisiteProcessorRegistration(modelBuilder);
         ConfigureBudgetAudit(modelBuilder);
+        SupplierModelConfiguration.Configure(modelBuilder);
         base.OnModelCreating(modelBuilder);
     }
 
@@ -244,6 +268,9 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         entity.Property(record => record.PolicyManifestDigest).HasMaxLength(64).IsRequired();
         entity.Property(record => record.DomainAttestationDigest).HasMaxLength(64).IsRequired();
         entity.Property(record => record.LinesJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.ContractVersion).HasMaxLength(64).IsRequired();
+        // SPEC 09 REQ-09: the frozen supplier fact snapshot set of a v2 manifest.
+        entity.Property(record => record.SupplierFactSnapshotsJson).HasColumnType("nvarchar(max)");
     }
 
     private static void ConfigurePurchaseRequestSubmissionAttempt(ModelBuilder modelBuilder)

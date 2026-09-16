@@ -17,7 +17,9 @@ public static class PurchaseRequestPolicyProjection
     public static IReadOnlyDictionary<string, PolicyValue> LineFacts(
         PurchaseRequestLineContent content,
         bool costCenterActive,
-        bool costCenterDepartmentActive)
+        bool costCenterDepartmentActive,
+        bool preferredSupplier = false,
+        string agreementStatus = "NONE")
     {
         ArgumentNullException.ThrowIfNull(content);
         var facts = new SortedDictionary<string, PolicyValue>(StringComparer.Ordinal)
@@ -43,12 +45,12 @@ public static class PurchaseRequestPolicyProjection
                 content.CostCenterDepartmentRef.Version),
             ["COST_CENTER_ACTIVE"] = PolicyValue.Boolean(costCenterActive),
             ["COST_CENTER_DEPARTMENT_ACTIVE"] = PolicyValue.Boolean(costCenterDepartmentActive),
-            // v1 payload carries no supplier preference or agreement revision: the closed catalog
-            // is projected with its non-informative value instead of inventing a fact.
-            ["PREFERRED_SUPPLIER"] = PolicyValue.Boolean(false),
+            // SPEC 09 REQ-08: both facts come from the frozen approved catalogue snapshot of the
+            // line. A version without one keeps the non-informative value of the v1 contract.
+            ["PREFERRED_SUPPLIER"] = PolicyValue.Boolean(preferredSupplier),
             ["CONTRACT_REQUIRED"] = PolicyValue.Boolean(content.ContractRequired),
             ["NON_STANDARD_TERMS"] = PolicyValue.Boolean(content.NonStandardTerms),
-            ["EXTERNAL_AGREEMENT_STATUS"] = PolicyValue.Code("NONE")
+            ["EXTERNAL_AGREEMENT_STATUS"] = PolicyValue.Code(agreementStatus)
         };
         if (content.SupplierRef is not null)
         {
@@ -99,7 +101,8 @@ public static class PurchaseRequestPolicyProjection
         Guid lineId,
         int lineVersion,
         IReadOnlyDictionary<string, PolicyValue> facts,
-        string referenceAttestationDigest)
+        string referenceAttestationDigest,
+        string? supplierFactReference = null)
     {
         ArgumentNullException.ThrowIfNull(facts);
         var prefix = $"pr://{requestId:D}/versions/{requestVersion}/lines/{lineId:D}/versions/{lineVersion}";
@@ -119,8 +122,10 @@ public static class PurchaseRequestPolicyProjection
                 "REQUIRED_PRODUCT" => $"{prefix}#required_product_ref",
                 "CONTRACT_REQUIRED" => $"{prefix}#contract_required",
                 "NON_STANDARD_TERMS" => $"{prefix}#non_standard_terms",
-                "PREFERRED_SUPPLIER" => $"{prefix}#preferred_supplier",
-                "EXTERNAL_AGREEMENT_STATUS" => $"{prefix}#external_agreement_status",
+                // A v2 line points both supplier facts at the frozen catalogue snapshot that
+                // answered them; a v1 line keeps its original field provenance (SPEC 09 REQ-09).
+                "PREFERRED_SUPPLIER" => supplierFactReference ?? $"{prefix}#preferred_supplier",
+                "EXTERNAL_AGREEMENT_STATUS" => supplierFactReference ?? $"{prefix}#external_agreement_status",
                 "COST_CENTER_ACTIVE" =>
                     $"attestations/{referenceAttestationDigest}#{PurchaseRequestCodes.Code(PurchaseRequestAssertionType.ActiveInOrganization)}",
                 "COST_CENTER_DEPARTMENT_ACTIVE" =>

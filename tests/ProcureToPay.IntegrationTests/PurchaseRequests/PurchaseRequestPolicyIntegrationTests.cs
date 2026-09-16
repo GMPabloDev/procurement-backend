@@ -168,6 +168,7 @@ public sealed class PurchaseRequestPolicyIntegrationTests
             harness.attestation = new PurchaseRequestAttestationService(
                 harness.Context,
                 new PurchaseRequestReferenceOwnerRegistry(harness.owners.Values),
+                NoApprovedSupplierCatalog.Instance,
                 harness.Service,
                 NullLogger<PurchaseRequestAttestationService>.Instance);
             harness.provider = new PurchaseRequestPolicyFactProvider(
@@ -282,6 +283,7 @@ public sealed class PurchaseRequestPolicyIntegrationTests
             attestation = new PurchaseRequestAttestationService(
                 Context,
                 new PurchaseRequestReferenceOwnerRegistry(owners.Values),
+                NoApprovedSupplierCatalog.Instance,
                 Service,
                 NullLogger<PurchaseRequestAttestationService>.Instance);
         }

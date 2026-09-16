@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
+using ProcureToPay.Domain.Modules.Suppliers;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 
 namespace ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
@@ -22,7 +23,7 @@ public sealed class PurchaseRequestPolicyFactProvider(
 
     public string ProviderId => PurchaseRequestCodes.ProviderId;
 
-    public string ContractVersion => PurchaseRequestCodes.ProviderContractVersion;
+    public string ContractVersion => PurchaseRequestCodes.ProviderContractVersionV2;
 
     public async Task<PolicyFactBundle> GetFactsAsync(
         PolicyFactRequest request,
@@ -65,6 +66,21 @@ public sealed class PurchaseRequestPolicyFactProvider(
             throw new PolicyDependencyUnavailableException(
                 "The reference attestation of the purchase request version is corrupted.");
         }
+
+        // SPEC 09 REQ-09: a v2 manifest serves the frozen supplier facts of its lines; a historical
+        // v1 manifest keeps serving the v1 projection so its digest stays reproducible.
+        var isV2 = string.Equals(
+            manifest.ContractVersion, PurchaseRequestCodes.ManifestVersionV2, StringComparison.Ordinal);
+        var supplierSnapshots = isV2
+            ? PurchaseRequestSerialization.ReadSupplierFactSnapshots(
+                manifest.SupplierFactSnapshotsJson, manifest.OrganizationId)
+            : [];
+        // The frozen set digest is reproduced from the persisted rows; it enters the manifest
+        // digest below, so a tampered snapshot cannot pass this check.
+        var supplierFactSnapshotsDigest = isV2
+            ? new SupplierFactSnapshotSet(
+                manifest.OrganizationId, request.SubjectId, request.SubjectVersion, supplierSnapshots).Digest
+            : null;
 
         var assertions = PurchaseRequestSerialization.ReadAssertions(attestation.AssertionsJson);
         var recomputedAttestation = PurchaseRequestCanonicalizer.ReferenceAttestationDigest(
@@ -126,17 +142,29 @@ public sealed class PurchaseRequestPolicyFactProvider(
                 PurchaseRequestAssertionType.CostCenterOwnedByDepartment,
                 line.Content.CostCenterRef,
                 line.Content.CostCenterDepartmentRef);
+            var supplierSnapshot = supplierSnapshots.SingleOrDefault(
+                candidate => candidate.SourceLine.Id == reference.Id &&
+                             candidate.SourceLine.Version == reference.Version);
             var facts = PurchaseRequestPolicyProjection.LineFacts(
                 line.Content,
                 attestationActive.Contains(costCenterSlot),
-                ownership.Contains(ownershipSlot));
+                ownership.Contains(ownershipSlot),
+                supplierSnapshot?.PreferredSupplier ?? false,
+                supplierSnapshot?.AgreementStatus ?? ApprovedSupplierCatalogMatcher.AgreementNone);
             var lineProvenance = PurchaseRequestPolicyProjection.LineProvenance(
                 snapshot.RequestId,
                 snapshot.Version,
                 reference.Id,
                 reference.Version,
                 facts,
-                manifest.ReferenceAttestationDigest);
+                manifest.ReferenceAttestationDigest,
+                // The provenance of both supplier facts points at the frozen catalogue decision,
+                // not at the attestation instant: a retained line keeps its materiality digest when
+                // neither its content nor the catalogue state changed, so SPEC 04 carry-forward is
+                // preserved instead of being invalidated by every re-attestation (SPEC 06 REQ-08).
+                supplierSnapshot is null
+                    ? null
+                    : $"supplier-facts/{supplierSnapshot.CatalogContentDigest ?? "NONE"}#{reference.Id:D}");
             foreach (var pair in lineProvenance)
             {
                 // Line facts repeat their key across lines: the persisted provenance map keeps the
@@ -175,14 +203,24 @@ public sealed class PurchaseRequestPolicyFactProvider(
             throw new PolicyDependencyUnavailableException("The policy completeness manifest is not reproducible.");
         }
 
-        var expectedDomainAttestation = PurchaseRequestCanonicalizer.DomainAttestationDigest(
-            snapshot.RequestId,
-            snapshot.Version,
-            manifest.OrganizationId,
-            manifest.RequestContentDigest,
-            manifest.ReferenceAttestationDigest,
-            manifest.PolicyManifestDigest,
-            references);
+        var expectedDomainAttestation = isV2
+            ? PurchaseRequestCanonicalizer.DomainAttestationDigestV2(
+                snapshot.RequestId,
+                snapshot.Version,
+                manifest.OrganizationId,
+                manifest.RequestContentDigest,
+                manifest.ReferenceAttestationDigest,
+                manifest.PolicyManifestDigest,
+                supplierFactSnapshotsDigest!,
+                references)
+            : PurchaseRequestCanonicalizer.DomainAttestationDigest(
+                snapshot.RequestId,
+                snapshot.Version,
+                manifest.OrganizationId,
+                manifest.RequestContentDigest,
+                manifest.ReferenceAttestationDigest,
+                manifest.PolicyManifestDigest,
+                references);
         if (!string.Equals(expectedDomainAttestation, manifest.DomainAttestationDigest, StringComparison.Ordinal) ||
             !string.Equals(
                 PurchaseRequestCanonicalizer.RequestContentDigest(snapshot),
@@ -193,7 +231,12 @@ public sealed class PurchaseRequestPolicyFactProvider(
                 "The domain completeness attestation of the purchase request version is corrupted.");
         }
 
-        var bundle = new PolicyFactBundle(input, policyManifest, ProviderId, ContractVersion, string.Empty)
+        var bundle = new PolicyFactBundle(
+            input,
+            policyManifest,
+            ProviderId,
+            isV2 ? PurchaseRequestCodes.ProviderContractVersionV2 : PurchaseRequestCodes.ProviderContractVersion,
+            string.Empty)
         {
             Provenance = provenance
         };

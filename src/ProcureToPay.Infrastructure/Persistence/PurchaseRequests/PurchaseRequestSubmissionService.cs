@@ -70,11 +70,12 @@ public sealed class PurchaseRequestSubmissionService(
         new("internal://procure-to-pay", PurchaseRequestCodes.ProviderId);
 
     /// <summary>
-    /// SPEC 08 REQ-05, DEC-08: new Purchase Request submissions use the v3 contract, whose budget
-    /// projection keeps Fiscal Year, Spend Category and the amount of every covered target. An
-    /// attempt already persisted with v2 resumes v2 because the version travels in the command.
+    /// SPEC 09 REQ-10: new Purchase Request submissions use v4, which keeps the complete budget
+    /// projection of v3 and partitions every REQUIRE_ACTIVE_SUPPLIER control by supplier reference.
+    /// An attempt already persisted with v2 or v3 resumes its own version because the contract
+    /// version travels in the command.
     /// </summary>
-    public const string AdapterContractVersion = PolicyApprovalAdapter.ContractVersionV3;
+    public const string AdapterContractVersion = PolicyApprovalAdapter.ContractVersionV4;
 
     /// <summary>
     /// Fault-injection seam of the cancellation race (T-08): runs after the case version is read

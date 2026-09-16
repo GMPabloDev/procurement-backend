@@ -3,7 +3,9 @@ using Microsoft.Extensions.Logging;
 using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
+using ProcureToPay.Domain.Modules.Suppliers;
 using ProcureToPay.Domain.SharedKernel;
+using ProcureToPay.Infrastructure.Persistence.Suppliers;
 
 namespace ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 
@@ -15,6 +17,7 @@ namespace ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 public sealed class PurchaseRequestAttestationService(
     ProcureToPayDbContext dbContext,
     IPurchaseRequestReferenceOwnerRegistry owners,
+    IApprovedSupplierFactOwner approvedSupplierFacts,
     PurchaseRequestPersistenceService persistence,
     ILogger<PurchaseRequestAttestationService> logger)
 {
@@ -62,13 +65,33 @@ public sealed class PurchaseRequestAttestationService(
         var references = snapshot.LineRefs.ToArray();
         var policyManifestDigest = PurchaseRequestCanonicalizer.PolicyManifestDigest(
             requestId, requestVersion, references);
-        var domainAttestationDigest = PurchaseRequestCanonicalizer.DomainAttestationDigest(
+        // SPEC 09 REQ-08/REQ-09: the approved catalog lookup is frozen per line before the manifest
+        // exists, so the two supplier Policy facts are reproducible without consulting current data.
+        var supplierSnapshots = new List<SupplierPolicyFactSnapshot>(references.Length);
+        foreach (var reference in references)
+        {
+            var line = lines[reference.Id];
+            supplierSnapshots.Add(await approvedSupplierFacts.ResolveAsync(
+                new ApprovedSupplierFactQuery(
+                    organizationId,
+                    new SupplierFactSourceLine(reference.Id, reference.Version, reference.ContentDigest),
+                    line.Content.SupplierRef,
+                    line.Content.SpendCategoryRef,
+                    line.Content.PreferredProductRef ?? line.Content.RequiredProductRef,
+                    occurredAt),
+                cancellationToken));
+        }
+
+        var supplierSnapshotSet = new SupplierFactSnapshotSet(
+            organizationId, requestId, requestVersion, supplierSnapshots);
+        var domainAttestationDigest = PurchaseRequestCanonicalizer.DomainAttestationDigestV2(
             requestId,
             requestVersion,
             organizationId,
             requestContentDigest,
             attestation.Digest,
             policyManifestDigest,
+            supplierSnapshotSet.Digest,
             references);
         var manifest = new PurchaseRequestCompletenessManifest(
             requestId,
@@ -78,7 +101,11 @@ public sealed class PurchaseRequestAttestationService(
             attestation.Digest,
             policyManifestDigest,
             domainAttestationDigest,
-            references);
+            references)
+        {
+            ContractVersion = PurchaseRequestCodes.ManifestVersionV2,
+            SupplierFactSnapshotsDigest = supplierSnapshotSet.Digest
+        };
 
         var occurredAtUtc = occurredAt.ToUniversalTime();
         // Two concurrent presentations of the same version must produce exactly one attestation and
@@ -117,8 +144,36 @@ public sealed class PurchaseRequestAttestationService(
             PolicyManifestDigest = policyManifestDigest,
             DomainAttestationDigest = domainAttestationDigest,
             LinesJson = PurchaseRequestSerialization.ManifestLines(references),
+            ContractVersion = PurchaseRequestCodes.ManifestVersionV2,
+            SupplierFactSnapshotsJson = PurchaseRequestSerialization.SupplierFactSnapshots(supplierSnapshotSet),
             CreatedAt = occurredAtUtc
         });
+        foreach (var supplierSnapshot in supplierSnapshotSet.Snapshots)
+        {
+            dbContext.SupplierPolicyFactSnapshots.Add(new SupplierPolicyFactSnapshotRecord
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = organizationId,
+                RequestId = requestId,
+                RequestVersion = requestVersion,
+                LineId = supplierSnapshot.SourceLine.Id,
+                LineVersion = supplierSnapshot.SourceLine.Version,
+                LineContentDigest = supplierSnapshot.SourceLine.ContentDigest,
+                SupplierId = supplierSnapshot.SupplierRef?.Id,
+                SupplierVersion = supplierSnapshot.SupplierRef?.Version,
+                SpendCategoryJson = PurchaseRequestSerialization.CodeRef(supplierSnapshot.SpendCategoryRef),
+                ProductJson = supplierSnapshot.ProductRef is null
+                    ? null
+                    : PurchaseRequestSerialization.EntityRef(supplierSnapshot.ProductRef),
+                CatalogEntryId = supplierSnapshot.CatalogEntryRef?.Id,
+                CatalogEntryVersion = supplierSnapshot.CatalogEntryRef?.Version,
+                CatalogContentDigest = supplierSnapshot.CatalogContentDigest,
+                PreferredSupplier = supplierSnapshot.PreferredSupplier,
+                AgreementStatus = supplierSnapshot.AgreementStatus,
+                EvaluatedAt = supplierSnapshot.EvaluatedAt,
+                SnapshotDigest = supplierSnapshot.Digest
+            });
+        }
         dbContext.PurchaseRequestLifecycleEvents.Add(new PurchaseRequestLifecycleEventRecord
         {
             Id = Guid.NewGuid(),
@@ -183,7 +238,28 @@ public sealed class PurchaseRequestAttestationService(
             record.ReferenceAttestationDigest,
             record.PolicyManifestDigest,
             record.DomainAttestationDigest,
-            PurchaseRequestSerialization.ReadLineRefs(record.LinesJson));
+            PurchaseRequestSerialization.ReadLineRefs(record.LinesJson))
+        {
+            ContractVersion = record.ContractVersion,
+            SupplierFactSnapshotsDigest = ReadSupplierSnapshotsDigest(
+                record.SupplierFactSnapshotsJson, record.OrganizationId, record.RequestId, record.RequestVersion)
+        };
+
+    /// <summary>Digest of the frozen supplier snapshot set of a persisted v2 manifest.</summary>
+    internal static string? ReadSupplierSnapshotsDigest(
+        string? snapshotsJson,
+        Guid organizationId,
+        Guid requestId,
+        int requestVersion)
+    {
+        if (string.IsNullOrWhiteSpace(snapshotsJson))
+        {
+            return null;
+        }
+
+        var snapshots = PurchaseRequestSerialization.ReadSupplierFactSnapshots(snapshotsJson, organizationId);
+        return new SupplierFactSnapshotSet(organizationId, requestId, requestVersion, snapshots).Digest;
+    }
 
     /// <summary>
     /// Exact assertion cardinalities of REQ-04: activity for every referenced entity, one ownership

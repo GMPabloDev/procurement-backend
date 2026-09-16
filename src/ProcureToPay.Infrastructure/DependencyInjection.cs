@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ProcureToPay.Application.Abstractions;
+using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Policy;
@@ -13,6 +14,7 @@ using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 using ProcureToPay.Infrastructure.Storage.S3;
+using ProcureToPay.Infrastructure.Persistence.Suppliers;
 
 namespace ProcureToPay.Infrastructure;
 
@@ -143,6 +145,13 @@ public static class DependencyInjection
                 provider.GetRequiredService<ProcureToPayDbContext>(),
                 PolicyApprovalAdapter.ContractVersionV3,
                 provider.GetRequiredService<ProcureToPay.Application.Abstractions.IBudgetDemandBuilder>()));
+        // SPEC 09 REQ-10: new submissions use v4, which keeps the v3 budget projection and
+        // partitions every REQUIRE_ACTIVE_SUPPLIER control by supplier reference.
+        services.AddScoped<IApprovalSubmissionAdapter>(provider =>
+            new PolicyApprovalAdapter(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                PolicyApprovalAdapter.ContractVersionV4,
+                provider.GetRequiredService<ProcureToPay.Application.Abstractions.IBudgetDemandBuilder>()));
         services.AddScoped<PolicyExceptionSubmissionService>();
         services.AddScoped<PolicyExceptionVerificationService>();
         services.AddScoped<ApprovalWorkflowService>();
@@ -169,20 +178,52 @@ public static class DependencyInjection
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestAttestationService>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestSubmissionService>();
         // SPEC 06 REQ-09: one consumer per result contract version plus the SPEC 04 lifecycle.
-        services.AddScoped<IApprovalResultConsumer>(provider => new PurchaseRequestApprovalResultConsumer(
-            provider.GetRequiredService<ProcureToPayDbContext>(),
-            provider.GetRequiredService<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>(),
-            provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
-            "approval-result/v2"));
-        services.AddScoped<IApprovalResultConsumer>(provider => new PurchaseRequestApprovalResultConsumer(
-            provider.GetRequiredService<ProcureToPayDbContext>(),
-            provider.GetRequiredService<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>(),
-            provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
+        // SPEC 09 REQ-03: a plain human decision publishes approval-result/v2, so the router of that
+        // contract dispatches every subject to the domain that owns it; the supplier consumer is the
+        // one that materializes an approved supplier or catalogue change.
+        services.AddScoped<IApprovalResultConsumer>(provider => new ApprovalResultRouter(
+            new PurchaseRequestApprovalResultConsumer(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>(),
+                provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
+                ApprovalOutboxPolicy.ContractVersion),
+            new SupplierApprovalResultConsumer(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<SupplierGovernanceService>(),
+                provider.GetRequiredService<ApprovedSupplierCatalogGovernanceService>(),
+                provider.GetRequiredService<ILogger<SupplierApprovalResultConsumer>>(),
+                ApprovalOutboxPolicy.ContractVersion),
+            provider.GetRequiredService<ILogger<ApprovalResultRouter>>(),
+            ApprovalOutboxPolicy.ContractVersion));
+        // SPEC 09 REQ-03: the same contract version is consumed by exactly one consumer, so a
+        // router dispatches every delivered event to the domain that owns its subject.
+        services.AddScoped<IApprovalResultConsumer>(provider => new ApprovalResultRouter(
+            new PurchaseRequestApprovalResultConsumer(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>(),
+                provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
+                "approval-result/v3"),
+            new SupplierApprovalResultConsumer(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<SupplierGovernanceService>(),
+                provider.GetRequiredService<ApprovedSupplierCatalogGovernanceService>(),
+                provider.GetRequiredService<ILogger<SupplierApprovalResultConsumer>>(),
+                "approval-result/v3"),
+            provider.GetRequiredService<ILogger<ApprovalResultRouter>>(),
             "approval-result/v3"));
-        services.AddScoped<IApprovalResultConsumer>(provider => new PurchaseRequestApprovalResultConsumer(
-            provider.GetRequiredService<ProcureToPayDbContext>(),
-            provider.GetRequiredService<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>(),
-            provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
+        services.AddScoped<IApprovalResultConsumer>(provider => new ApprovalResultRouter(
+            new PurchaseRequestApprovalResultConsumer(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<ProcureToPay.Infrastructure.Persistence.Budget.BudgetReleaseService>(),
+                provider.GetRequiredService<ILogger<PurchaseRequestApprovalResultConsumer>>(),
+                "approval-case-lifecycle/v1"),
+            new SupplierApprovalResultConsumer(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<SupplierGovernanceService>(),
+                provider.GetRequiredService<ApprovedSupplierCatalogGovernanceService>(),
+                provider.GetRequiredService<ILogger<SupplierApprovalResultConsumer>>(),
+                "approval-case-lifecycle/v1"),
+            provider.GetRequiredService<ILogger<ApprovalResultRouter>>(),
             "approval-case-lifecycle/v1"));
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestPolicyFactProvider>();
         services.AddScoped<IPolicyFactProvider>(provider =>
@@ -236,6 +277,46 @@ public static class DependencyInjection
         services.AddScoped<IPurchaseRequestReferenceOwnerRegistry>(provider =>
             new ProcureToPay.Infrastructure.Persistence.PurchaseRequests.PurchaseRequestReferenceOwnerRegistry(
                 provider.GetServices<IPurchaseRequestReferenceOwner>()));
+
+        // SPEC 09: Supplier Master, approved supplier catalog, its owners and the real processor of
+        // the active-supplier prerequisite.
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierPersistenceService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierGovernanceService>();
+        services.AddScoped<
+            ProcureToPay.Infrastructure.Persistence.Suppliers.ApprovedSupplierCatalogGovernanceService>();
+        services.AddScoped<ProcureToPay.Application.Abstractions.IApprovedSupplierFactOwner>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.Suppliers.ApprovedSupplierFactOwner(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<
+                    ProcureToPay.Infrastructure.Persistence.Suppliers.ApprovedSupplierCatalogGovernanceService>()));
+        services.AddScoped<ProcureToPay.Application.Abstractions.IPurchaseRequestReferenceOwner>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierReferenceOwner(
+                provider.GetRequiredService<ProcureToPayDbContext>()));
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Policy.IPolicyReferenceCatalog>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierPolicyReferenceCatalog(
+                provider.GetRequiredService<ProcureToPayDbContext>()));
+        services.AddScoped<ProcureToPay.Application.Abstractions.IApprovalSubmissionAdapter>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierGovernanceApprovalAdapter(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                configuration,
+                ProcureToPay.Domain.Modules.Suppliers.SupplierCodes.ApprovalSubjectType,
+                ProcureToPay.Domain.Modules.Suppliers.SupplierCodes.SupplierApprovalOperation,
+                ProcureToPay.Domain.Modules.Suppliers.SupplierCodes.ApprovalTargetType));
+        services.AddScoped<ProcureToPay.Application.Abstractions.IApprovalSubmissionAdapter>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierGovernanceApprovalAdapter(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                configuration,
+                ProcureToPay.Domain.Modules.Suppliers.SupplierCodes.CatalogApprovalSubjectType,
+                ProcureToPay.Domain.Modules.Suppliers.SupplierCodes.CatalogApprovalOperation,
+                ProcureToPay.Domain.Modules.Suppliers.SupplierCodes.CatalogApprovalTargetType));
+        // SPEC 09 REQ-05: the banking key provider is external to SQL; without a configured key the
+        // resolution fails closed instead of degrading to plaintext.
+        services.AddSingleton<ProcureToPay.Application.Abstractions.ISupplierBankingKeyProvider>(
+            provider => new ProcureToPay.Infrastructure.Persistence.Suppliers.ConfigurationSupplierBankingKeyProvider(
+                configuration));
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierBankingService>();
+        services.AddSingleton<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierProcessorIdentity>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierPrerequisiteProcessor>();
 
         services.AddDefaultAWSOptions(configuration.GetAWSOptions());
         services.AddAWSService<IAmazonS3>();

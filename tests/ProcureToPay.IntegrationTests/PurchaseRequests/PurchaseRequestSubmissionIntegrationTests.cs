@@ -743,6 +743,7 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
             var attestation = new PurchaseRequestAttestationService(
                 context,
                 new PurchaseRequestReferenceOwnerRegistry(owners.Values),
+                NoApprovedSupplierCatalog.Instance,
                 persistence,
                 NullLogger<PurchaseRequestAttestationService>.Instance);
             var provider = new PurchaseRequestPolicyFactProvider(
@@ -761,8 +762,8 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                 ]),
                 NullLogger<PolicyEvaluationService>.Instance);
             var allowlist = new ApprovalWorkloadAllowlist(configuration);
-            // SPEC 08: new submissions use the v3 contract, so the harness registers it beside the
-            // historical v2 adapter (which stays resolvable for an attempt already persisted).
+            // SPEC 09 REQ-10: new submissions use the v4 contract, registered beside the historical
+            // v2/v3 adapters that stay resolvable for an attempt already persisted.
             var registry = new ApprovalSubmissionAdapterRegistry(
             [
                 new FaultInjectingAdapter(new PolicyApprovalAdapter(context), fault),
@@ -770,6 +771,12 @@ public sealed class PurchaseRequestSubmissionIntegrationTests
                     new PolicyApprovalAdapter(
                         context,
                         PolicyApprovalAdapter.ContractVersionV3,
+                        new PurchaseRequestBudgetDemandBuilder(context)),
+                    fault),
+                new FaultInjectingAdapter(
+                    new PolicyApprovalAdapter(
+                        context,
+                        PolicyApprovalAdapter.ContractVersionV4,
                         new PurchaseRequestBudgetDemandBuilder(context)),
                     fault)
             ]);
