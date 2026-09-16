@@ -1,7 +1,7 @@
 # RUN SPEC 09 — Supplier Master y catálogo de proveedores homologados
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** En implementación
+> **Estado del run:** Lista para integrar
 > **Spec:** specs/09-supplier-master-catalogo-proveedores-homologados.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** e52e9789f475dc53885da7212d6dec699166b165
@@ -14,7 +14,7 @@
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-15 15:47 -0500
 > **Actualizado:** 2026-09-15 15:47 -0500
-> **HEAD verificado:** Pendiente
+> **HEAD verificado:** 3e0db5e2665c573ae32f007935c254079d32971e
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -68,7 +68,8 @@ Ejecutada sobre el commit base `e52e978` con el árbol limpio, antes de cualquie
 
 ## Desviaciones y bloqueos
 
-- Ninguno bloqueante. Véanse las desviaciones internas registradas en CP-01 y CP-02.
+- Ninguno bloqueante. Véanse las desviaciones internas registradas en CP-01, CP-02 y CP-03.
+- Presupuesto de verificación ampliado a 3 rondas: **ronda 3 autorizada** explícitamente por el usuario (delta acotado a R10/R12/R15).
 
 ### CP-04 — 2026-09-16 09:05 -0500 — Correcciones de la ronda 2 (R10, R12, R15)
 
@@ -97,11 +98,11 @@ Ejecutada sobre el commit base `e52e978` con el árbol limpio, antes de cualquie
 
 ## Verificación independiente
 
-> **Resultado:** BLOCK (ronda 1) → BLOCK acotado (ronda 2) → correcciones R10/R12/R15 aplicadas, sin tercera ronda autorizada
-> **Rondas:** 2/2
-> **Triaje:** R9–R16 aceptados; ronda 2 cerró R9/R11/R13/R14/R16 y abrió R10/R12/R15, ya corregidos y cubiertos por pruebas propias
+> **Resultado:** Sin bloqueos
+> **Rondas:** 3/3
+> **Triaje:** R9–R16 aceptados y resueltos; el delta final confirmó R10, R12 y R15 sin hallazgos nuevos
 > **Modelo efectivo:** `sdd-implementation-reviewer` · `openai-codex/gpt-5.6-sol` · effort high
-> **Método:** revisión independiente de solo lectura sobre los candidatos `2b6954e` (ronda 1) y `c979d8e` (ronda 2), base `e52e978`, sin modificar archivos
+> **Método:** revisión independiente de solo lectura sobre `2b6954e` (ronda 1), `c979d8e` (ronda 2) y `3e0db5e` (delta final), base `e52e978`, sin modificar archivos
 > **Fecha:** 2026-09-16
 
 ### Ronda 2 (delta de R9–R16) — hallazgos y resolución
@@ -113,7 +114,15 @@ Ejecutada sobre el commit base `e52e978` con el árbol limpio, antes de cualquie
 | R12 | Abierto | Aceptado. El control de solape recorre todas las versiones ACTIVE del selector, no solo el puntero current, así que retirar con una versión INACTIVE no reabre la ventana histórica. Evidencia: `An_active_window_overlapping_a_retired_active_version_is_rejected`. |
 | R15 | Abierto | Aceptado. `IFileStorage` expone `IsAvailableAsync`: `S3FileStorage` hace una lectura real de una clave y readiness degrada con `SUPPLIER_ATTACHMENT_STORAGE_UNAVAILABLE` cuando el bucket es inalcanzable. Evidencia: `Readiness_degrades_when_the_agreement_storage_is_unreachable` (E2E con storage no disponible) y `S3FileStorage.IsAvailableAsync`. |
 
-Presupuesto de revisión agotado (2/2 llamadas automáticas): la corrección de R10/R12/R15 está respaldada por pruebas propias y por el contraste con los hallazgos, pero no por una tercera ronda automática. Una ronda adicional exige autorización explícita del usuario.
+### Ronda 3 (delta acotado a R10/R12/R15) — PASS
+
+Autorizada explícitamente por el usuario tras agotar las dos rondas automáticas. El revisor confirmó los tres arreglos y no identificó hallazgos nuevos:
+
+- R10 resuelto: el filtro excluye por `BankingDetailId`, de modo que revisar la cuenta default propia no bloquea; evidencia positiva, conflicto de la misma moneda y aceptación de otra moneda.
+- R12 resuelto: el solape se comprueba contra todas las versiones `ACTIVE` de la raíz con intersección de intervalos, y la regresión `ACTIVE → INACTIVE → ACTIVE` está cubierta.
+- R15 resuelto: `ListObjectsV2Async(MaxKeys=1)` comprueba acceso real y readiness emite `SUPPLIER_ATTACHMENT_STORAGE_UNAVAILABLE`; E2E con storage no disponible.
+
+Con el PASS del delta, todas las tareas están verificadas, los CA cumplidos, existe al menos un checkpoint y el árbol revisado coincide con `3e0db5e2665c573ae32f007935c254079d32971e`.
 
 ### Ronda 1 — hallazgos y resolución
 
