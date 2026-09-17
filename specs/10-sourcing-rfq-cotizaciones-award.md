@@ -1,13 +1,13 @@
 # SPEC 10 — Sourcing, RFQ, cotizaciones y award
 
 > **Formato:** sdd/v3
-> **Estado:** Aprobada
-> **Ejecución:** Lista para integrar
-> **Vigencia:** Pendiente
+> **Estado:** Implementada
+> **Ejecución:** Integrada
+> **Vigencia:** Vigente
 > **Revisión:** 1
 > **Digest contractual:** 6172c3d26718271b05ad262636f6410fc0d8a5d70a2a4e868ba136a111a070f3
 > **Fecha:** 2026-09-16
-> **Actualizada:** 2026-09-16
+> **Actualizada:** 2026-09-17
 > **Aprobada el:** 2026-09-16
 > **Aprobada por:** osiosad mediante specctl approve
 > **Objetivo:** Permitir que Procurement obtenga, compare y seleccione ofertas por línea, satisfaga de forma verificable los controles de cotizaciones y Procurement, y publique un award versionado consumible por una futura Purchase Order.

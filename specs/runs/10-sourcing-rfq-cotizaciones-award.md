@@ -1,7 +1,7 @@
 # RUN SPEC 10 — Sourcing, RFQ, cotizaciones y award
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** Lista para integrar
+> **Estado del run:** Integrado
 > **Spec:** specs/10-sourcing-rfq-cotizaciones-award.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 6e26b72e7c4fe573e0a8603f9c559b4932acbe34
@@ -13,9 +13,9 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-16 10:31 -0500
-> **Actualizado:** 2026-09-17 12:30 -0500
+> **Actualizado:** 2026-09-17 17:41 -0500
 > **HEAD verificado:** 1ca6b6a88dcbf6f8b87a9f8f2bb26133ba741714
-> **Commit de integración:** Pendiente
+> **Commit de integración:** a314998bb29dc566b668ebb4ee0dc4329376e1ec
 
 ## Línea base
 
@@ -183,3 +183,12 @@
 > **Modelo efectivo:** openai-codex/gpt-5.6-sol (effort high), `sdd-implementation-reviewer`
 > **Método:** Ronda 1 full del delta b8ec710 (BLOCK R11–R14); ronda 2 diferencial b8ec710..d1b8778 (R11/R13 resueltos, R12/R14 abiertos); ronda 3 diferencial d1b8778..0e36330 (R12 resuelto, R14 residual); ronda 4 diferencial 0e36330..1ca6b6a (PASS). Constancia: `specs/reviews/10-sourcing-rfq-cotizaciones-award.json`.
 > **Fecha:** 2026-09-17
+
+## Cierre
+
+- **Commit de integración:** `a314998bb29dc566b668ebb4ee0dc4329376e1ec` — merge de `spec-10-sourcing-rfq-cotizaciones-award` sobre la base registrada `6e26b72e7c4fe573e0a8603f9c559b4932acbe34` (primer padre del merge = commit base; la base no avanzó con cambios ajenos).
+- **Estrategia:** merge real, sin squash ni rebase: `HEAD verificado` `1ca6b6a88dcbf6f8b87a9f8f2bb26133ba741714` es ancestro directo de `main` y no hubo cambios de código posteriores a la verificación.
+- **Equivalencia del árbol:** `git diff --name-status 1ca6b6a main` solo muestra los metadatos administrativos de cierre previos (`specs/10-...md`, `specs/runs/10-...md`, `specs/reviews/10-...json`); ningún archivo de código, test, migración o fixture difiere.
+- **Evidencia sobre base:** suite completa ejecutada sobre el árbol exacto del candidato: unitarias **293/293**, integración **178/178** (SQL Server 2022 + Testcontainers, incluida la migración `20260917190533_Spec10SourcingAwardLineage`), API/E2E **33/33**; build 0 errores; revisión independiente PASS (4/4 rondas) sobre `1ca6b6a`.
+- **Historia:** SPEC 06 pasa a `Sustituida parcialmente por SPEC 07, SPEC 08, SPEC 09, SPEC 10`; SPEC 10 queda `Implementada / Integrada / Vigente`.
+- **Fecha:** 2026-09-17 17:41 -0500.
