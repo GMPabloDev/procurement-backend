@@ -1,7 +1,7 @@
 # RUN SPEC 10 — Sourcing, RFQ, cotizaciones y award
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** En implementación
+> **Estado del run:** Lista para integrar
 > **Spec:** specs/10-sourcing-rfq-cotizaciones-award.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 6e26b72e7c4fe573e0a8603f9c559b4932acbe34
@@ -14,7 +14,7 @@
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-16 10:31 -0500
 > **Actualizado:** 2026-09-17 12:30 -0500
-> **HEAD verificado:** Pendiente
+> **HEAD verificado:** 1ca6b6a88dcbf6f8b87a9f8f2bb26133ba741714
 > **Commit de integración:** Pendiente
 
 ## Línea base
@@ -39,82 +39,118 @@
 | T-09 | Verificada | Readiness `sourcing` con razones tipadas y `docs/sourcing-operations.md` (CP-12), ruta de catálogo gobernada por Policy (REQ-06, CP-13), fixtures doradas `tests/ContractFixtures/Sourcing/v1/` (13 documentos con SHA-256 y pruebas de bytes, nulabilidad, orden de sets y rechazo de campos extra), límites/Problem Details explícitos (`SourcingPayloadTooLargeException` → `413 /problems/payload-too-large`; 500 líneas, 100 Suppliers, 200 quotations, 20 MiB por attachment, 5 MiB por documento canónico; keys 1–128 y motivos 1–1.000) y captura negativa de telemetría/readiness (`SourcingCrossModuleE2ETests`). | working-tree sobre 7e5f6bb · CP-14, CP-16 |
 
 ## Checkpoints
-- **CP-01 (2026-09-16 11:06 -0500) · Bloque 1 (T-01, T-02)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-01 — (2026-09-16 11:06 -0500) · Bloque 1 (T-01, T-02)
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados: `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore` → 239/239 correctos (17 nuevas de Sourcing); `dotnet test --project tests/ProcureToPay.IntegrationTests/ProcureToPay.IntegrationTests.csproj --no-restore` → 134/134 correctos sobre SQL Server 2022 con Testcontainers y migración real (7 nuevas de Sourcing); `dotnet test --project tests/ProcureToPay.ApiE2ETests/ProcureToPay.ApiE2ETests.csproj --no-restore` → 30/30 correctos. `dotnet build ProcureToPay.sln --no-restore` → 0 errores, avisos preexistentes. `git diff --check` limpio.
   - Decisión interna reversible: los predecesores exigidos por REQ-01 son todos los prerequisites del caso current cuyo `OwnerAdapterId` no es `quotation-status-owner` ni `procurement-stage-owner` (los dos nodos de etapa PROCUREMENT que este módulo satisface); se documenta en `SourcingProcessService`.
   - Defectos corregidos durante el bloque: `OccurredAt` de una transición RFQ usaba el reloj real en lugar del reloj del comando (rompía la reproducibilidad del deadline vigente); `GetProcessAsync` servía una entidad rastreada obsoleta tras un update condicional.
   - Pendiente inmediato: Bloque 2 (T-03 waiver, T-04 evaluación/FX, T-05 catálogo/selección).
-- **CP-02 (2026-09-16 11:43 -0500) · T-04 parcial (motor de evaluación)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-02 — (2026-09-16 11:43 -0500) · T-04 parcial (motor de evaluación)
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados: `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore` → 252/252 correctos (13 nuevos del motor); `dotnet build ProcureToPay.sln --no-restore` → 0 errores (27 avisos preexistentes); `git diff --check` limpio.
   - Delta aditivo respecto de CP-01: solo tipos nuevos de dominio y pruebas unitarias nuevas; no hay cableado nuevo, por lo que la certificación de integración/E2E de CP-01 sigue siendo válida para el código existente. La próxima suite completa se ejecutará sobre el árbol estable del gate.
   - Pendiente de T-04: persistencia (`QuoteEvaluationVersion`, `SourcingFxSnapshot`, `manual-criterion-input`), servicio de evaluación versionada que invalide/versione en cada cambio material y endpoints de lectura; después T-03, T-05 y Bloques 3–4.
-- **CP-03 (2026-09-16 12:12 -0500) · T-04 verificado (evaluación versionada)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-03 — (2026-09-16 12:12 -0500) · T-04 verificado (evaluación versionada)
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados: `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore` → 252/252; `dotnet test --project tests/ProcureToPay.IntegrationTests/ProcureToPay.IntegrationTests.csproj --no-restore --filter-class "*Sourcing*"` → 12/12 sobre SQL Server 2022 con la migración nueva; `dotnet build ProcureToPay.sln --no-restore` → 0 errores; `git diff --check` limpio.
   - Correcciones derivadas de las pruebas: el motor deduplica participants por identidad de quotation (una oferta sirve varias líneas sin repetir el mismo score), y el trigger de `QuoteEvaluationVersions` pasó de bloquear todo update a admitir solo la transición de consumo en un sentido.
   - Pendiente inmediato: suite completa sobre el árbol estable antes del gate, y los bloques 2 restantes (T-03 waiver, T-05 catálogo/selección) y 3–4.
-- **CP-04 (2026-09-16 12:32 -0500) · T-05 verificado (selección humana)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-04 — (2026-09-16 12:32 -0500) · T-05 verificado (selección humana)
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados sobre el árbol estable: unitarias 260/260; integración completa 143/143 sobre SQL Server 2022 (16 de Sourcing); API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
   - Alcance de T-05 en este checkpoint: selección por línea, desviación auditada, partición y elegibilidad; la omisión gobernada de RFQ por catálogo (REQ-06) se implementará junto al provider `SOURCING_PO` (bloque 3) porque comparte el hecho de catálogo congelado y la evaluación Policy.
-- **CP-05 (2026-09-16 14:15 -0500) · T-03 parcial (waiver de cotizaciones)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-05 — (2026-09-16 14:15 -0500) · T-03 parcial (waiver de cotizaciones)
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados sobre el árbol estable: unitarias 265/265; integración completa 149/149 sobre SQL Server 2022 (22 de Sourcing); API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
   - Decisión interna: los facts se persisten antes de crear el caso, pero la carga de la evaluación Policy base y del manifest ocurre antes de persistir; una dependencia Policy ausente devuelve `409` sin dejar un waiver fantasma (verificado por prueba).
   - Pendiente inmediato: T-08 debe consumir la decisión verificada comparándola contra estos facts (revocación/cambio invalidan), y después el Bloque 3 (provider/manifest `SOURCING_PO`, adapter, award + `award-consumption/v1`) y el Bloque 4 (operación, fixtures, revisión independiente).
-- **CP-07 (2026-09-16 16:22 -0500) · T-06 parcial (provider tipado y despacho Policy)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-07 — (2026-09-16 16:22 -0500) · T-06 parcial (provider tipado y despacho Policy)
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados sobre el árbol estable: unitarias 278/278 (5 nuevas del envelope); integración completa 155/155 (28 de Sourcing); API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
   - Pendiente: adapter de Approval y, después, T-07 (award + `award-consumption/v1`) y T-08 (owners).
-- **CP-08 (2026-09-16 17:46 -0500) · T-07 parcial (contratos del award)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-08 — (2026-09-16 17:46 -0500) · T-07 parcial (contratos del award)
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados: `dotnet test --project tests/ProcureToPay.UnitTests/ProcureToPay.UnitTests.csproj --no-restore` → 283/283 (5 nuevas del award); `dotnet build ProcureToPay.sln --no-restore` → 0 errores; `git diff --check` limpio.
   - Delta aditivo puro (tipos de dominio + pruebas unitarias, sin cableado nuevo): la certificación de integración 155/155 y E2E 30/30 de CP-07 sigue siendo válida para el código existente; la suite completa se re-ejecutará sobre el árbol estable del gate.
   - Pendiente de T-07: supersesión por proposal sucesora (el contrato exige que un award current no se libere en esta spec, así que la ruta de corrección pertenece a la spec consumidora) y su prueba.
-- **CP-09 (2026-09-16 19:12 -0500) · T-07 parcial (publicación y consumo del award)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-09 — (2026-09-16 19:12 -0500) · T-07 parcial (publicación y consumo del award)
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados sobre el árbol estable: unitarias 283/283; integración completa 159/159 sobre SQL Server 2022 (32 de Sourcing); API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
   - Defecto corregido: el lector del documento del award buscaba un `award_candidate` anidado, pero `award-version/v1` publica esas propiedades en la raíz; se corrigió el lector (el documento era correcto).
   - Pendiente inmediato para el PASS: T-08 (owners), REQ-06 (ruta catálogo), T-09 (operación/fixtures doradas/telemetría, límites y Problem Details) y la evidencia E2E del despacho `SOURCING_PO` con PR atestada real, más la revisión independiente.
-- **CP-10 (2026-09-16 21:05 -0500) · T-06 parcial (adapter de Approval de la propuesta)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-10 — (2026-09-16 21:05 -0500) · T-06 parcial (adapter de Approval de la propuesta)
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados sobre el árbol estable: unitarias 283/283; integración completa 163/163 sobre SQL Server 2022 (36 de Sourcing); API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
   - Defectos/fixtures corregidos: el proposal persistía `request_bundle_ref` como JSON *string* (doble codificación) y su lector exigía un objeto; el adapter ahora exige integridad de digests del bundle persistido; los fixtures siembran una evaluación de request real y un control de aprobación sobre la línea.
   - Pendiente de T-06: goldens contractuales en `tests/ContractFixtures/Sourcing/v1/` y la evidencia E2E del despacho `SOURCING_PO` (CA-07 sigue Parcial).
-- **CP-11 (2026-09-17 13:10 -0500) · T-08 parcial (processors de owners)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-11 — (2026-09-17 13:10 -0500) · T-08 parcial (processors de owners)
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados sobre el árbol estable: unitarias 283/283; integración completa 168/168 sobre SQL Server 2022 (41 de Sourcing); API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
   - Defectos/fixtures corregidos: los `targets` de los prerequisites sembrados usaban snake_case mientras el serializador de Approval es camelCase; el workflow exige que la identidad workload del signal esté en la allowlist y coincida con la persistida en el prerequisite; el `ProcessId` resuelto se persiste para que la cancelación encuentre sus attempts.
   - Pendiente inmediato para el PASS: REQ-06 (ruta catálogo), goldens y E2E cross-módulo, y la revisión independiente.
-- **CP-12 (2026-09-17 09:30 -0500) · T-09 parcial (readiness y runbook)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-12 — (2026-09-17 09:30 -0500) · T-09 parcial (readiness y runbook)
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Añadido: `SourcingHealthCheck` (check `sourcing` en `/health/ready`) con razones tipadas para owner 0/2 o mismatch, provider y adapter 0/2, storage inaccesible y backlog > 60 s, sin ids/precios/digests (REQ-13, REQ-14, NFR-04, NFR-05); y `docs/sourcing-operations.md` (orden de despliegue, preflight, readiness, backlog/leases, reclaim, evidencia corrupta, rollback y rotación) según §Migración, despliegue y reversión.
   - Tests ejecutados: unitarias 283/283; integración completa 168/168; API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores.
   - Pendiente de T-09: fixtures doradas `tests/ContractFixtures/Sourcing/v1/`, límites/Problem Details explícitos y captura negativa de telemetría.
-- **CP-13 (2026-09-17 10:05 -0500) · REQ-06 (ruta de catálogo) implementada** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-13 — (2026-09-17 10:05 -0500) · REQ-06 (ruta de catálogo) implementada
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Añadido: `SourcingCatalogRouteService` (un solo Supplier declarado en la versión de la PR, snapshots del owner de SPEC 09 con `PREFERRED_SUPPLIER=true` y `EXTERNAL_AGREEMENT_STATUS=ACTIVE`, prohibición de omitir la RFQ si la evaluación Policy current generó `REQUIRE_QUOTATIONS` sobre esos targets, `DRAFT→ACTIVE` con CAS y takeover, digest del set `catalog-snapshots/v1` verificado al leer), persistencia `SourcingCatalogRoutes`, migración `20260917141744_Spec10SourcingCatalogRoute`, endpoints y DI.
   - Tests ejecutados: `--filter-class "*SourcingCatalogRoute*"` 3/3 y `--filter-class "*Sourcing*"` 44/44 sobre SQL Server 2022.
   - Fixtures corregidos en el camino (afectan a toda la clase Sourcing): los JSON de línea se generan con el serializador real (el cost center es una `entity_ref`, no un code ref), `purchase_type=GOOD` y códigos de contrato `[A-Z][A-Z0-9_]*` (sin guiones).
   - Pendiente inmediato: suite completa (integración completa + E2E) sobre este árbol, fixtures doradas, y el E2E cross-módulo; después la revisión independiente.
-- **CP-06 (2026-09-16 14:58 -0500) · T-06 parcial (propuesta `SOURCING_PO` y manifest)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+### CP-06 — (2026-09-16 14:58 -0500) · T-06 parcial (propuesta `SOURCING_PO` y manifest)
+
+árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados sobre el árbol estable: unitarias 273/273; integración completa 152/152 sobre SQL Server 2022 (25 de Sourcing); API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
   - Decisión interna: el `evaluation_ref` de la propuesta es una ref de artefacto Sourcing `{content_digest,id,version}` (como el resto de artefactos del módulo) y `request_bundle_ref` es `policy-evaluation-ref/v1`, que es el único `policy_bundle_ref` del contrato; el fingerprint del comando de propuesta se calcula sobre entradas estables (evaluación, Supplier y líneas) para que el replay devuelva su versión.
   - Defecto latente corregido (destapado al fijar el vocabulario de operaciones de REQ-10): el binding de la excepción de cotizaciones usaba la *operación* de la evaluación como *subject type* en `PolicyController.ApplyQuotationWaiver` y en `PolicyEvaluationService.ApplyQuotationWaiverAsync`; funcionaba solo porque los tests usaban la operación como subject type. Ahora el subject type proviene del `ApprovalPolicyExceptionRequest` persistido y la suite de contrato de SPEC 05 usa `REQUEST_EVALUATE` como operación canónica.
   - Pendiente de T-06: el adapter `sourcing-policy-approval-adapter/v1` (descriptor, proyección de controles, targets de línea exactos y fingerprint de SPEC 03), más la evidencia E2E del despacho `SOURCING_PO` con una PR atestada real.
 
-- **CP-14 (2026-09-17 11:15 -0500) · T-06/T-09 (fixtures doradas y límites)** — árbol probado: `working-tree sobre 7e5f6bb` (sin commit).
+### CP-14 — (2026-09-17 11:15 -0500) · T-06/T-09 (fixtures doradas y límites)
+
+árbol probado: `working-tree sobre 7e5f6bb` (sin commit).
   - Añadido: `tests/ContractFixtures/Sourcing/v1/` con 13 documentos canónicos y su SHA-256 (RFQ OPEN/DRAFT, quotation, FX, evaluation, manifest RFQ/catálogo, proposal RFQ/catálogo, award RFQ/catálogo, ambas owner evidence); productores canónicos íntegros para RFQ (`SourcingCanonicalizer.RfqDocument`), quotation (`QuotationDocument`) y FX (`SourcingFxSnapshot.CanonicalDocument`) reutilizados por sus digests sin cambiar la preimagen; `SourcingContractFixtureTests` (bytes, hash, cobertura, orden de sets, nulabilidad, campos extra rechazados y round-trip de los readers) con copia de las fixtures al output de UnitTests.
   - Límites: `SourcingPayloadTooLargeException` → `413 /problems/payload-too-large` en `ApiExceptionHandler`; se aplican a 500 líneas por proceso, 100 Suppliers por RFQ (nuevo en `RegisterQuotationAsync`), 200 quotations, 20 MiB por attachment y 5 MiB por documento canónico (`SourcingCodes.RequireCanonicalDocument` en evaluación, propuesta, manifest, award, waiver y evidencia de owners). `SourcingLimitsTests` (4 unitarias) y test SQL del attachment sobredimensionado.
   - Pruebas dirigidas: `SourcingContractFixtureTests` 6/6, `SourcingLimitsTests` 4/4, `An_attachment_over_the_contractual_limit` 1/1.
-- **CP-15 (2026-09-17 12:05 -0500) · T-07 (supersesión) y T-03/T-08 (waiver consumido)** — árbol probado: `working-tree sobre 7e5f6bb` (sin commit).
+### CP-15 — (2026-09-17 12:05 -0500) · T-07 (supersesión) y T-03/T-08 (waiver consumido)
+
+árbol probado: `working-tree sobre 7e5f6bb` (sin commit).
   - Award: `PublishAsync` acepta process `AWARDED` para una corrección, marca `Superseded` la versión desplazada y mueve el puntero de cada línea sin liberar takeover; outbox publica el `award_id` real. Pruebas nuevas: sucesión del mismo Supplier (`predecessor_version=1`) y cambio de Supplier (nueva línea de award, puntero movido, verificador rechaza la versión supersedida).
   - Waiver consumido por el owner: `SourcingOwnerProcessorIntegrationTests` prueba la reducción aprobada (`minimum_valid=1`, `waiver_verification_digest`) y el rechazo de hechos stale; se corrigió `SourcingSerialization.ReadWaiverFacts` (leía los targets como objeto en vez de array) y el processor ahora rehashea las facts contra su digest.
   - Defectos corregidos: `SourcingProposalService` publicaba `input_digest` como `facts_digest` de la request (ahora el persistido); `SourcingProposalApprovalAdapter` cotejaba el digest del manifest de Policy en vez de `provider_attestation.attestation_digest` contra el manifest de la propuesta; `ApprovalWorkflowWorker` incorpora los processors de Sourcing y `Program` los habilita con `Approval:Worker:Enabled` (las suites siguen optando por no arrancarlo por defecto).
   - Pruebas dirigidas: `SourcingAwardIntegrationTests` 6/6, `SourcingCatalogRouteIntegrationTests` 4/4 (acuerdo vencido y Supplier bloqueado antes de publicar), `SourcingOwnerProcessorIntegrationTests` 7/7.
-- **CP-16 (2026-09-17 12:30 -0500) · E2E cross-módulo y gate** — árbol probado: `working-tree sobre 7e5f6bb` (sin commit).
+### CP-16 — (2026-09-17 12:30 -0500) · E2E cross-módulo y gate
+
+árbol probado: `working-tree sobre 7e5f6bb` (sin commit).
   - Añadido `SourcingCrossModuleE2ETests`: PR real presentada (Policy `REQUEST_EVALUATE` crea los prerequisites de cotización y procurement), RFQ con dos Suppliers válidos, evaluación/selección/propuesta, despacho HTTP real `SOURCING_PO`, sumisión por el adapter `sourcing-policy-approval-adapter/v1`, decisión real de `PROCUREMENT_APPROVER`, award publicado por el CAS y señal de ambos owners hasta PR `APPROVED`; más límites/Problem Details (`401`, `403`, `413`, `400`, `404`) y captura negativa de telemetría/readiness (sin marcador técnico, precio, nombre de Supplier ni URL, sin ids ni digests en `/health/ready`).
   - Suite completa sobre el árbol estable: unitarias **293/293**; integración **177/177** sobre SQL Server 2022 con Testcontainers; API/E2E **33/33**; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
   - Pendiente inmediato: commit del árbol probado, `specctl preflight 10` y revisión independiente.
 
-- **CP-17 (2026-09-17 13:10 -0500) · correcciones de la revisión independiente (ronda 1: BLOCK R11–R14)** — árbol probado: `working-tree sobre b8ec710` (sin commit).
+### CP-17 — (2026-09-17 13:10 -0500) · correcciones de la revisión independiente (ronda 1: BLOCK R11–R14)
+
+árbol probado: `working-tree sobre b8ec710` (sin commit).
   - R11 (waiver): `SourcingPrerequisiteProcessor` ya no acepta un caso `Completed` como prueba de la reducción; exige la `PolicyExceptionVerification` persistida del mismo `BaseBundleId` y requirement, vigente (`ExpiresAt`), con `ApproverId` y binding cubriendo exactamente los targets/from/to/floor, aplicada a la evaluación `PURCHASE_REQUEST_WAIVER` current de la request (control con `MinimumQuotations = to`), y compara exactamente counts y refs/digests de cotización contra los hechos rehasheados. El fixture siembra verificación + reevaluación como producción; el negativo retira la cotización después del waiver.
   - R12 (award): una única lineage de award por proceso (`SourcingAwards` por `(organization, process)`), `predecessor_version` encadenado y `expected_award_version` obligatorio contra `CurrentVersion` aun cambiando Supplier; el verificador comprueba currency por el índice de línea (una versión parcialmente cubierta sigue consumible para sus líneas) y solo marca `Superseded` cuando el sucesor cubre todas sus líneas.
   - R13 (atomicidad): el CAS `state/version`, la versión, el puntero por línea, el audit y el outbox se confirman en una única transacción SQL (`BeginTransactionAsync`/`CommitAsync`), de modo que un fallo posterior revierte el proceso y el retry no queda stale.
   - R14 (schemas cerrados): `SourcingProposalDocument` y `SourcingAwardDocument` validan conjuntos de propiedades exactos en todos los objetos anidados (`SourcingSerialization.RequireExactObject`) y los goldens prueban el documento alterado con su hash recalculado, no solo el mismatch de hash.
   - Pruebas: unitarias 293/293; integración Sourcing 50/50; suite completa 293/293 + 177/177 + 33/33; `dotnet build` 0 errores; `git diff --check` limpio.
 
-- **CP-18 (2026-09-17 14:05 -0500) · correcciones de la ronda 2 (R12/R14)** — árbol probado: `working-tree sobre d1b8778` (sin commit).
+### CP-18 — (2026-09-17 14:05 -0500) · correcciones de la ronda 2 (R12/R14)
+
+árbol probado: `working-tree sobre d1b8778` (sin commit).
   - R12 (parcial + unicidad): una sucesión que no cubre todas las líneas de la versión que desplaza se rechaza `409` antes de tocar nada (una corrección parcial dejaría líneas atadas a una versión no current); el índice único de `SourcingAwards` pasa de `(organization, process, supplier)` a `(organization, process)` con la migración `20260917190533_Spec10SourcingAwardLineage`. Prueba nueva de award multilínea parcialmente corregido (conflicto, award y proceso intactos).
   - R14 (refs restantes): `SourcingProposalDocument` valida `request_bundle_ref` (policy-evaluation-ref/v1) y `SourcingAwardDocument` valida `evaluation_ref` y `quotation_refs`, con kind estricto en refs opcionales; los goldens añaden negativos con hash recalculado para esos campos.
   - Defecto adicional destapado por la prueba multilínea: `quotation_refs` del proposal repetía la misma cotización que cubre varias líneas (Set canónico la rechazaba); ahora se deduplica por `(id, version)` en el documento y en el `quotation_set_digest` del manifest.
@@ -137,13 +173,13 @@
 
 ## Desviaciones y bloqueos
 
-- Ninguno.
+- Ninguno funcional. Presupuesto de revisión independiente ampliado a 4 rondas con autorización humana: **ronda 3 autorizada** y **ronda 4 autorizada** por el usuario tras los BLOCK de las rondas 1 y 2 (`rondas adicionales autorizadas: 2`). Causa raíz de las rondas extra: hallazgos materiales R12/R14 sobre supersesión y schemas cerrados; el vector que evita su reaparición es la prueba SQL de award multilínea parcialmente corregido y los negativos de goldens con hash recalculado para cada ref anidada (`SourcingAwardIntegrationTests`, `SourcingContractFixtureTests`).
 
 ## Verificación independiente
 
-> **Resultado:** Pendiente
-> **Rondas:** 0/2
-> **Triaje:** Pendiente
-> **Modelo efectivo:** Pendiente
-> **Método:** Pendiente
-> **Fecha:** Pendiente
+> **Resultado:** Sin bloqueos
+> **Rondas:** 4/4
+> **Triaje:** R11–R14 resueltos; R12/R14 verificados en las rondas 3 y 4 tras las correcciones de 0e36330 y 1ca6b6a
+> **Modelo efectivo:** openai-codex/gpt-5.6-sol (effort high), `sdd-implementation-reviewer`
+> **Método:** Ronda 1 full del delta b8ec710 (BLOCK R11–R14); ronda 2 diferencial b8ec710..d1b8778 (R11/R13 resueltos, R12/R14 abiertos); ronda 3 diferencial d1b8778..0e36330 (R12 resuelto, R14 residual); ronda 4 diferencial 0e36330..1ca6b6a (PASS). Constancia: `specs/reviews/10-sourcing-rfq-cotizaciones-award.json`.
+> **Fecha:** 2026-09-17

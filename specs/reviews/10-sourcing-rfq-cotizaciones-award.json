@@ -17,15 +17,15 @@
   "verdict": "PASS",
   "mode": "delta",
   "baseline_digest": "6172c3d26718271b05ad262636f6410fc0d8a5d70a2a4e868ba136a111a070f3",
-  "review_count": 5,
-  "reviewer": "sdd-contract-reviewer · openai-codex/gpt-5.6-luna · effort high",
-  "reviewed_at": "2026-09-16",
+  "review_count": 8,
+  "reviewer": "sdd-implementation-reviewer (openai-codex/gpt-5.6-sol, effort high): rondas 1-2 automáticas (BLOCK R11-R14) y rondas 3-4 autorizadas por el usuario (R12 resuelto; PASS sobre 1ca6b6a).",
+  "reviewed_at": "2026-09-17",
   "coverage": {
-    "behavior": "La cobertura full previa de REQ-01..REQ-14 y CA-01..CA-10 se conserva; el delta final verificó REQ-01/12/14 para líneas, publicación, cancelación y consumo sin reauditar lo no afectado.",
-    "boundaries": "Se conservó el contraste de SPEC 01–09, Policy/Approval/owners y Supplier/Catálogo; el delta confirmó productores, refs y consumidor de sourcing-process-line, RFQ, quotation/catalog, FX, award-line y award-consumption.",
-    "failure_modes": "Además de la cobertura previa, el delta confirmó CAS `ACTIVE`, carrera cancel/publish, replay/conflicto, stale refs y FX inconsistente con resultados `409/422` fail-closed.",
-    "acceptance": "CA-01 y CA-08 cierran R3/R8 con SQL concurrente, E2E, igualdad por línea, reconstrucción del award y una sola rama lifecycle; CA-02..CA-07/09/10 conservan la cobertura full previa.",
-    "implementation_readiness": "El delta contrastó los contratos corregidos con refs de Purchase Request y catálogo de SPEC 09; se conserva el recorrido PR→Policy/Approval→Sourcing→award→owners→PR y la implementación aún no iniciada no se trató como defecto."
+    "behavior": "Cobertura full previa de REQ-01..REQ-14 y CA-01..CA-10 conservada; el delta verificó REQ-05 (consumo verificado del waiver), REQ-12 (lineage único, supersesión completa y publicación atómica) y REQ-14 (schemas cerrados en todos los refs anidados), sin reauditar lo no afectado.",
+    "boundaries": "Contraste de SPEC 01-09, Policy/Approval/owners y Supplier/Catálogo conservado; el delta confirmó la verificación Policy persistida del waiver, una lineage de award por proceso con índice único y refs anidadas cerradas en proposal/award.",
+    "failure_modes": "Además de la cobertura previa (CAS, replay, stale refs, FX inconsistente), el delta verificó transacción única de publicación, rechazo de corrección parcial, invalidez del waiver por retiro de la respuesta y rechazo de documentos con propiedades extra incluso con hash recalculado.",
+    "acceptance": "R11 y R13 resueltos en la ronda 2; R12 y R14 corregidos en 0e36330/1ca6b6a y verificados en las rondas 3 y 4 (PASS sobre 1ca6b6a con suite completa 293/293 + 178/178 + 33/33 sobre el mismo árbol).",
+    "implementation_readiness": "El delta contrastó los contratos corregidos con la migración 20260917190533_Spec10SourcingAwardLineage, los goldens y el recorrido PR→Policy/Approval→Sourcing→award→owners→PR; la implementación aún no iniciada no se trató como defecto."
   },
   "findings": [
     {
@@ -97,6 +97,41 @@
       "status": "resolved",
       "evidence": "award-consumption y el owner Procurement no tenían frontera exacta y podían crear ciclo.",
       "resolution": "Request/response y schemas anidados quedaron cerrados; Procurement distingue proposal pre-award de PR post-award. La ronda 3 no observó circularidad."
+    },
+    {
+      "id": "R11",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "El owner aceptaba cualquier ApprovalCase Completed y comparaba counts con >=, sin consumir la verificación Policy ni las quotation refs exactas.",
+      "resolution": "EffectiveMinimumAsync exige PolicyExceptionVerification persistida del mismo BaseBundleId/requirement, vigente, con ApproverId, binding exacto (targets/from/to/floor), evaluación current PURCHASE_REQUEST_WAIVER con control reducido y FactsMatchTrace exacto; verificado en la ronda 2."
+    },
+    {
+      "id": "R12",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "La sucesión parcial dejaba líneas atadas a una versión no current y el índice único por Supplier permitía lineages múltiples por proceso.",
+      "resolution": "Sucesión completa obligatoria (409 si no cubre todas las líneas de la versión desplazada) con rechazo antes del CAS; índice único (organization, process) con migración 20260917190533; currency por índice de línea. Verificado en la ronda 3."
+    },
+    {
+      "id": "R13",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "El CAS ExecuteUpdateAsync confirmaba el proceso antes de persistir award, punteros, audit y outbox, sin transacción explícita.",
+      "resolution": "Publicación envuelta en una única transacción SQL (BeginTransactionAsync → SaveChanges → CommitAsync); verificado en la ronda 2."
+    },
+    {
+      "id": "R14",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Los readers no validaban request_bundle_ref del proposal ni evaluation_ref/quotation_refs del award; un miembro extra anidado con hash recalculado era aceptado.",
+      "resolution": "RequireExactObject en todos los objetos anidados, kind estricto en refs opcionales, validación del policy_ref de TODAS las aprobaciones y negativos con hash recalculado (request_bundle_ref, evaluation_ref, quotation_refs, award_lines, segunda aprobación). Verificado en las rondas 3 y 4."
+    },
+    {
+      "id": "R15",
+      "severity": "warning",
+      "status": "resolved",
+      "evidence": "La prueba de award multilínea destapó que quotation_refs repetía una cotización que cubre varias líneas y el Set canónico la rechazaba.",
+      "resolution": "SourcingProposalService deduplica quotation_refs por (id, version) en el documento y en el quotation_set_digest del manifest; cubierto por la prueba multilínea."
     }
   ]
 }
