@@ -133,7 +133,9 @@ builder.Services
     .AddCheck<PurchaseRequestHealthCheck>("purchase-request", tags: ["ready"])
     .AddCheck<BudgetHealthCheck>("budget", tags: ["ready"])
     // SPEC 09 REQ-12: supplier owner, catalog, key provider, adapters, processor and storage.
-    .AddCheck<SupplierHealthCheck>("supplier", tags: ["ready"]);
+    .AddCheck<SupplierHealthCheck>("supplier", tags: ["ready"])
+    // SPEC 10 REQ-13/REQ-14: owner registrations, typed provider, approval adapter and storage.
+    .AddCheck<SourcingHealthCheck>("sourcing", tags: ["ready"]);
 
 var telemetryServiceName = builder.Configuration["OpenTelemetry:ServiceName"]
     ?? builder.Environment.ApplicationName;
