@@ -133,17 +133,27 @@ public sealed class SourcingContractFixtureTests
         {
             var proposal = Load(name);
             Assert.NotNull(SourcingProposalDocument.Read(proposal, PolicyCanonicalizer.Hash(proposal)));
+            // A tampered document whose hash is recomputed is still rejected by the closed schema.
+            var altered = WithExtraProperty(proposal);
             Assert.Throws<SourcingDependencyUnavailableException>(() =>
-                SourcingProposalDocument.Read(WithExtraProperty(proposal), PolicyCanonicalizer.Hash(proposal)));
+                SourcingProposalDocument.Read(altered, PolicyCanonicalizer.Hash(altered)));
         }
 
         foreach (var name in new[] { "award-version.json", "award-version-catalog.json" })
         {
             var award = Load(name);
             Assert.NotNull(SourcingAwardDocument.Read(award, PolicyCanonicalizer.Hash(award)));
+            var altered = WithExtraProperty(award);
             Assert.Throws<SourcingDependencyUnavailableException>(() =>
-                SourcingAwardDocument.Read(WithExtraProperty(award), PolicyCanonicalizer.Hash(award)));
+                SourcingAwardDocument.Read(altered, PolicyCanonicalizer.Hash(altered)));
         }
+
+        // Nested objects are closed too: an extra member inside an award line never reaches the reader.
+        var awardDocument = JsonNode.Parse(Load("award-version.json"))!.AsObject();
+        ((JsonObject)((JsonArray)awardDocument["award_lines"]!)[0]!)["unexpected"] = 1;
+        var nested = awardDocument.ToJsonString();
+        Assert.Throws<SourcingDependencyUnavailableException>(() =>
+            SourcingAwardDocument.Read(nested, PolicyCanonicalizer.Hash(nested)));
     }
 
     [Fact]

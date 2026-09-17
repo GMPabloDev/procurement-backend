@@ -1,11 +1,13 @@
 using System.Data;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.Modules.Sourcing;
 using ApprovalTargetView = ProcureToPay.Domain.Modules.Sourcing.ApprovalTargetView;
 using ProcureToPay.Domain.SharedKernel;
@@ -468,23 +470,29 @@ public sealed class SourcingPrerequisiteProcessor(
         var countsByTarget = targets.ToDictionary(
             target => target.Id,
             target => counts.TryGetValue(target.Id, out var count) ? count : 0);
+        var quotationRefsByTarget = new Dictionary<Guid, IReadOnlyList<SourcingContentRef>>();
+        foreach (var target in targets)
+        {
+            quotationRefsByTarget[target.Id] = (await queries.ListValidAsync(
+                    caseRecord.OrganizationId, rfqId.Value, target.Id, cancellationToken))
+                .Select(quote => new SourcingContentRef(quote.QuotationId, quote.Version, quote.ContentDigest))
+                .OrderBy(reference => reference.Id)
+                .ThenBy(reference => reference.Version)
+                .ToArray();
+        }
 
         var effectiveMinimum = await EffectiveMinimumAsync(
-            attempt, prerequisite, caseRecord, countsByTarget, parameters, cancellationToken);
+            attempt, prerequisite, caseRecord, countsByTarget, quotationRefsByTarget, parameters,
+            DateTimeOffset.UtcNow, cancellationToken);
         if (effectiveMinimum is null)
         {
             return null;
         }
 
-        var quotations = new List<SourcingContentRef>();
-        foreach (var target in targets)
-        {
-            foreach (var quote in await queries.ListValidAsync(
-                         caseRecord.OrganizationId, rfqId.Value, target.Id, cancellationToken))
-            {
-                quotations.Add(new SourcingContentRef(quote.QuotationId, quote.Version, quote.ContentDigest));
-            }
-        }
+        var quotations = quotationRefsByTarget.Values
+            .SelectMany(references => references)
+            .DistinctBy(reference => (reference.Id, reference.Version))
+            .ToArray();
 
         return new QuotationStatusEvidence(
             attempt.Id,
@@ -495,7 +503,7 @@ public sealed class SourcingPrerequisiteProcessor(
             DateTimeOffset.UtcNow,
             countsByTarget,
             effectiveMinimum.Value.Minimum,
-            quotations.DistinctBy(reference => (reference.Id, reference.Version)).ToArray(),
+            quotations,
             targets,
             effectiveMinimum.Value.WaiverVerificationDigest);
     }
@@ -509,7 +517,9 @@ public sealed class SourcingPrerequisiteProcessor(
         ApprovalPrerequisiteRecord prerequisite,
         ApprovalCaseRecord caseRecord,
         IReadOnlyDictionary<Guid, int> countsByTarget,
+        IReadOnlyDictionary<Guid, IReadOnlyList<SourcingContentRef>> quotationRefsByTarget,
         QuotationPrerequisiteParameters parameters,
+        DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         var lowest = countsByTarget.Values.DefaultIfEmpty(0).Min();
@@ -543,24 +553,140 @@ public sealed class SourcingPrerequisiteProcessor(
             return null;
         }
 
-        // The facts must still describe the trace: the counts they recorded are rechecked here, so a
-        // withdrawn or invalidated answer invalidates the waiver too (REQ-05). A tampered document
-        // never reduces the minimum either: it must rehash to its recorded digest.
+        // The facts must still describe the trace exactly: counts and quotation references are
+        // recomputed here, so a withdrawn, replaced or added answer invalidates the waiver (REQ-05).
         var facts = SourcingSerialization.ReadWaiverFacts(waiver.DocumentJson);
-        if (!string.Equals(facts.ComputeDigest(), waiver.ContentDigest, StringComparison.Ordinal))
+        if (!string.Equals(facts.ComputeDigest(), waiver.ContentDigest, StringComparison.Ordinal) ||
+            !FactsMatchTrace(facts, countsByTarget, quotationRefsByTarget))
         {
             return null;
         }
 
-        if (facts.Targets.Any(target =>
-                !countsByTarget.TryGetValue(target.LineRef.Id, out var count) ||
-                count < target.ValidQuotations ||
-                count < waiver.To))
+        // A persisted, non-expired Policy verification of the same bundle/requirement is required;
+        // an approval case alone never reduces the published minimum (REQ-05, REQ-13).
+        if (!await IsPolicyVerificationCurrentAsync(waiver, caseRecord, facts, now, cancellationToken))
         {
             return null;
         }
 
         return (waiver.To, waiver.ContentDigest);
+    }
+
+    /// <summary>
+    /// Exact trace comparison of one waiver: every target keeps the same count and the same quotation
+    /// versions/digests the facts recorded when the waiver was built (REQ-05).
+    /// </summary>
+    private static bool FactsMatchTrace(
+        SourcingWaiverFacts facts,
+        IReadOnlyDictionary<Guid, int> countsByTarget,
+        IReadOnlyDictionary<Guid, IReadOnlyList<SourcingContentRef>> quotationRefsByTarget)
+    {
+        foreach (var target in facts.Targets)
+        {
+            if (!countsByTarget.TryGetValue(target.LineRef.Id, out var count) ||
+                count != target.ValidQuotations ||
+                !quotationRefsByTarget.TryGetValue(target.LineRef.Id, out var current))
+            {
+                return false;
+            }
+
+            var recorded = target.QuotationRefs
+                .OrderBy(reference => reference.Id)
+                .ThenBy(reference => reference.Version)
+                .ToArray();
+            if (recorded.Length != current.Count)
+            {
+                return false;
+            }
+
+            for (var index = 0; index < recorded.Length; index++)
+            {
+                if (recorded[index].Id != current[index].Id ||
+                    recorded[index].Version != current[index].Version ||
+                    !string.Equals(
+                        recorded[index].ContentDigest, current[index].ContentDigest, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// REQ-05: the reduction is only usable while the persisted Policy verification of the same base
+    /// bundle and requirement is vigente, was approved with authority, covers exactly the facts targets
+    /// and has been applied to the current evaluation of the request (the reevaluation carries the
+    /// reduced minimum).
+    /// </summary>
+    private async Task<bool> IsPolicyVerificationCurrentAsync(
+        SourcingWaiverFactsRecord waiver,
+        ApprovalCaseRecord caseRecord,
+        SourcingWaiverFacts facts,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var verification = await dbContext.PolicyExceptionVerifications
+            .AsNoTracking()
+            .Where(record => record.BaseBundleId == waiver.BaseBundleId &&
+                             record.TargetRequirementKey == waiver.RequirementKey)
+            .OrderByDescending(record => record.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (verification is null || verification.ApproverId == Guid.Empty || verification.ExpiresAt <= now ||
+            !VerificationBindingMatches(verification.SnapshotJson, waiver, facts))
+        {
+            return false;
+        }
+
+        var latest = await dbContext.PolicyEvaluationBundles
+            .AsNoTracking()
+            .Where(bundle => bundle.OrganizationId == caseRecord.OrganizationId &&
+                             bundle.SubjectId == caseRecord.SubjectId &&
+                             bundle.SubjectVersion == caseRecord.SubjectVersion)
+            .OrderByDescending(bundle => bundle.EvaluationSequence)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (latest is null)
+        {
+            return false;
+        }
+
+        var rehydrated = PolicyEvaluationBundleRehydrator.FromJson(latest.BundleJson);
+        return string.Equals(rehydrated.Operation, "PURCHASE_REQUEST_WAIVER", StringComparison.Ordinal) &&
+               rehydrated.PreviousBundleId == waiver.BaseBundleId &&
+               rehydrated.Controls.Any(control =>
+                   string.Equals(control.RequirementKey, waiver.RequirementKey, StringComparison.Ordinal) &&
+                   control.MinimumQuotations == waiver.To);
+    }
+
+    private static bool VerificationBindingMatches(
+        string snapshotJson,
+        SourcingWaiverFactsRecord waiver,
+        SourcingWaiverFacts facts)
+    {
+        try
+        {
+            var request = JsonDocument.Parse(snapshotJson).RootElement.GetProperty("request");
+            var covered = request.GetProperty("coveredLines").EnumerateArray()
+                .Select(line => (line.GetProperty("id").GetGuid(), line.GetProperty("version").GetInt32()))
+                .OrderBy(line => line.Item1)
+                .ThenBy(line => line.Item2)
+                .ToArray();
+            var expected = facts.Targets
+                .Select(target => (target.LineRef.Id, target.LineRef.Version))
+                .OrderBy(line => line.Item1)
+                .ThenBy(line => line.Item2)
+                .ToArray();
+            return request.GetProperty("from").GetInt32() == waiver.From &&
+                   request.GetProperty("to").GetInt32() == waiver.To &&
+                   request.GetProperty("floor").GetInt32() == waiver.Floor &&
+                   covered.SequenceEqual(expected);
+        }
+        catch (Exception exception) when (exception is JsonException or KeyNotFoundException or
+                                             InvalidOperationException or FormatException)
+        {
+            return false;
+        }
     }
 
     /// <summary>

@@ -228,13 +228,12 @@ public sealed class SourcingAwardIntegrationTests
     }
 
     [Fact]
-    public async Task Changing_the_supplier_supersedes_the_current_award_and_moves_the_line()
+    public async Task Changing_the_supplier_keeps_one_award_lineage_and_its_predecessor_chain()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var harness = await SourcingHarness.StartAsync(cancellationToken);
         await using var context = harness.CreateContext();
         var (created, rfq) = await SourcingScenario.OpenRfqAsync(harness, context, cancellationToken);
-        // The second supplier competes in the same frozen evaluation, priced above the first one.
         await SourcingScenario.RegisterSupplierQuotationAsync(
             harness, context, rfq, harness.SecondSupplierId, "12", "10", cancellationToken);
         var process = await harness.CreateProcessService(context)
@@ -254,8 +253,6 @@ public sealed class SourcingAwardIntegrationTests
                 $"award-{Guid.NewGuid():N}", "Award the recommended supplier"),
             harness.BuyerId, "corr-award", DateTimeOffset.UtcNow, cancellationToken);
 
-        // REQ-12: changing the supplier revises the selection and creates a new proposal that
-        // supersedes the previous award without releasing the takeover.
         await harness.CreateSelectionService(context).SelectAsync(
             new SelectLineCommand(
                 harness.OrganizationId, rfq.RfqId, harness.LineId, harness.SecondSupplierId,
@@ -265,41 +262,47 @@ public sealed class SourcingAwardIntegrationTests
             new BuildProposalCommand(
                 harness.OrganizationId, rfq.RfqId, harness.SecondSupplierId, $"proposal-{Guid.NewGuid():N}"),
             harness.BuyerId, "corr-proposal-change", DateTimeOffset.UtcNow, cancellationToken);
-        Assert.Equal(1, secondProposal.Version);
         await SourcingScenario.SeedApprovalAsync(harness, context, secondProposal, cancellationToken);
+
+        // A supplier change is a successor version of the same award, never a new lineage: the
+        // caller must provide the current award version and the CAS rejects a stale one (REQ-12).
+        var staleProcessVersion = await ProcessVersionAsync(harness, cancellationToken);
+        await Assert.ThrowsAsync<DomainConflictException>(() => harness.CreateAwardService(context)
+            .PublishAsync(
+                new PublishAwardCommand(
+                    harness.OrganizationId, secondProposal.ProposalId, secondProposal.Version,
+                    staleProcessVersion, null, $"award-{Guid.NewGuid():N}",
+                    "Stale correction"),
+                harness.BuyerId, "corr-award-stale", DateTimeOffset.UtcNow, cancellationToken));
 
         var changed = await harness.CreateAwardService(context).PublishAsync(
             new PublishAwardCommand(
                 harness.OrganizationId, secondProposal.ProposalId, secondProposal.Version,
-                await ProcessVersionAsync(harness, cancellationToken), null, $"award-{Guid.NewGuid():N}",
+                await ProcessVersionAsync(harness, cancellationToken), 1, $"award-{Guid.NewGuid():N}",
                 "Change the awarded supplier"),
             harness.BuyerId, "corr-award-change", DateTimeOffset.UtcNow, cancellationToken);
 
-        Assert.NotEqual(first.AwardId, changed.AwardId);
+        Assert.Equal(first.AwardId, changed.AwardId);
+        Assert.Equal(2, changed.Version);
         Assert.Equal(harness.SecondSupplierId, changed.SupplierRef.Id);
-        Assert.True((await service.GetAwardAsync(
-            harness.OrganizationId, first.AwardId, 1, cancellationToken)).Superseded);
+        var previous = await service.GetAwardAsync(
+            harness.OrganizationId, first.AwardId, 1, cancellationToken);
+        Assert.True(previous.Superseded);
+        Assert.Equal(2, (await service.GetCurrentAwardAsync(
+            harness.OrganizationId, rfq.RfqId, harness.SecondSupplierId, cancellationToken)).Version);
         await using (var verification = harness.CreateContext())
         {
             var current = await verification.SourcingCurrentAwardLines
                 .AsNoTracking()
                 .SingleAsync(record => record.LineId == harness.LineId, cancellationToken);
-            Assert.Equal(changed.AwardId, current.AwardId);
-            Assert.Equal(1, current.AwardVersion);
-            var processState = await verification.SourcingProcesses
-                .AsNoTracking()
-                .Where(record => record.Id == process.ProcessId)
-                .Select(record => new { record.State, record.Version })
-                .SingleAsync(cancellationToken);
-            Assert.Equal((int)SourcingProcessState.Awarded, processState.State);
-            Assert.Equal(process.Version + 2, processState.Version);
+            Assert.Equal(first.AwardId, current.AwardId);
+            Assert.Equal(2, current.AwardVersion);
         }
 
         await Assert.ThrowsAsync<DomainConflictException>(() => service.VerifyAsync(
-            Request(harness, first), cancellationToken));
+            Request(harness, previous), cancellationToken));
         var response = await service.VerifyAsync(Request(harness, changed), cancellationToken);
         Assert.Equal(harness.SecondSupplierId, response.SupplierRef.Id);
-        Assert.Equal(SourcingCodes.AwardConsumptionContract, service.ContractVersion);
     }
 
     private static AwardConsumptionRequest Request(SourcingHarness harness, SourcingAwardView award) => new(

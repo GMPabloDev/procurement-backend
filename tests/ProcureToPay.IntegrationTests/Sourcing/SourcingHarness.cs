@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -368,16 +369,26 @@ public sealed class SourcingHarness : IAsyncDisposable
             caseRecord.Status = (int)ApprovalCaseStatus.Completed;
         }
 
-        var targets = lines
-            .Where(line => prerequisiteTargets.Contains(line.LineRef.Id))
-            .Select(line => new SourcingWaiverTarget(
-            line.LineRef,
-            Enumerable.Range(0, recordedQuotations)
-                .Select(index => new SourcingContentRef(
-                    Guid.Parse($"{index + 1:x8}-0000-4000-8000-000000000001"),
-                    1,
-                    Digest('f')))
-                .ToArray())).ToArray();
+        var quotations = new SourcingQuotationQueries(context);
+        var targets = new List<SourcingWaiverTarget>();
+        foreach (var line in lines.Where(line => prerequisiteTargets.Contains(line.LineRef.Id)))
+        {
+            var currentQuotations = (await quotations.ListValidAsync(
+                    OrganizationId, current.RfqId, line.LineRef.Id, cancellationToken))
+                .Select(quote => new SourcingContentRef(quote.QuotationId, quote.Version, quote.ContentDigest))
+                .ToArray();
+            if (currentQuotations.Length == 0 && recordedQuotations > 0)
+            {
+                // A historical trace whose answers are no longer valid; only the negative scenario
+                // builds this shape.
+                currentQuotations = Enumerable.Range(0, recordedQuotations)
+                    .Select(index => new SourcingContentRef(
+                        Guid.Parse($"{index + 1:x8}-0000-4000-8000-000000000001"), 1, Digest('f')))
+                    .ToArray();
+            }
+
+            targets.Add(new SourcingWaiverTarget(line.LineRef, currentQuotations));
+        }
         var facts = new SourcingWaiverFacts(
             OrganizationId,
             current.ProcessId,
@@ -394,6 +405,7 @@ public sealed class SourcingHarness : IAsyncDisposable
             1,
             targets,
             DateTimeOffset.UtcNow);
+        await SeedPolicyVerificationAsync(context, facts, approved, cancellationToken);
         return new SourcingWaiverFactsRecord
         {
             Id = Guid.NewGuid(),
@@ -419,6 +431,137 @@ public sealed class SourcingHarness : IAsyncDisposable
             ActorUserId = BuyerId,
             OccurredAt = DateTimeOffset.UtcNow
         };
+    }
+
+    /// <summary>
+    /// Seeds the persisted Policy verification of one waiver and the reduced reevaluation it applied:
+    /// the owner only accepts a reduction that is current, vigente and bound to the same bundle,
+    /// requirement, targets and floor (REQ-05).
+    /// </summary>
+    private async Task SeedPolicyVerificationAsync(
+        ProcureToPayDbContext context,
+        SourcingWaiverFacts facts,
+        bool approved,
+        CancellationToken cancellationToken)
+    {
+        var policySetVersionId = await context.PolicySetVersions
+            .AsNoTracking()
+            .Select(record => (Guid?)record.Id)
+            .FirstOrDefaultAsync(cancellationToken) ?? Guid.NewGuid();
+        if (!await context.PolicySetVersions.AnyAsync(record => record.Id == policySetVersionId, cancellationToken))
+        {
+            context.PolicySetVersions.Add(new PolicySetVersionRecord
+            {
+                Id = policySetVersionId,
+                OrganizationId = OrganizationId,
+                Sequence = 1,
+                ScopesJson = "[\"LINE\"]",
+                ContentJson = "{}",
+                ContentDigest = Digest('1')
+            });
+            await context.SaveChangesAsync(cancellationToken);
+        }
+
+        if (!approved)
+        {
+            return;
+        }
+
+        var control = new ProcureToPay.Domain.Modules.Policy.PolicyGeneratedControl(
+            facts.RequirementKey,
+            ProcureToPay.Domain.Modules.Policy.PolicyEffectType.RequireQuotations,
+            [ProcureToPay.Domain.Modules.Policy.PolicyScope.Line],
+            facts.Targets.Select(target => target.LineRef.Id).ToImmutableHashSet(),
+            "PROCUREMENT",
+            null,
+            facts.To,
+            [],
+            [],
+            "Waiver reduction fixture");
+        var subjectReferences = facts.Targets
+            .Select(target => new ProcureToPay.Domain.Modules.Policy.PolicySubjectReference(
+                target.LineRef.Id, target.LineRef.Version))
+            .ToArray();
+        var scope = new ProcureToPay.Domain.Modules.Policy.PolicyScopeEvaluation(
+            ProcureToPay.Domain.Modules.Policy.PolicyScope.Line,
+            subjectReferences.Select(reference => reference.Id).ToImmutableHashSet(),
+            [facts.RequirementKey],
+            [control],
+            ProcureToPay.Domain.Modules.Policy.PolicyResult.RequirementsGenerated)
+        {
+            SubjectReferences = subjectReferences
+        };
+        var verificationId = Guid.NewGuid();
+        var reduced = new ProcureToPay.Domain.Modules.Policy.PolicyEvaluationBundle(
+            Guid.NewGuid(),
+            $"waiver-reduced-{Guid.NewGuid():N}",
+            new ProcureToPay.Domain.Modules.Policy.PolicySubjectReference(RequestId, 1),
+            DateTimeOffset.UtcNow,
+            Digest('1'),
+            Digest('2'),
+            [scope],
+            [control],
+            ProcureToPay.Domain.Modules.Policy.PolicyResult.RequirementsGenerated,
+            Digest('3'))
+        {
+            Operation = "PURCHASE_REQUEST_WAIVER",
+            PreviousBundleId = facts.BaseBundleId
+        };
+        await new ProcureToPay.Infrastructure.Persistence.Policy.PolicyPersistenceService(context)
+            .AppendEvaluationAsync(
+                reduced,
+                new ProcureToPay.Infrastructure.Persistence.Policy.PolicyEvaluationCaller(
+                    OrganizationId,
+                    "QUOTATION_WAIVER",
+                    "WORKFLOW",
+                    "PURCHASE_REQUEST_WAIVER",
+                    reduced.EvaluationKey,
+                    policySetVersionId,
+                    "waiver-fixture")
+                {
+                    SubjectType = "PURCHASE_REQUEST",
+                    Cause = "QUOTATION_WAIVER",
+                    ExceptionReferenceIds = [verificationId.ToString("D")],
+                    ExceptionTargetRequirementKey = facts.RequirementKey,
+                    ExceptionFrom = facts.From,
+                    ExceptionTo = facts.To
+                },
+                cancellationToken);
+        context.PolicyExceptionVerifications.Add(
+            new ProcureToPay.Infrastructure.Persistence.Policy.PolicyExceptionVerificationRecord
+            {
+                Id = verificationId,
+                EvaluationBundleId = facts.BaseBundleId,
+                BaseBundleId = facts.BaseBundleId,
+                WorkflowDecisionId = $"waiver-decision-{verificationId:N}",
+                TargetRequirementKey = facts.RequirementKey,
+                Binding = Digest('f'),
+                Nonce = $"waiver-nonce-{verificationId:N}",
+                EvidenceDigest = Digest('e'),
+                ApproverId = BuyerId,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(7),
+                VerifierReference = "workflow://sourcing-fixture",
+                SnapshotJson = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    request = new
+                    {
+                        baseBundleId = facts.BaseBundleId.ToString("D"),
+                        targetRequirementKey = facts.RequirementKey,
+                        from = facts.From,
+                        to = facts.To,
+                        floor = facts.Floor,
+                        coveredLines = facts.Targets.Select(target => new
+                        {
+                            type = "PURCHASE_REQUEST_LINE",
+                            id = target.LineRef.Id,
+                            version = target.LineRef.Version,
+                            materialSnapshotDigest = Digest('b')
+                        }).ToArray()
+                    }
+                }),
+                CreatedAt = DateTimeOffset.UtcNow
+            });
+        await context.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary>Policy version the seeded request bundle points at; reused by the award fixtures.</summary>

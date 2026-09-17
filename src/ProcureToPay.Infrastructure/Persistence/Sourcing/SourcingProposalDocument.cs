@@ -7,8 +7,8 @@ namespace ProcureToPay.Infrastructure.Persistence.Sourcing;
 
 /// <summary>
 /// Reader of the persisted <c>sourcing-proposal-version/v1</c> document (REQ-10, REQ-12). It rebuilds
-/// the award candidate and the references a publication must reproduce, and it never trusts the stored
-/// bytes without rehashing them first.
+/// the award candidate and the references a publication must reproduce, rejects unknown properties at
+/// every level and never trusts the stored bytes without rehashing them first.
 /// </summary>
 public static class SourcingProposalDocument
 {
@@ -25,6 +25,36 @@ public static class SourcingProposalDocument
         CommercialTerms Terms,
         AwardCandidate AwardCandidate);
 
+    private static readonly string[] RootProperties =
+    [
+        "award_candidate", "canonicalization_version", "catalog_snapshots", "contract_version",
+        "evaluation_ref", "organization_id", "predecessor_version", "quotation_refs",
+        "request_bundle_ref", "request_ref", "selected_lines", "selection_basis", "supplier_ref",
+        "terms", "version", "waiver_ref"
+    ];
+
+    private static readonly string[] CandidateProperties =
+    [
+        "award_lines", "base_amount", "base_currency", "canonicalization_version", "contract_version",
+        "source_amount", "source_currency", "supplier_ref", "terms"
+    ];
+
+    private static readonly string[] AwardLineProperties =
+    [
+        "base_currency", "base_gross_total", "fx_snapshot_ref", "line_ref", "quantity",
+        "source_currency", "source_gross_total", "unit_code", "unit_price"
+    ];
+
+    private static readonly string[] ContentRefProperties = ["content_digest", "id", "version"];
+
+    private static readonly string[] EntityRefProperties = ["id", "version"];
+
+    private static readonly string[] TermsProperties =
+        ["delivery_days", "incoterm_code", "payment_terms_code", "warranty_days"];
+
+    private static readonly string[] SnapshotProperties =
+        ["catalog_content_digest", "line_id", "line_version", "snapshot_ref", "supplier_ref"];
+
     public static ProposalContent Read(string documentJson, string expectedDigest)
     {
         if (!string.Equals(
@@ -36,6 +66,7 @@ public static class SourcingProposalDocument
         }
 
         var root = Parse(documentJson);
+        SourcingSerialization.RequireExactObject(root, RootProperties);
         var candidate = ReadCandidate(root.GetProperty("award_candidate"));
         var terms = ReadTerms(root.GetProperty("terms"));
         return new ProposalContent(
@@ -58,6 +89,7 @@ public static class SourcingProposalDocument
 
     private static AwardCandidate ReadCandidate(JsonElement element)
     {
+        SourcingSerialization.RequireExactObject(element, CandidateProperties);
         var lines = element.GetProperty("award_lines").EnumerateArray().Select(ReadLine).ToArray();
         return new AwardCandidate(
             ReadEntityRef(element.GetProperty("supplier_ref")),
@@ -67,43 +99,63 @@ public static class SourcingProposalDocument
             lines);
     }
 
-    private static AwardLine ReadLine(JsonElement element) => new(
-        ReadContentRef(element.GetProperty("line_ref")),
-        Decimal(element, "quantity"),
-        element.GetProperty("unit_code").GetString()!,
-        Decimal(element, "unit_price"),
-        element.GetProperty("source_currency").GetString()!,
-        Decimal(element, "source_gross_total"),
-        element.GetProperty("base_currency").GetString()!,
-        Decimal(element, "base_gross_total"),
-        ReadOptionalContentRef(element.GetProperty("fx_snapshot_ref")));
+    private static AwardLine ReadLine(JsonElement element)
+    {
+        SourcingSerialization.RequireExactObject(element, AwardLineProperties);
+        return new AwardLine(
+            ReadContentRef(element.GetProperty("line_ref")),
+            Decimal(element, "quantity"),
+            element.GetProperty("unit_code").GetString()!,
+            Decimal(element, "unit_price"),
+            element.GetProperty("source_currency").GetString()!,
+            Decimal(element, "source_gross_total"),
+            element.GetProperty("base_currency").GetString()!,
+            Decimal(element, "base_gross_total"),
+            ReadOptionalContentRef(element.GetProperty("fx_snapshot_ref")));
+    }
 
-    private static CommercialTerms ReadTerms(JsonElement element) => new(
-        element.GetProperty("delivery_days").GetInt32(),
-        element.GetProperty("incoterm_code") is { ValueKind: JsonValueKind.String } incoterm
-            ? incoterm.GetString()
-            : null,
-        element.GetProperty("payment_terms_code").GetString()!,
-        element.GetProperty("warranty_days").GetInt32());
+    private static CommercialTerms ReadTerms(JsonElement element)
+    {
+        SourcingSerialization.RequireExactObject(element, TermsProperties);
+        return new CommercialTerms(
+            element.GetProperty("delivery_days").GetInt32(),
+            element.GetProperty("incoterm_code") is { ValueKind: JsonValueKind.String } incoterm
+                ? incoterm.GetString()
+                : null,
+            element.GetProperty("payment_terms_code").GetString()!,
+            element.GetProperty("warranty_days").GetInt32());
+    }
 
-    private static SourcingCatalogSnapshot ReadSnapshot(JsonElement element) => new(
-        ReadContentRef(element.GetProperty("snapshot_ref")),
-        element.GetProperty("line_id").GetGuid(),
-        element.GetProperty("line_version").GetInt32(),
-        ReadEntityRef(element.GetProperty("supplier_ref")),
-        element.GetProperty("catalog_content_digest").GetString()!);
+    private static SourcingCatalogSnapshot ReadSnapshot(JsonElement element)
+    {
+        SourcingSerialization.RequireExactObject(element, SnapshotProperties);
+        return new SourcingCatalogSnapshot(
+            ReadContentRef(element.GetProperty("snapshot_ref")),
+            element.GetProperty("line_id").GetGuid(),
+            element.GetProperty("line_version").GetInt32(),
+            ReadEntityRef(element.GetProperty("supplier_ref")),
+            element.GetProperty("catalog_content_digest").GetString()!);
+    }
 
-    private static SourcingContentRef ReadContentRef(JsonElement element) => new(
-        element.GetProperty("id").GetGuid(),
-        element.GetProperty("version").GetInt32(),
-        element.GetProperty("content_digest").GetString()!);
+    private static SourcingContentRef ReadContentRef(JsonElement element)
+    {
+        SourcingSerialization.RequireExactObject(element, ContentRefProperties);
+        return new SourcingContentRef(
+            element.GetProperty("id").GetGuid(),
+            element.GetProperty("version").GetInt32(),
+            element.GetProperty("content_digest").GetString()!);
+    }
 
     private static SourcingContentRef? ReadOptionalContentRef(JsonElement element) =>
         element is { ValueKind: JsonValueKind.Object } ? ReadContentRef(element) : null;
 
-    private static SourcingEntityRef ReadEntityRef(JsonElement element) => new(
-        element.GetProperty("id").GetGuid(),
-        element.GetProperty("version").GetInt32());
+    private static SourcingEntityRef ReadEntityRef(JsonElement element)
+    {
+        SourcingSerialization.RequireExactObject(element, EntityRefProperties);
+        return new SourcingEntityRef(
+            element.GetProperty("id").GetGuid(),
+            element.GetProperty("version").GetInt32());
+    }
 
     private static Guid? ReadOptionalGuid(JsonElement element) =>
         element is { ValueKind: JsonValueKind.String } ? element.GetGuid() : null;

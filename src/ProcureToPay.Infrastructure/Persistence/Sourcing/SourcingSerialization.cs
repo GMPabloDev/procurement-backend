@@ -439,6 +439,29 @@ public static class SourcingSerialization
         return references;
     }
 
+    /// <summary>
+    /// Closed-schema guard for a persisted document (SPEC 10 "Schemas cerrados"): the object carries
+    /// exactly the published properties, so a tampered document that keeps a valid digest is still
+    /// rejected instead of interpreted by the reader.
+    /// </summary>
+    public static void RequireExactObject(JsonElement element, params string[] expected)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            throw new SourcingDependencyUnavailableException("The stored sourcing document is not an object.");
+        }
+
+        var names = element.EnumerateObject()
+            .Select(property => property.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        if (!names.SequenceEqual(expected.OrderBy(name => name, StringComparer.Ordinal), StringComparer.Ordinal))
+        {
+            throw new SourcingDependencyUnavailableException(
+                "The stored sourcing document has an unexpected property set.");
+        }
+    }
+
     /// <summary>Set of FX snapshot references used by one evaluation (REQ-08).</summary>
     public static string FxRefs(IEnumerable<SourcingFxSnapshot> snapshots) =>
         new JsonArray((snapshots ?? [])

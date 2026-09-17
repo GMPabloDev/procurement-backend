@@ -60,17 +60,37 @@ public sealed class SourcingOwnerProcessorIntegrationTests
         await using var harness = await SourcingHarness.StartAsync(cancellationToken);
         await using var context = harness.CreateContext();
         await harness.RegisterOwnerAsync(context, SourcingCodes.QuotationStatusOwnerAdapterId, cancellationToken);
-        var (_, rfq) = await SourcingScenario.OpenRfqWithoutQuotationAsync(harness, context, cancellationToken);
+        var (_, rfq) = await SourcingScenario.OpenRfqAsync(harness, context, cancellationToken);
         await SourcingScenario.SetQuotationAllowanceAsync(harness, context, minimum: 2, floor: 1, cancellationToken);
         var prerequisiteId = await harness.QuotationPrerequisiteIdAsync(cancellationToken);
 
-        // The RFQ never received an answer, but the waiver recorded one: the facts no longer describe
-        // the trace, so the reduction is not usable and no signal is emitted (REQ-05).
+        // The waiver was built against one valid answer; the answer is withdrawn afterwards, so the
+        // facts no longer describe the trace and the reduction is not usable (REQ-05).
         await using (var seeding = harness.CreateContext())
         {
             seeding.SourcingWaiverFacts.Add(await harness.BuildWaiverFactsAsync(
                 seeding, rfq, prerequisiteId, to: 1, recordedQuotations: 1, approved: true, cancellationToken));
             await seeding.SaveChangesAsync(cancellationToken);
+        }
+
+        await using (var withdrawal = harness.CreateContext())
+        {
+            var quotation = await withdrawal.Quotations
+                .AsNoTracking()
+                .SingleAsync(record => record.RfqId == rfq.RfqId, cancellationToken);
+            await harness.CreateQuotationService(withdrawal).WithdrawQuotationAsync(
+                new ReviewQuotationCommand(
+                    harness.OrganizationId,
+                    quotation.Id,
+                    quotation.CurrentVersion,
+                    QuotationReviewStatus.Withdrawn,
+                    [],
+                    "Supplier withdrew after the waiver",
+                    $"withdraw-{Guid.NewGuid():N}"),
+                harness.BuyerId,
+                "corr-withdraw",
+                DateTimeOffset.UtcNow,
+                cancellationToken);
         }
 
         var outcome = (await harness.CreatePrerequisiteProcessor(context)

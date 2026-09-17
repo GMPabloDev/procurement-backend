@@ -168,15 +168,24 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             throw new AwardNotEligibleException("The awarded supplier version is no longer current.");
         }
 
+        // REQ-12: one award lineage per sourcing process. A correction (same supplier or a supplier
+        // change) increments the same root and references its predecessor; the CAS below serializes
+        // every publication of the process inside one transaction.
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         var award = await dbContext.SourcingAwards
             .SingleOrDefaultAsync(
                 record => record.OrganizationId == command.OrganizationId &&
-                          record.ProcessId == process.Id &&
-                          record.SupplierId == proposal.SupplierId,
+                          record.ProcessId == process.Id,
                 cancellationToken);
         var version = (award?.CurrentVersion ?? 0) + 1;
-        if (command.ExpectedAwardVersion is int expectedAwardVersion && award is not null &&
-            award.CurrentVersion != expectedAwardVersion)
+        if (award is null)
+        {
+            if (command.ExpectedAwardVersion is not null)
+            {
+                throw new DomainConflictException("The sourcing process has no award to revise.");
+            }
+        }
+        else if (command.ExpectedAwardVersion != award.CurrentVersion)
         {
             throw new DomainConflictException("The award version is stale.");
         }
@@ -193,6 +202,11 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
                 CurrentVersion = 0
             };
             dbContext.SourcingAwards.Add(award);
+        }
+        else
+        {
+            // The lineage may correct the supplier: the root follows its current version.
+            award.SupplierId = proposal.SupplierId;
         }
 
         // REQ-12: a correction supersedes the current award of the same process (same supplier or a
@@ -220,11 +234,30 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
 
         foreach (var current in currentLines)
         {
-            var owner = processAwardVersions.SingleOrDefault(
+            _ = processAwardVersions.SingleOrDefault(
                 row => row.AwardId == current.AwardId && row.Version == current.AwardVersion)
                 ?? throw new DomainConflictException(
                     "The selected lines are owned by an award of another sourcing process.");
-            owner.Superseded = true;
+        }
+
+        // A displaced version is only marked superseded when the successor covers every one of its
+        // lines; a partially covered version stays current for the lines it still owns.
+        foreach (var row in processAwardVersions)
+        {
+            var ownsCurrentLine = currentLines.Any(
+                current => current.AwardId == row.AwardId && current.AwardVersion == row.Version);
+            if (!ownsCurrentLine)
+            {
+                continue;
+            }
+
+            var rowLines = SourcingSerialization.ReadContentRefs(row.LinesJson)
+                .Select(reference => reference.Id)
+                .ToHashSet();
+            if (rowLines.All(lineId => selectedLineIds.Contains(lineId)))
+            {
+                row.Superseded = true;
+            }
         }
 
         // REQ-01/REQ-12: the process leaves ACTIVE exactly once; a supersession keeps AWARDED and
@@ -328,7 +361,6 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             }
         }
 
-        await MarkPreviousSupersededAsync(award.Id, version, cancellationToken);
         award.CurrentVersion = version;
         AddOutbox(
             command.OrganizationId, award.Id, record, now);
@@ -336,6 +368,7 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             command.OrganizationId, SourcingCodes.ActionAwardPublished, actorUserId, correlationReference,
             $"award:{award.Id:D}:v{version}", now);
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return await GetAwardAsync(command.OrganizationId, award.Id, version, cancellationToken);
     }
 
@@ -413,11 +446,6 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
                 record => record.AwardId == award.Id && record.Version == request.AwardVersion,
                 cancellationToken)
             ?? throw new DomainNotFoundException("The award version is not visible.");
-        if (award.CurrentVersion != row.Version || row.Superseded)
-        {
-            throw new DomainConflictException("The award version is not current.");
-        }
-
         if (!string.Equals(row.ContentDigest, SourcingCodes.Digest(request.AwardContentDigest, "award digest"),
                 StringComparison.Ordinal))
         {
@@ -450,6 +478,19 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
         if (expected.Length != covered.Length || !expected.SequenceEqual(covered))
         {
             throw new DomainConflictException("The requested lines do not match the published award.");
+        }
+
+        // REQ-12: currency is decided by the per-line index, not by the root version alone, so a
+        // partially superseded version remains consumable only for the lines it still owns.
+        foreach (var line in expected)
+        {
+            var current = await dbContext.SourcingCurrentAwardLines
+                .AsNoTracking()
+                .SingleOrDefaultAsync(record => record.LineId == line.Id, cancellationToken);
+            if (current is null || current.AwardId != row.AwardId || current.AwardVersion != row.Version)
+            {
+                throw new DomainConflictException("The award version is not current for the requested lines.");
+            }
         }
 
         var eligible = await dbContext.SupplierVersions
@@ -548,26 +589,6 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             rehydrated.ManifestDigest ?? bundle.ResultDigest,
             bundle.PolicyContentDigest,
             bundle.ResultDigest);
-    }
-
-    private async Task MarkPreviousSupersededAsync(
-        Guid awardId,
-        int version,
-        CancellationToken cancellationToken)
-    {
-        if (version <= 1)
-        {
-            return;
-        }
-
-        var previous = await dbContext.SourcingAwardVersions
-            .SingleOrDefaultAsync(
-                record => record.AwardId == awardId && record.Version == version - 1,
-                cancellationToken);
-        if (previous is not null)
-        {
-            previous.Superseded = true;
-        }
     }
 
     private void AddOutbox(
