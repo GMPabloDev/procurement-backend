@@ -254,10 +254,15 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             var rowLines = SourcingSerialization.ReadContentRefs(row.LinesJson)
                 .Select(reference => reference.Id)
                 .ToHashSet();
-            if (rowLines.All(lineId => selectedLineIds.Contains(lineId)))
+            if (!rowLines.All(lineId => selectedLineIds.Contains(lineId)))
             {
-                row.Superseded = true;
+                // REQ-12: a successor supersedes the whole previous award; a partial correction would
+                // leave lines bound to a version that is no longer current.
+                throw new DomainConflictException(
+                    "A successor award must cover every line of the award it supersedes.");
             }
+
+            row.Superseded = true;
         }
 
         // REQ-01/REQ-12: the process leaves ACTIVE exactly once; a supersession keeps AWARDED and

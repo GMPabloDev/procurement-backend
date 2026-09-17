@@ -79,6 +79,14 @@ public static class SourcingAwardDocument
         }
 
         var policy = ReadPolicyRef(approvals[0].GetProperty("policy_ref"));
+        // References the consumption response rebuilds are validated too, so a tampered document with a
+        // recomputed digest cannot hide an unknown property inside them (REQ-14).
+        _ = ReadOptionalContentRef(root.GetProperty("evaluation_ref"));
+        foreach (var reference in root.GetProperty("quotation_refs").EnumerateArray())
+        {
+            _ = ReadContentRef(reference);
+        }
+
         return new AwardContent(
             ReadEntityRef(root.GetProperty("process_ref")),
             ReadEntityRef(root.GetProperty("supplier_ref")),
@@ -113,7 +121,9 @@ public static class SourcingAwardDocument
             Decimal(element, "base_gross_total"),
             element.GetProperty("fx_snapshot_ref") is { ValueKind: JsonValueKind.Object } fx
                 ? ReadContentRef(fx)
-                : null);
+                : element.GetProperty("fx_snapshot_ref").ValueKind == JsonValueKind.Null
+                    ? null
+                    : throw new SourcingDependencyUnavailableException("The stored award is corrupted."));
     }
 
     private static CommercialTerms ReadTerms(JsonElement element)
@@ -160,6 +170,14 @@ public static class SourcingAwardDocument
             element.GetProperty("version").GetInt32(),
             element.GetProperty("content_digest").GetString()!);
     }
+
+    private static SourcingContentRef? ReadOptionalContentRef(JsonElement element) =>
+        element.ValueKind switch
+        {
+            JsonValueKind.Object => ReadContentRef(element),
+            JsonValueKind.Null => null,
+            _ => throw new SourcingDependencyUnavailableException("The stored award is corrupted.")
+        };
 
     private static SourcingEntityRef ReadEntityRef(JsonElement element)
     {

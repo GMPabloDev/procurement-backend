@@ -191,7 +191,10 @@ public sealed class SourcingProposalService(ProcureToPayDbContext dbContext)
             supplierRef,
             selectedLines,
             new SourcingContentRef(evaluation.EvaluationId, evaluation.Version, evaluation.ContentDigest),
-            terms.Select(entry => entry.View.Selection.QuotationRef).ToArray(),
+            // A set: one quotation may cover several selected lines and is referenced once (REQ-10).
+            terms.Select(entry => entry.View.Selection.QuotationRef)
+                .DistinctBy(reference => (reference.Id, reference.Version))
+                .ToArray(),
             [],
             waiver,
             distinctTerms[0],
@@ -211,7 +214,9 @@ public sealed class SourcingProposalService(ProcureToPayDbContext dbContext)
             version,
             selectedLines,
             evaluation.ContentDigest,
-            SourcingCanonicalizer.RefSetDigest(terms.Select(entry => entry.View.Selection.QuotationRef)),
+            SourcingCanonicalizer.RefSetDigest(terms
+                .Select(entry => entry.View.Selection.QuotationRef)
+                .DistinctBy(reference => (reference.Id, reference.Version))),
             SourcingCatalogSnapshotSet.ComputeDigest(command.OrganizationId, root.Id, version, []),
             awardCandidate.ComputeDigest(),
             PolicyCanonicalizer.Hash(PolicyCanonicalizer.SerializeCanonical(SourcingCanonicalizer.Terms(distinctTerms[0]))));

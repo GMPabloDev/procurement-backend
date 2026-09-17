@@ -23,7 +23,8 @@ public static class SourcingProposalDocument
         IReadOnlyList<SourcingCatalogSnapshot> CatalogSnapshots,
         Guid? WaiverRef,
         CommercialTerms Terms,
-        AwardCandidate AwardCandidate);
+        AwardCandidate AwardCandidate,
+        SourcingPolicyEvaluationRef RequestBundleRef);
 
     private static readonly string[] RootProperties =
     [
@@ -55,6 +56,12 @@ public static class SourcingProposalDocument
     private static readonly string[] SnapshotProperties =
         ["catalog_content_digest", "line_id", "line_version", "snapshot_ref", "supplier_ref"];
 
+    private static readonly string[] EvaluationRefProperties =
+    [
+        "evaluation_sequence", "facts_digest", "id", "input_digest", "manifest_digest",
+        "policy_content_digest", "result_digest"
+    ];
+
     public static ProposalContent Read(string documentJson, string expectedDigest)
     {
         if (!string.Equals(
@@ -84,7 +91,8 @@ public static class SourcingProposalDocument
             root.GetProperty("catalog_snapshots").EnumerateArray().Select(ReadSnapshot).ToArray(),
             ReadOptionalGuid(root.GetProperty("waiver_ref")),
             terms,
-            candidate);
+            candidate,
+            ReadEvaluationRef(root.GetProperty("request_bundle_ref")));
     }
 
     private static AwardCandidate ReadCandidate(JsonElement element)
@@ -147,7 +155,12 @@ public static class SourcingProposalDocument
     }
 
     private static SourcingContentRef? ReadOptionalContentRef(JsonElement element) =>
-        element is { ValueKind: JsonValueKind.Object } ? ReadContentRef(element) : null;
+        element.ValueKind switch
+        {
+            JsonValueKind.Object => ReadContentRef(element),
+            JsonValueKind.Null => null,
+            _ => throw new SourcingDependencyUnavailableException("The stored proposal is corrupted.")
+        };
 
     private static SourcingEntityRef ReadEntityRef(JsonElement element)
     {
@@ -158,7 +171,29 @@ public static class SourcingProposalDocument
     }
 
     private static Guid? ReadOptionalGuid(JsonElement element) =>
-        element is { ValueKind: JsonValueKind.String } ? element.GetGuid() : null;
+        element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetGuid(),
+            JsonValueKind.Null => null,
+            _ => throw new SourcingDependencyUnavailableException("The stored proposal is corrupted.")
+        };
+
+    /// <summary>
+    /// The <c>request_bundle_ref</c> of a proposal is a closed <c>policy-evaluation-ref/v1</c>; every
+    /// property is validated even when the publication does not consume all of them.
+    /// </summary>
+    private static SourcingPolicyEvaluationRef ReadEvaluationRef(JsonElement element)
+    {
+        SourcingSerialization.RequireExactObject(element, EvaluationRefProperties);
+        return new SourcingPolicyEvaluationRef(
+            element.GetProperty("evaluation_sequence").GetInt64(),
+            element.GetProperty("id").GetGuid(),
+            element.GetProperty("facts_digest").GetString()!,
+            element.GetProperty("input_digest").GetString()!,
+            element.GetProperty("manifest_digest").GetString()!,
+            element.GetProperty("policy_content_digest").GetString()!,
+            element.GetProperty("result_digest").GetString()!);
+    }
 
     private static decimal Decimal(JsonElement element, string name) =>
         decimal.Parse(

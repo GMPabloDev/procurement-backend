@@ -336,7 +336,8 @@ public static class SourcingModelConfiguration
         entity.ToTable("SourcingAwards", Schema);
         entity.HasKey(record => record.Id);
         entity.Property(record => record.RowVersion).IsRowVersion();
-        entity.HasIndex(record => new { record.OrganizationId, record.ProcessId, record.SupplierId }).IsUnique();
+        // REQ-12: one award lineage per sourcing process; the supplier of a version may change.
+        entity.HasIndex(record => new { record.OrganizationId, record.ProcessId }).IsUnique();
     }
 
     private static void ConfigureAwardVersion(ModelBuilder modelBuilder)

@@ -154,6 +154,31 @@ public sealed class SourcingContractFixtureTests
         var nested = awardDocument.ToJsonString();
         Assert.Throws<SourcingDependencyUnavailableException>(() =>
             SourcingAwardDocument.Read(nested, PolicyCanonicalizer.Hash(nested)));
+
+        // The remaining nested references are closed as well, with their digest recomputed.
+        foreach (var reference in new[] { "evaluation_ref", "quotation_refs" })
+        {
+            var document = JsonNode.Parse(Load("award-version.json"))!.AsObject();
+            var node = document[reference]!;
+            if (node is JsonArray array)
+            {
+                ((JsonObject)array[0]!)["unexpected"] = 1;
+            }
+            else
+            {
+                ((JsonObject)node)["unexpected"] = 1;
+            }
+
+            var altered = document.ToJsonString();
+            Assert.Throws<SourcingDependencyUnavailableException>(() =>
+                SourcingAwardDocument.Read(altered, PolicyCanonicalizer.Hash(altered)));
+        }
+
+        var proposalBundle = JsonNode.Parse(Load("sourcing-proposal-version.json"))!.AsObject();
+        ((JsonObject)proposalBundle["request_bundle_ref"]!)["unexpected"] = 1;
+        var alteredBundle = proposalBundle.ToJsonString();
+        Assert.Throws<SourcingDependencyUnavailableException>(() =>
+            SourcingProposalDocument.Read(alteredBundle, PolicyCanonicalizer.Hash(alteredBundle)));
     }
 
     [Fact]

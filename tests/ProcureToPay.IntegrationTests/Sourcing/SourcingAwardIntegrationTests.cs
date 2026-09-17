@@ -305,6 +305,77 @@ public sealed class SourcingAwardIntegrationTests
         Assert.Equal(harness.SecondSupplierId, response.SupplierRef.Id);
     }
 
+    [Fact]
+    public async Task A_partial_correction_of_a_multi_line_award_is_refused()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await SourcingHarness.StartAsync(cancellationToken);
+        await using var context = harness.CreateContext();
+        var (created, rfq) = await SourcingScenario.OpenRfqAsync(harness, context, cancellationToken);
+        await SourcingScenario.RegisterSupplierQuotationAsync(
+            harness, context, rfq, harness.SecondSupplierId, "12", "10", cancellationToken);
+        var process = await harness.CreateProcessService(context)
+            .GetProcessAsync(harness.OrganizationId, created.ProcessId, cancellationToken);
+        await SourcingScenario.EvaluateAsync(harness, context, rfq, cancellationToken);
+        var selections = harness.CreateSelectionService(context);
+        foreach (var lineId in new[] { harness.LineId, harness.OtherLineId })
+        {
+            await selections.SelectAsync(
+                new SelectLineCommand(
+                    harness.OrganizationId, rfq.RfqId, lineId, harness.SupplierId, null, null,
+                    $"select-{Guid.NewGuid():N}"),
+                harness.BuyerId, "corr-select", DateTimeOffset.UtcNow, cancellationToken);
+        }
+
+        await harness.SeedProposalFixturesAsync(context, cancellationToken);
+        var proposal = await harness.CreateProposalService(context).BuildAsync(
+            new BuildProposalCommand(
+                harness.OrganizationId, rfq.RfqId, harness.SupplierId, $"proposal-{Guid.NewGuid():N}"),
+            harness.BuyerId, "corr-proposal", DateTimeOffset.UtcNow, cancellationToken);
+        Assert.Equal(2, proposal.SelectedLines.Count);
+        await SourcingScenario.SeedApprovalAsync(harness, context, proposal, cancellationToken);
+        var service = harness.CreateAwardService(context);
+        var award = await service.PublishAsync(
+            new PublishAwardCommand(
+                harness.OrganizationId, proposal.ProposalId, proposal.Version, process.Version, null,
+                $"award-{Guid.NewGuid():N}", "Award both selected lines"),
+            harness.BuyerId, "corr-award", DateTimeOffset.UtcNow, cancellationToken);
+        Assert.Equal(2, award.AwardedLines.Count);
+
+        // Only one line changes supplier: the successor would supersede just part of the award, so
+        // REQ-12 refuses it instead of leaving a line bound to a non-current version.
+        await harness.CreateSelectionService(context).SelectAsync(
+            new SelectLineCommand(
+                harness.OrganizationId, rfq.RfqId, harness.LineId, harness.SecondSupplierId, 1,
+                "Better delivery window for one line", $"select-{Guid.NewGuid():N}"),
+            harness.BuyerId, "corr-select-partial", DateTimeOffset.UtcNow, cancellationToken);
+        var partial = await harness.CreateProposalService(context).BuildAsync(
+            new BuildProposalCommand(
+                harness.OrganizationId, rfq.RfqId, harness.SecondSupplierId, $"proposal-{Guid.NewGuid():N}"),
+            harness.BuyerId, "corr-proposal-partial", DateTimeOffset.UtcNow, cancellationToken);
+        await SourcingScenario.SeedApprovalAsync(harness, context, partial, cancellationToken);
+        Assert.Single(partial.SelectedLines);
+        var processVersion = await ProcessVersionAsync(harness, cancellationToken);
+        var conflict = await Assert.ThrowsAsync<DomainConflictException>(() => harness
+            .CreateAwardService(context)
+            .PublishAsync(
+                new PublishAwardCommand(
+                    harness.OrganizationId, partial.ProposalId, partial.Version, processVersion, 1,
+                    $"award-{Guid.NewGuid():N}", "Partial correction"),
+                harness.BuyerId, "corr-award-partial", DateTimeOffset.UtcNow, cancellationToken));
+        Assert.Contains("every line", conflict.Message, StringComparison.OrdinalIgnoreCase);
+
+        // Nothing changed: the original award is still current for both lines and the process did
+        // not advance a version.
+        Assert.False((await service.GetAwardAsync(
+            harness.OrganizationId, award.AwardId, award.Version, cancellationToken)).Superseded);
+        Assert.Equal(processVersion, await ProcessVersionAsync(harness, cancellationToken));
+        await using var verification = harness.CreateContext();
+        Assert.Equal(2, await verification.SourcingCurrentAwardLines.CountAsync(
+            record => record.AwardId == award.AwardId && record.AwardVersion == award.Version,
+            cancellationToken));
+    }
+
     private static AwardConsumptionRequest Request(SourcingHarness harness, SourcingAwardView award) => new(
         harness.OrganizationId,
         award.AwardId,
