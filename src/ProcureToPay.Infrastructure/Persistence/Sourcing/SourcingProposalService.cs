@@ -224,9 +224,10 @@ public sealed class SourcingProposalService(ProcureToPayDbContext dbContext)
             RequestId = process.RequestId,
             RequestVersion = process.RequestVersion,
             RequestRefJson = SourcingSerialization.ContentRefs([proposal.RequestRef]),
-            RequestBundleRefJson = JsonSerializer.Serialize(
-                PolicyCanonicalizer.SerializeCanonical(
-                    SourcingProposalVersion.EvaluationRefDocument(requestBundle))),
+            // The canonical document itself, never a JSON string containing JSON: readers parse the
+            // stored column as an object (REQ-10).
+            RequestBundleRefJson = PolicyCanonicalizer.SerializeCanonical(
+                SourcingProposalVersion.EvaluationRefDocument(requestBundle)),
             SelectionBasis = (int)SourcingSelectionBasis.Rfq,
             SupplierId = command.SupplierId,
             SupplierVersion = awardCandidate.SupplierRef.Version,

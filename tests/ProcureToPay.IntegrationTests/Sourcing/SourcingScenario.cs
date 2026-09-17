@@ -101,7 +101,8 @@ public static class SourcingScenario
         SourcingProposalView proposal,
         CancellationToken cancellationToken) =>
         await harness.SeedProposalApprovalAsync(
-            context, proposal.ProposalId, proposal.Version, proposal.ContentDigest, cancellationToken);
+            context, proposal.ProposalId, proposal.Version, proposal.ContentDigest, proposal.ManifestDigest,
+            withCase: true, cancellationToken);
 
     /// <summary>Selects the single valid supplier of the line with the recommendation (REQ-09).</summary>
     public static async Task<SourcingSelectionView> SelectAsync(

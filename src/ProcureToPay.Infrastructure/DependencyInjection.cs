@@ -332,6 +332,14 @@ public static class DependencyInjection
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.IAwardConsumptionVerifier>(
             provider => provider.GetRequiredService<
                 ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingAwardService>());
+        // SPEC 10 REQ-11: the proposal approval adapter reuses the SPEC 05 control projection under
+        // the published sourcing identity.
+        services.AddScoped<IApprovalSubmissionAdapter>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingProposalApprovalAdapter(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                new PolicyApprovalAdapter(
+                    provider.GetRequiredService<ProcureToPayDbContext>(),
+                    PolicyApprovalAdapter.ContractVersionV4)));
         // SPEC 10 REQ-10: the typed sourcing fact provider and its exact-one registry.
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.ISourcingPolicyFactProvider>(
             provider => new ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingPolicyFactProvider(

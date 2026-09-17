@@ -148,9 +148,37 @@ public sealed class SourcingHarness : IAsyncDisposable
         Guid proposalId,
         int proposalVersion,
         string proposalDigest,
+        string manifestDigest,
+        bool withCase,
         CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
+        var line = new ProcureToPay.Domain.Modules.Policy.PolicySubjectReference(LineId, 1);
+        var decisionScope = ProcureToPay.Domain.Modules.Approval.DecisionScopeDescriptor
+            .Create(
+                OrganizationId,
+                [
+                    new ProcureToPay.Domain.Modules.Approval.DecisionScopeEntry(
+                        ProcureToPay.Domain.Modules.Organization.ScopeDimension.Organization, null, null)
+                ])
+            .ToCanonicalJson();
+        var control = new ProcureToPay.Domain.Modules.Policy.PolicyGeneratedControl(
+            "SOURCING_APPROVAL",
+            ProcureToPay.Domain.Modules.Policy.PolicyEffectType.RequireApproval,
+            [ProcureToPay.Domain.Modules.Policy.PolicyScope.SourcingPo],
+            [LineId],
+            "PROCUREMENT",
+            new ProcureToPay.Domain.Modules.Policy.PolicyApprovalDescriptor(
+                ProcureToPay.Domain.Modules.Organization.SystemRole.ProcurementApprover,
+                ProcureToPay.Domain.Modules.Organization.ApprovalAuthorityType.Procurement,
+                new ProcureToPay.Domain.Modules.Policy.PolicyAuthorityLevelSnapshot(Guid.NewGuid(), 1, "PROCUREMENT_L1", 1),
+                1000m,
+                "PEN",
+                decisionScope),
+            null,
+            [],
+            [],
+            "Seeded sourcing approval");
         var bundle = new ProcureToPay.Domain.Modules.Policy.PolicyEvaluationBundle(
             Guid.NewGuid(),
             "sourcing-proposal-evaluation",
@@ -159,13 +187,14 @@ public sealed class SourcingHarness : IAsyncDisposable
             Digest('1'),
             Digest('2'),
             [],
-            [],
-            ProcureToPay.Domain.Modules.Policy.PolicyResult.Passed,
+            [control],
+            ProcureToPay.Domain.Modules.Policy.PolicyResult.RequirementsGenerated,
             Digest('3'))
         {
             Operation = "SOURCING_PO",
             FactsDigest = Digest('4'),
-            ManifestDigest = Digest('5')
+            // The sourcing evaluation publishes the manifest digest of the proposal it evaluated.
+            ManifestDigest = manifestDigest
         };
         await new ProcureToPay.Infrastructure.Persistence.Policy.PolicyPersistenceService(context)
             .AppendEvaluationAsync(
@@ -179,6 +208,12 @@ public sealed class SourcingHarness : IAsyncDisposable
                     PolicySetVersionId,
                     "seed-sourcing-evaluation"),
                 cancellationToken);
+        if (!withCase)
+        {
+            await context.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
         context.ApprovalCases.Add(new ProcureToPay.Infrastructure.Persistence.Approval.ApprovalCaseRecord
         {
             Id = Guid.NewGuid(),
@@ -254,29 +289,35 @@ public sealed class SourcingHarness : IAsyncDisposable
                 LinesJson = "[]",
                 ContractVersion = "purchase-request-completeness-manifest/v2"
             });
-        context.PolicyEvaluationBundles.Add(
-            new ProcureToPay.Infrastructure.Persistence.Policy.PolicyEvaluationBundleRecord
-            {
-                Id = Guid.NewGuid(),
-                OrganizationId = OrganizationId,
-                EvaluationKey = "sourcing-proposal-seed",
-                WorkloadIssuer = "internal://procure-to-pay",
-                WorkloadClientId = "purchase-request-domain",
-                Operation = "REQUEST_EVALUATE",
-                EvaluationSequence = 1,
-                SubjectId = RequestId,
-                SubjectVersion = 1,
-                PolicySetVersionId = PolicySetVersionId,
-                EvaluatedAt = now,
-                PolicyContentDigest = Digest('6'),
-                InputDigest = Digest('7'),
-                Result = "ALLOW",
-                ResultDigest = Digest('8'),
-                BundleJson = "{}",
-                IdempotencyFingerprint = Digest('9'),
-                CorrelationReference = "seed-proposal"
-            });
         await context.SaveChangesAsync(cancellationToken);
+        var requestBundle = new ProcureToPay.Domain.Modules.Policy.PolicyEvaluationBundle(
+            Guid.NewGuid(),
+            "sourcing-request-seed",
+            new ProcureToPay.Domain.Modules.Policy.PolicySubjectReference(RequestId, 1),
+            now,
+            Digest('6'),
+            Digest('7'),
+            [],
+            [],
+            ProcureToPay.Domain.Modules.Policy.PolicyResult.Passed,
+            Digest('8'))
+        {
+            Operation = "REQUEST_EVALUATE",
+            FactsDigest = Digest('9'),
+            ManifestDigest = Digest('4')
+        };
+        await new ProcureToPay.Infrastructure.Persistence.Policy.PolicyPersistenceService(context)
+            .AppendEvaluationAsync(
+                requestBundle,
+                new ProcureToPay.Infrastructure.Persistence.Policy.PolicyEvaluationCaller(
+                    OrganizationId,
+                    "internal://procure-to-pay",
+                    "purchase-request-domain",
+                    "REQUEST_EVALUATE",
+                    "sourcing-request-seed",
+                    PolicySetVersionId,
+                    "seed-request-evaluation"),
+                cancellationToken);
     }
 
     /// <summary>
@@ -285,6 +326,31 @@ public sealed class SourcingHarness : IAsyncDisposable
     /// </summary>
     public SourcingWaiverService CreateWaiverService(ProcureToPayDbContext context) =>
         new(context, WaiverSubmissionService(context), Configuration);
+
+    /// <summary>
+    /// Real approval submission service with the sourcing proposal adapter registered exactly once,
+    /// so the suite proves the descriptor, the targets and the fingerprint of REQ-11.
+    /// </summary>
+    public ApprovalSubmissionService CreateApprovalSubmissionService(
+        ProcureToPayDbContext context,
+        IReadOnlyList<Application.Abstractions.IApprovalSubmissionAdapter>? adapters = null)
+    {
+        var configuration = Configuration;
+        var allowlist = new ApprovalWorkloadAllowlist(configuration);
+        return new ApprovalSubmissionService(
+            context,
+            new ApprovalSubmissionAdapterRegistry(adapters ??
+            [
+                new SourcingProposalApprovalAdapter(
+                    context,
+                    new PolicyApprovalAdapter(context, PolicyApprovalAdapter.ContractVersionV4))
+            ]),
+            new ApprovalOwnerWorkloadRegistry(configuration, allowlist),
+            allowlist,
+            new ApprovalAssignmentEngine(
+                context, new OrganizationEligibilityService(context), new ApprovalScopeResolver(context)),
+            NullLogger<ApprovalSubmissionService>.Instance);
+    }
 
     private PolicyExceptionSubmissionService WaiverSubmissionService(ProcureToPayDbContext context)
     {
