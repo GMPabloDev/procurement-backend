@@ -13,7 +13,7 @@
 > **Aislamiento Git:** Rama dedicada
 > **Modo de revisión:** final
 > **Iniciado:** 2026-09-16 10:31 -0500
-> **Actualizado:** 2026-09-17 13:10 -0500
+> **Actualizado:** 2026-09-17 09:30 -0500
 > **HEAD verificado:** Pendiente
 > **Commit de integración:** Pendiente
 
@@ -77,7 +77,11 @@
 - **CP-11 (2026-09-17 13:10 -0500) · T-08 parcial (processors de owners)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados sobre el árbol estable: unitarias 283/283; integración completa 168/168 sobre SQL Server 2022 (41 de Sourcing); API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
   - Defectos/fixtures corregidos: los `targets` de los prerequisites sembrados usaban snake_case mientras el serializador de Approval es camelCase; el workflow exige que la identidad workload del signal esté en la allowlist y coincida con la persistida en el prerequisite; el `ProcessId` resuelto se persiste para que la cancelación encuentre sus attempts.
-  - Pendiente inmediato para el PASS: REQ-06 (ruta catálogo), T-09 (readiness/telemetría, límites, fixtures doradas, `docs/sourcing-operations.md`), goldens y E2E cross-módulo, y la revisión independiente.
+  - Pendiente inmediato para el PASS: REQ-06 (ruta catálogo), goldens y E2E cross-módulo, y la revisión independiente.
+- **CP-12 (2026-09-17 09:30 -0500) · T-09 parcial (readiness y runbook)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
+  - Añadido: `SourcingHealthCheck` (check `sourcing` en `/health/ready`) con razones tipadas para owner 0/2 o mismatch, provider y adapter 0/2, storage inaccesible y backlog > 60 s, sin ids/precios/digests (REQ-13, REQ-14, NFR-04, NFR-05); y `docs/sourcing-operations.md` (orden de despliegue, preflight, readiness, backlog/leases, reclaim, evidencia corrupta, rollback y rotación) según §Migración, despliegue y reversión.
+  - Tests ejecutados: unitarias 283/283; integración completa 168/168; API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores.
+  - Pendiente de T-09: fixtures doradas `tests/ContractFixtures/Sourcing/v1/`, límites/Problem Details explícitos y captura negativa de telemetría.
 - **CP-06 (2026-09-16 14:58 -0500) · T-06 parcial (propuesta `SOURCING_PO` y manifest)** — árbol probado: `working-tree sobre 6e26b72` (sin commit).
   - Tests ejecutados sobre el árbol estable: unitarias 273/273; integración completa 152/152 sobre SQL Server 2022 (25 de Sourcing); API/E2E 30/30; `dotnet build ProcureToPay.sln --no-restore` 0 errores; `git diff --check` limpio.
   - Decisión interna: el `evaluation_ref` de la propuesta es una ref de artefacto Sourcing `{content_digest,id,version}` (como el resto de artefactos del módulo) y `request_bundle_ref` es `policy-evaluation-ref/v1`, que es el único `policy_bundle_ref` del contrato; el fingerprint del comando de propuesta se calcula sobre entradas estables (evaluación, Supplier y líneas) para que el replay devuelva su versión.
@@ -97,7 +101,7 @@
 | CA-07 | Parcial | Unitarias de la propuesta y el manifest (digests estables, nulabilidad por base, sumas del candidato, refs FX) e integración del armado desde la evaluación y las selecciones con consumo de la evaluación y versión inmutable. Falta el despacho HTTP `SOURCING_PO`, el registry/provider tipado y el adapter de Approval. | SourcingProposalTests + SourcingProposalIntegrationTests |
 | CA-08 | Parcial | Integración: publicar exige el caso de aprobación completado, el CAS deja el proceso exactamente una vez en AWARDED, un award current por línea en el índice, replay por `award_key`, versión inmutable ante un writer directo, Supplier stale bloquea (`422`) y el verificador `award-consumption/v1` responde con el set exacto de líneas/importes o falla cerrado ante digest stale, líneas distintas o Supplier no elegible. Falta la supersesión por proposal sucesora. | SourcingAwardTests + SourcingAwardIntegrationTests |
 | CA-09 | Parcial | Integración: registros exact-one de los processors (cero registro → no reclama), señal única del owner de cotizaciones y del de procurement, traza insuficiente deja `WAITING` sin señal, el caso PR solo se satisface con award current publicado y caso de aprobación completado, y cancelar el proceso pre-award abandona los attempts sin señal. Faltan el worker en segundo plano, la readiness y el E2E PR→Policy→Approval→Sourcing→owners→PR APPROVED. | SourcingOwnerProcessorIntegrationTests |
-| CA-10 | Pendiente | — | — |
+| CA-10 | Parcial | La migración aplica sobre SQL Server en todas las suites y la readiness expone razones tipadas (owner 0/2 o mismatch, provider/adapter 0/2, storage, backlog > 60 s) sin ids/precios/digests, con runbook de recuperación de un claim interrumpido en `docs/sourcing-operations.md`. Faltan el test de migración/rollback dedicado y el ejercicio automatizado del runbook. | SourcingHealthCheck + docs/sourcing-operations.md |
 
 ## Desviaciones y bloqueos
 
