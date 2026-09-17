@@ -79,7 +79,20 @@ public sealed class SourcingHarness : IAsyncDisposable
             ["Sourcing:Waiver:ValidityDays"] = "7",
             // The sourcing domain is the only workload allowed to open a quotation waiver (REQ-05).
             ["Approval:Workloads:0:Issuer"] = SourcingWaiverService.Workload.Issuer,
-            ["Approval:Workloads:0:ClientId"] = SourcingWaiverService.Workload.ClientId
+            ["Approval:Workloads:0:ClientId"] = SourcingWaiverService.Workload.ClientId,
+            // SPEC 10 REQ-13: the two owners resolve to the sourcing processor workload.
+            ["Approval:OwnerWorkloads:0:AdapterId"] = SourcingCodes.QuotationStatusOwnerAdapterId,
+            ["Approval:OwnerWorkloads:0:AdapterVersion"] = SourcingCodes.OwnerAdapterVersion,
+            ["Approval:OwnerWorkloads:0:Issuer"] = SourcingWaiverService.Workload.Issuer,
+            ["Approval:OwnerWorkloads:0:ClientId"] = SourcingCodes.QuotationStatusProcessorId,
+            ["Approval:OwnerWorkloads:1:AdapterId"] = SourcingCodes.ProcurementStageOwnerAdapterId,
+            ["Approval:OwnerWorkloads:1:AdapterVersion"] = SourcingCodes.OwnerAdapterVersion,
+            ["Approval:OwnerWorkloads:1:Issuer"] = SourcingWaiverService.Workload.Issuer,
+            ["Approval:OwnerWorkloads:1:ClientId"] = SourcingCodes.ProcurementStageProcessorId,
+            ["Approval:Workloads:1:Issuer"] = SourcingWaiverService.Workload.Issuer,
+            ["Approval:Workloads:1:ClientId"] = SourcingCodes.QuotationStatusProcessorId,
+            ["Approval:Workloads:2:Issuer"] = SourcingWaiverService.Workload.Issuer,
+            ["Approval:Workloads:2:ClientId"] = SourcingCodes.ProcurementStageProcessorId
         })
         .Build();
 
@@ -96,6 +109,77 @@ public sealed class SourcingHarness : IAsyncDisposable
     public SourcingProposalService CreateProposalService(ProcureToPayDbContext context) => new(context);
 
     public SourcingAwardService CreateAwardService(ProcureToPayDbContext context) => new(context);
+
+    /// <summary>Real owner processor with the owner workload registry of the harness configuration.</summary>
+    public SourcingPrerequisiteProcessor CreatePrerequisiteProcessor(ProcureToPayDbContext context)
+    {
+        var configuration = Configuration;
+        var allowlist = new ApprovalWorkloadAllowlist(configuration);
+        return new SourcingPrerequisiteProcessor(
+            context,
+            new ApprovalWorkflowService(
+                context,
+                allowlist,
+                new ApprovalAssignmentEngine(
+                    context, new OrganizationEligibilityService(context), new ApprovalScopeResolver(context)),
+                NullLogger<ApprovalWorkflowService>.Instance),
+            new ApprovalOwnerWorkloadRegistry(configuration, allowlist),
+            new SourcingProcessorIdentity(),
+            NullLogger<SourcingPrerequisiteProcessor>.Instance);
+    }
+
+    /// <summary>Registers one owner processor exactly once, or twice to prove the ambiguity rule.</summary>
+    public async Task RegisterOwnerAsync(
+        ProcureToPayDbContext context,
+        string adapterId,
+        CancellationToken cancellationToken)
+    {
+        if (await context.SourcingPrerequisiteProcessorRegistrations.AnyAsync(
+                record => record.AdapterId == adapterId, cancellationToken))
+        {
+            // A duplicated registration is exactly the ambiguity REQ-13 must refuse to claim through.
+            context.SourcingPrerequisiteProcessorRegistrations.Add(
+                new SourcingPrerequisiteProcessorRegistrationRecord
+                {
+                    AdapterId = adapterId,
+                    AdapterVersion = $"{SourcingCodes.OwnerAdapterVersion}-duplicate",
+                    ProcessorId = SourcingCodes.QuotationStatusProcessorId,
+                    WorkloadIssuer = SourcingWaiverService.Workload.Issuer,
+                    WorkloadClientId = adapterId
+                });
+            await context.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        context.SourcingPrerequisiteProcessorRegistrations.Add(
+            new SourcingPrerequisiteProcessorRegistrationRecord
+            {
+                AdapterId = adapterId,
+                AdapterVersion = SourcingCodes.OwnerAdapterVersion,
+                ProcessorId = adapterId == SourcingCodes.QuotationStatusOwnerAdapterId
+                    ? SourcingCodes.QuotationStatusProcessorId
+                    : SourcingCodes.ProcurementStageProcessorId,
+                WorkloadIssuer = SourcingWaiverService.Workload.Issuer,
+                WorkloadClientId = adapterId == SourcingCodes.QuotationStatusOwnerAdapterId
+                    ? SourcingCodes.QuotationStatusProcessorId
+                    : SourcingCodes.ProcurementStageProcessorId
+            });
+        await context.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<Guid> QuotationPrerequisiteIdAsync(CancellationToken cancellationToken) =>
+        await CreateContext().ApprovalPrerequisites
+            .AsNoTracking()
+            .Where(record => record.OwnerAdapterId == SourcingCodes.QuotationStatusOwnerAdapterId)
+            .Select(record => record.Id)
+            .FirstAsync(cancellationToken);
+
+    public async Task<Guid> ProcurementPrerequisiteIdAsync(CancellationToken cancellationToken) =>
+        await CreateContext().ApprovalPrerequisites
+            .AsNoTracking()
+            .Where(record => record.OwnerAdapterId == SourcingCodes.ProcurementStageOwnerAdapterId)
+            .Select(record => record.Id)
+            .FirstAsync(cancellationToken);
 
     /// <summary>
     /// Publishes a successor supplier version and points the root at it, which is the real way the
@@ -593,13 +677,14 @@ public sealed class SourcingHarness : IAsyncDisposable
         Key = key,
         OwnerAdapterId = owner,
         OwnerAdapterVersion = "v1",
-        OwnerWorkloadIssuer = "internal://procure-to-pay",
-        OwnerWorkloadClientId = $"{owner}-worker",
+        OwnerWorkloadIssuer = SourcingWaiverService.Workload.Issuer,
+        // The persisted owner workload is the sourcing processor that owns both prerequisites.
+        OwnerWorkloadClientId = SourcingCodes.QuotationStatusProcessorId,
         SourceControlType = key,
         SourceControlDigest = Digest('a'),
         ParametersJson = "{\"minimum_allowed_quotations\":null,\"minimum_quotations\":2}",
         TargetsJson = "[{\"id\":\"" + LineId + "\",\"type\":\"PURCHASE_REQUEST_LINE\",\"version\":1," +
-                      "\"material_snapshot_digest\":\"" + Digest('b') + "\"}]",
+                      "\"materialSnapshotDigest\":\"" + Digest('b') + "\"}]",
         Status = (int)status,
         Version = 1,
         ResolvedAt = status == PrerequisiteStatus.Satisfied ? now : null

@@ -72,7 +72,9 @@ public sealed record SourcingRfqOutcome(
 /// appends exactly one version, resolves its replay from a persisted command key and keeps the
 /// Purchase Request untouched: the selected supplier will live in the award, never in the request.
 /// </summary>
-public sealed class SourcingProcessService(ProcureToPayDbContext dbContext)
+public sealed class SourcingProcessService(
+    ProcureToPayDbContext dbContext,
+    SourcingPrerequisiteProcessor? prerequisiteProcessor = null)
 {
     /// <summary>
     /// Owners of the two PROCUREMENT-stage prerequisites this module satisfies itself. Every other
@@ -701,6 +703,14 @@ public sealed class SourcingProcessService(ProcureToPayDbContext dbContext)
                     $"rfq:{rfq.Id:D}:v{cancelled.Record.Version}:cancelled",
                     Target(SourcingCodes.TargetRfq, rfq.Id, cancelled.Record.Version), now);
             }
+        }
+
+        // REQ-13: the local attempts of the cancelled process are abandoned without a signal, so the
+        // Purchase Request prerequisites stay WAITING for another process. The processor is optional
+        // so the process service keeps working in a composition without owners.
+        if (prerequisiteProcessor is not null)
+        {
+            _ = await prerequisiteProcessor.AbandonAttemptsAsync(process.Id, now, cancellationToken);
         }
 
         AddCommand(

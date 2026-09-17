@@ -508,3 +508,68 @@ public sealed class SourcingCurrentAwardLineRecord
     public int AwardVersion { get; set; }
     public Guid OrganizationId { get; set; }
 }
+
+/// <summary>
+/// Durable owner attempt of one sourcing prerequisite (REQ-13). The state machine is
+/// PENDING→PROCESSING→CHECKED→SIGNALLING→COMPLETED, a pre-signal cancellation takes any non-terminal
+/// state to ABANDONED and a technical error returns to PENDING with a retry instant.
+/// </summary>
+public sealed class SourcingOwnerAttemptRecord
+{
+    public Guid Id { get; set; }
+    public Guid PrerequisiteId { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid CaseId { get; set; }
+    public string SubjectType { get; set; } = null!;
+    public string OwnerAdapterId { get; set; } = null!;
+    public string OwnerAdapterVersion { get; set; } = null!;
+    public Guid? ProcessId { get; set; }
+    public Guid? RfqId { get; set; }
+    public string TargetsJson { get; set; } = null!;
+    public string State { get; set; } = null!;
+    public string? SignalResult { get; set; }
+    public string CheckKey { get; set; } = null!;
+    public string SignalKey { get; set; } = null!;
+    public string? EvidenceDigest { get; set; }
+    public DateTimeOffset DueAt { get; set; }
+    public DateTimeOffset NextAttemptAt { get; set; }
+    public int Attempts { get; set; }
+    public string? LeaseOwner { get; set; }
+    public DateTimeOffset? LeaseExpiresAt { get; set; }
+    public long FencingToken { get; set; }
+    public string? LastErrorCode { get; set; }
+    public DateTimeOffset? CompletedAt { get; set; }
+    public DateTimeOffset? AbandonedAt { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+}
+
+/// <summary>Append-only evidence of one satisfied sourcing prerequisite (REQ-13).</summary>
+public sealed class SourcingOwnerEvidenceRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid PrerequisiteId { get; set; }
+    public Guid AttemptId { get; set; }
+    public string ContractVersion { get; set; } = null!;
+    public string Result { get; set; } = null!;
+    public string SignalKey { get; set; } = null!;
+    public string DocumentJson { get; set; } = null!;
+    public string ContentDigest { get; set; } = null!;
+    public Guid ActorUserId { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
+}
+
+/// <summary>
+/// Explicit exactly-one processor registration of one sourcing owner (REQ-13): adapter id/version,
+/// stable processor id and the workload identity Approval persisted for that owner.
+/// </summary>
+public sealed class SourcingPrerequisiteProcessorRegistrationRecord
+{
+    public string AdapterId { get; set; } = null!;
+    public string AdapterVersion { get; set; } = null!;
+    public string ProcessorId { get; set; } = null!;
+    public string WorkloadIssuer { get; set; } = null!;
+    public string WorkloadClientId { get; set; } = null!;
+}

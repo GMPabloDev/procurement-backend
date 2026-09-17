@@ -329,6 +329,9 @@ public static class DependencyInjection
         // SPEC 10 REQ-12/REQ-14: the award publisher is the same object that verifies consumption
         // in-process, so a consumer and the publisher can never disagree about eligibility.
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingAwardService>();
+        // SPEC 10 REQ-13: the real processors of the two PROCUREMENT-stage owners.
+        services.AddSingleton<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingProcessorIdentity>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingPrerequisiteProcessor>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.IAwardConsumptionVerifier>(
             provider => provider.GetRequiredService<
                 ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingAwardService>());

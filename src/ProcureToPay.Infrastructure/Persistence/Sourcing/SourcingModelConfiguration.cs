@@ -38,6 +38,9 @@ public static class SourcingModelConfiguration
         ConfigureAward(modelBuilder);
         ConfigureAwardVersion(modelBuilder);
         ConfigureCurrentAwardLine(modelBuilder);
+        ConfigureOwnerAttempt(modelBuilder);
+        ConfigureOwnerEvidence(modelBuilder);
+        ConfigureProcessorRegistration(modelBuilder);
         ConfigureSelectionVersion(modelBuilder);
     }
 
@@ -267,6 +270,53 @@ public static class SourcingModelConfiguration
         entity.Property(record => record.EvidenceJson).HasMaxLength(2_000).IsRequired();
         entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
         entity.HasIndex(record => new { record.OrganizationId, record.RfqId, record.LineId, record.SupplierId, record.Criterion });
+    }
+
+    private static void ConfigureOwnerAttempt(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingOwnerAttemptRecord>();
+        entity.ToTable("SourcingOwnerAttempts", Schema, table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.SubjectType).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.OwnerAdapterId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.OwnerAdapterVersion).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.TargetsJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.State).HasMaxLength(16).IsRequired();
+        entity.Property(record => record.SignalResult).HasMaxLength(16);
+        entity.Property(record => record.CheckKey).HasMaxLength(200).IsRequired();
+        entity.Property(record => record.SignalKey).HasMaxLength(200).IsRequired();
+        entity.Property(record => record.EvidenceDigest).HasMaxLength(64);
+        entity.Property(record => record.LeaseOwner).HasMaxLength(120);
+        entity.Property(record => record.LastErrorCode).HasMaxLength(64);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => record.PrerequisiteId).IsUnique();
+        entity.HasIndex(record => record.State);
+        entity.HasIndex(record => record.DueAt);
+    }
+
+    private static void ConfigureOwnerEvidence(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingOwnerEvidenceRecord>();
+        entity.ToTable("SourcingOwnerEvidence", Schema, table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.ContractVersion).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.Result).HasMaxLength(16).IsRequired();
+        entity.Property(record => record.SignalKey).HasMaxLength(200).IsRequired();
+        entity.Property(record => record.DocumentJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.PrerequisiteId, record.SignalKey }).IsUnique();
+    }
+
+    private static void ConfigureProcessorRegistration(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingPrerequisiteProcessorRegistrationRecord>();
+        entity.ToTable("SourcingPrerequisiteProcessorRegistrations", Schema);
+        entity.HasKey(record => new { record.AdapterId, record.AdapterVersion });
+        entity.Property(record => record.AdapterId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.AdapterVersion).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.ProcessorId).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.WorkloadIssuer).HasMaxLength(320).IsRequired();
+        entity.Property(record => record.WorkloadClientId).HasMaxLength(128).IsRequired();
     }
 
     private static void ConfigureAward(ModelBuilder modelBuilder)
