@@ -179,6 +179,18 @@ public sealed class SourcingContractFixtureTests
         var alteredBundle = proposalBundle.ToJsonString();
         Assert.Throws<SourcingDependencyUnavailableException>(() =>
             SourcingProposalDocument.Read(alteredBundle, PolicyCanonicalizer.Hash(alteredBundle)));
+
+        // Every approval reference is closed, not only the first one (an award may publish several).
+        var approvalsDocument = JsonNode.Parse(Load("award-version.json"))!.AsObject();
+        var approvals = (JsonArray)approvalsDocument["policy_approval_refs"]!;
+        var duplicated = (JsonObject)approvals[0]!.DeepClone();
+        approvals.Add(duplicated);
+        var duplicatedJson = approvalsDocument.ToJsonString();
+        Assert.NotNull(SourcingAwardDocument.Read(duplicatedJson, PolicyCanonicalizer.Hash(duplicatedJson)));
+        ((JsonObject)((JsonObject)approvals[1]!)["policy_ref"]!)["unexpected"] = 1;
+        var alteredApproval = approvalsDocument.ToJsonString();
+        Assert.Throws<SourcingDependencyUnavailableException>(() =>
+            SourcingAwardDocument.Read(alteredApproval, PolicyCanonicalizer.Hash(alteredApproval)));
     }
 
     [Fact]

@@ -73,12 +73,13 @@ public static class SourcingAwardDocument
             throw new SourcingDependencyUnavailableException("The stored award has no approval evidence.");
         }
 
+        SourcingPolicyEvaluationRef? policy = null;
         foreach (var approval in approvals)
         {
             SourcingSerialization.RequireExactObject(approval, ApprovalRefProperties);
+            var reference = ReadPolicyRef(approval.GetProperty("policy_ref"));
+            policy ??= reference;
         }
-
-        var policy = ReadPolicyRef(approvals[0].GetProperty("policy_ref"));
         // References the consumption response rebuilds are validated too, so a tampered document with a
         // recomputed digest cannot hide an unknown property inside them (REQ-14).
         _ = ReadOptionalContentRef(root.GetProperty("evaluation_ref"));
@@ -93,7 +94,7 @@ public static class SourcingAwardDocument
             ReadContentRef(root.GetProperty("request_ref")),
             ReadContentRef(root.GetProperty("proposal_ref")),
             root.GetProperty("proposal_ref").GetProperty("content_digest").GetString()!,
-            policy,
+            policy!,
             ReadCandidate(root),
             ReadTerms(root.GetProperty("terms")),
             root.GetProperty("catalog_snapshots").EnumerateArray().Select(ReadSnapshot).ToArray());
