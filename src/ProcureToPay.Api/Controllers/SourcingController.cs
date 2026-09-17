@@ -26,7 +26,8 @@ public sealed class SourcingController(
     SourcingSelectionService selections,
     SourcingWaiverService waivers,
     SourcingProposalService proposals,
-    SourcingAwardService awards)
+    SourcingAwardService awards,
+    SourcingCatalogRouteService catalogRoutes)
     : ControllerBase
 {
     [HttpPost("processes")]
@@ -719,6 +720,34 @@ public sealed class SourcingController(
         await RequireBuyerOrAuditorAsync(cancellationToken);
         var organizationId = await OrganizationIdAsync(cancellationToken);
         return Ok(await awards.ListAwardsAsync(organizationId, rfqId, cancellationToken));
+    }
+
+    [HttpPost("processes/{processId:guid}/catalog-route")]
+    public async Task<ActionResult<SourcingCatalogRouteView>> ConfirmCatalogRoute(
+        Guid processId,
+        TransitionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await RequireBuyerAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        var route = await catalogRoutes.ConfirmAsync(
+            new ConfirmCatalogRouteCommand(
+                organizationId, processId, request.ExpectedVersion, request.CommandKey ?? string.Empty),
+            actor.Id,
+            HttpContext.TraceIdentifier,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        return Ok(route);
+    }
+
+    [HttpGet("processes/{processId:guid}/catalog-route")]
+    public async Task<ActionResult<SourcingCatalogRouteView>> GetCatalogRoute(
+        Guid processId,
+        CancellationToken cancellationToken)
+    {
+        await RequireBuyerOrAuditorAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        return Ok(await catalogRoutes.GetRouteAsync(organizationId, processId, cancellationToken));
     }
 
     private async Task<UserProfileRecord> RequireBuyerAsync(CancellationToken cancellationToken)

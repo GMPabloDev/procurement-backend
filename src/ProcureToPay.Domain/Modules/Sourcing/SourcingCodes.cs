@@ -80,6 +80,7 @@ public static class SourcingCodes
     public const string ActionLineSelected = "SOURCING_LINE_SELECTED";
     public const string ActionWaiverRequested = "SOURCING_QUOTATION_WAIVER_REQUESTED";
     public const string ActionProposalBuilt = "SOURCING_PROPOSAL_BUILT";
+    public const string ActionCatalogRouteConfirmed = "SOURCING_CATALOG_ROUTE_CONFIRMED";
     public const string ActionAwardPublished = "SOURCING_AWARD_PUBLISHED";
     public const string ActionAwardConsumed = "SOURCING_AWARD_CONSUMED";
 

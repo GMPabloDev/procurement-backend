@@ -573,3 +573,23 @@ public sealed class SourcingPrerequisiteProcessorRegistrationRecord
     public string WorkloadIssuer { get; set; } = null!;
     public string WorkloadClientId { get; set; } = null!;
 }
+
+/// <summary>
+/// Confirmed governed catalogue route of one process (REQ-06): the frozen approved catalogue
+/// snapshots that let the RFQ be omitted while the Policy evaluation generated no quotation control.
+/// </summary>
+public sealed class SourcingCatalogRouteRecord
+{
+    public Guid ProcessId { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid RequestId { get; set; }
+    public int RequestVersion { get; set; }
+    public Guid SupplierId { get; set; }
+    public int SupplierVersion { get; set; }
+    public string SnapshotsJson { get; set; } = null!;
+    public string SnapshotsDigest { get; set; } = null!;
+    /// <summary>Contractual process version whose snapshot set produced the digest (REQ-06).</summary>
+    public int SnapshotsVersion { get; set; }
+    public Guid ActorUserId { get; set; }
+    public DateTimeOffset ConfirmedAt { get; set; }
+}

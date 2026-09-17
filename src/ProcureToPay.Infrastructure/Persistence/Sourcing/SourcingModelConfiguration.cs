@@ -38,6 +38,7 @@ public static class SourcingModelConfiguration
         ConfigureAward(modelBuilder);
         ConfigureAwardVersion(modelBuilder);
         ConfigureCurrentAwardLine(modelBuilder);
+        ConfigureCatalogRoute(modelBuilder);
         ConfigureOwnerAttempt(modelBuilder);
         ConfigureOwnerEvidence(modelBuilder);
         ConfigureProcessorRegistration(modelBuilder);
@@ -270,6 +271,16 @@ public static class SourcingModelConfiguration
         entity.Property(record => record.EvidenceJson).HasMaxLength(2_000).IsRequired();
         entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
         entity.HasIndex(record => new { record.OrganizationId, record.RfqId, record.LineId, record.SupplierId, record.Criterion });
+    }
+
+    private static void ConfigureCatalogRoute(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingCatalogRouteRecord>();
+        entity.ToTable("SourcingCatalogRoutes", Schema, table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => record.ProcessId);
+        entity.Property(record => record.SnapshotsJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.SnapshotsDigest).HasMaxLength(64).IsRequired();
+        entity.HasIndex(record => record.OrganizationId);
     }
 
     private static void ConfigureOwnerAttempt(ModelBuilder modelBuilder)

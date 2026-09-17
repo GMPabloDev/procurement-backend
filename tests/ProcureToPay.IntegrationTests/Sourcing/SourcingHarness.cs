@@ -110,6 +110,112 @@ public sealed class SourcingHarness : IAsyncDisposable
 
     public SourcingAwardService CreateAwardService(ProcureToPayDbContext context) => new(context);
 
+    /// <summary>
+    /// Catalogue route over the SPEC 09 boundary: the approved supplier fact owner is a boundary
+    /// double (the Supplier suite proves the real one), so this suite proves the sourcing governance
+    /// rules of REQ-06.
+    /// </summary>
+    public SourcingCatalogRouteService CreateCatalogRouteService(
+        ProcureToPayDbContext context,
+        bool preferred = true,
+        string agreementStatus = "ACTIVE",
+        bool catalogEntry = true) =>
+        new(context, new CatalogFactOwner(preferred, agreementStatus, catalogEntry));
+
+    /// <summary>
+    /// Publishes a fresh request evaluation carrying one <c>REQUIRE_QUOTATIONS</c> control over the
+    /// line, which is exactly the prerequisite the catalogue route must not bypass (REQ-06, DEC-03).
+    /// </summary>
+    public async Task SeedQuotationControlAsync(
+        ProcureToPayDbContext context,
+        Guid requestId,
+        Guid lineId,
+        CancellationToken cancellationToken)
+    {
+        var control = new ProcureToPay.Domain.Modules.Policy.PolicyGeneratedControl(
+            "RFQ",
+            ProcureToPay.Domain.Modules.Policy.PolicyEffectType.RequireQuotations,
+            [ProcureToPay.Domain.Modules.Policy.PolicyScope.Line],
+            [lineId],
+            "PROCUREMENT",
+            null,
+            2,
+            [],
+            [],
+            "Seeded quotation requirement");
+        var bundle = new ProcureToPay.Domain.Modules.Policy.PolicyEvaluationBundle(
+            Guid.NewGuid(),
+            "sourcing-catalog-seed",
+            new ProcureToPay.Domain.Modules.Policy.PolicySubjectReference(requestId, 1),
+            DateTimeOffset.UtcNow,
+            Digest('a'),
+            Digest('b'),
+            [],
+            [control],
+            ProcureToPay.Domain.Modules.Policy.PolicyResult.RequirementsGenerated,
+            Digest('c'))
+        {
+            Operation = "REQUEST_EVALUATE",
+            FactsDigest = Digest('d'),
+            ManifestDigest = Digest('e')
+        };
+        await new ProcureToPay.Infrastructure.Persistence.Policy.PolicyPersistenceService(context)
+            .AppendEvaluationAsync(
+                bundle,
+                new ProcureToPay.Infrastructure.Persistence.Policy.PolicyEvaluationCaller(
+                    OrganizationId,
+                    "internal://procure-to-pay",
+                    "purchase-request-domain",
+                    "REQUEST_EVALUATE",
+                    "sourcing-catalog-seed",
+                    PolicySetVersionId,
+                    "seed-catalog-control"),
+                cancellationToken);
+    }
+
+    /// <summary>Declares the same supplier on every line of the presented request version (REQ-06).</summary>
+    public async Task SetRequestSupplierAsync(
+        ProcureToPayDbContext context,
+        Guid supplierId,
+        int supplierVersion,
+        CancellationToken cancellationToken)
+    {
+        var supplierJson =
+            $"{{\"entity_type\":\"SUPPLIER\",\"id\":\"{supplierId:D}\",\"version\":{supplierVersion}}}";
+        await context.Database.ExecuteSqlRawAsync(
+            "UPDATE [PurchaseRequest].[PurchaseRequestLineVersions] SET [SupplierJson] = {0}",
+            [supplierJson],
+            cancellationToken);
+    }
+
+    private sealed class CatalogFactOwner(bool preferred, string agreementStatus, bool catalogEntry) :
+        ProcureToPay.Application.Abstractions.IApprovedSupplierFactOwner
+    {
+        public string OwnerId => SourcingCodes.PolicyFactProviderId;
+
+        public string ContractVersion => "approved-supplier-catalog-db/v1";
+
+        public Task<ProcureToPay.Domain.Modules.Suppliers.SupplierPolicyFactSnapshot> ResolveAsync(
+            ProcureToPay.Application.Abstractions.ApprovedSupplierFactQuery query,
+            CancellationToken cancellationToken = default)
+        {
+            var entryId = Guid.NewGuid();
+            return Task.FromResult(new ProcureToPay.Domain.Modules.Suppliers.SupplierPolicyFactSnapshot(
+                query.OrganizationId,
+                query.SourceLine,
+                query.SupplierRef,
+                query.SpendCategoryRef,
+                query.ProductRef,
+                catalogEntry
+                    ? new ProcureToPay.Domain.Modules.Suppliers.ApprovedCatalogEntryRef(entryId, 1)
+                    : null,
+                catalogEntry ? new string('e', 64) : null,
+                preferred,
+                agreementStatus,
+                DateTimeOffset.UtcNow));
+        }
+    }
+
     /// <summary>Real owner processor with the owner workload registry of the harness configuration.</summary>
     public SourcingPrerequisiteProcessor CreatePrerequisiteProcessor(ProcureToPayDbContext context)
     {
@@ -563,18 +669,28 @@ public sealed class SourcingHarness : IAsyncDisposable
                 BaseAmount = 1_000m,
                 BaseCurrency = "PEN",
                 FiscalYear = now.Year,
-                PurchaseType = "GOODS",
-                SpendCategoryJson = "{\"catalog\":\"SPEND_CATEGORY\",\"code\":\"HARDWARE\",\"digest\":\"" +
-                                    Digest('4') + "\",\"version\":1}",
-                CostCenterJson = "{\"catalog\":\"COST_CENTER\",\"code\":\"CC-1\",\"digest\":\"" + Digest('5') +
-                                 "\",\"version\":1}",
-                CostCenterDepartmentJson = "{\"entity_type\":\"DEPARTMENT\",\"id\":\"" +
-                                           Guid.Parse("55555555-bbbb-bbbb-bbbb-bbbbbbbbbbbb") +
-                                           "\",\"version\":1}",
-                BeneficiaryDepartmentJson = "{\"entity_type\":\"DEPARTMENT\",\"id\":\"" +
-                                            Guid.Parse("55555555-bbbb-bbbb-bbbb-bbbbbbbbbbbb") +
-                                            "\",\"version\":1}",
-                RequestedForUserJson = "{\"entity_type\":\"USER\",\"id\":\"" + RequesterId + "\",\"version\":1}",
+                PurchaseType = "GOOD",
+                // The persisted shapes come from the real serializer, so the fixtures cannot drift.
+                SpendCategoryJson = ProcureToPay.Infrastructure.Persistence.PurchaseRequests
+                    .PurchaseRequestSerialization.CodeRef(new ProcureToPay.Domain.Modules.Policy.VersionedCodeRef(
+                        "SPEND_CATEGORY", "HARDWARE", 1, Digest('4'))),
+                // The line carries the cost center as a versioned entity reference (REQ-07), not as
+                // a catalogued code.
+                CostCenterJson = ProcureToPay.Infrastructure.Persistence.PurchaseRequests
+                    .PurchaseRequestSerialization.EntityRef(
+                        new ProcureToPay.Domain.Modules.Policy.VersionedEntityRef(
+                            "COST_CENTER", Guid.Parse("66666666-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), 1)),
+                CostCenterDepartmentJson = ProcureToPay.Infrastructure.Persistence.PurchaseRequests
+                    .PurchaseRequestSerialization.EntityRef(
+                        new ProcureToPay.Domain.Modules.Policy.VersionedEntityRef(
+                            "DEPARTMENT", Guid.Parse("55555555-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), 1)),
+                BeneficiaryDepartmentJson = ProcureToPay.Infrastructure.Persistence.PurchaseRequests
+                    .PurchaseRequestSerialization.EntityRef(
+                        new ProcureToPay.Domain.Modules.Policy.VersionedEntityRef(
+                            "DEPARTMENT", Guid.Parse("55555555-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), 1)),
+                RequestedForUserJson = ProcureToPay.Infrastructure.Persistence.PurchaseRequests
+                    .PurchaseRequestSerialization.EntityRef(
+                        new ProcureToPay.Domain.Modules.Policy.VersionedEntityRef("USER", RequesterId, 1)),
                 AgreementStatus = "NONE",
                 NeedSummary = "Sourcing integration seed",
                 RiskAnswersJson = "[]",

@@ -326,6 +326,11 @@ public static class DependencyInjection
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingSelectionService>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingWaiverService>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingProposalService>();
+        // SPEC 10 REQ-06: the catalogue route consumes the approved supplier fact owner of SPEC 09.
+        services.AddScoped(provider =>
+            new ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingCatalogRouteService(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<ProcureToPay.Application.Abstractions.IApprovedSupplierFactOwner>()));
         // SPEC 10 REQ-12/REQ-14: the award publisher is the same object that verifies consumption
         // in-process, so a consumer and the publisher can never disagree about eligibility.
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingAwardService>();

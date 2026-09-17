@@ -227,6 +227,43 @@ public static class SourcingSerialization
     public static string Decimal(decimal value) =>
         value.ToString("0.############################", CultureInfo.InvariantCulture);
 
+    /// <summary>Catalogue snapshots of one governed route, stored as their canonical elements.</summary>
+    public static string CatalogSnapshots(IEnumerable<SourcingCatalogSnapshot> snapshots) => new JsonArray(
+        (snapshots ?? []).OrderBy(snapshot => snapshot.LineId).Select(snapshot => (JsonNode)new JsonObject
+        {
+            ["catalog_content_digest"] = snapshot.CatalogContentDigest,
+            ["line_id"] = snapshot.LineId.ToString("D"),
+            ["line_version"] = snapshot.LineVersion,
+            ["snapshot_ref"] = ContentRefNode(snapshot.SnapshotRef),
+            ["supplier_ref"] = new JsonObject
+            {
+                ["id"] = snapshot.SupplierRef.Id.ToString("D"),
+                ["version"] = snapshot.SupplierRef.Version
+            }
+        }).ToArray()).ToJsonString(Options);
+
+    public static IReadOnlyList<SourcingCatalogSnapshot> ReadCatalogSnapshots(string json)
+    {
+        var array = Root(json).AsArray();
+        var snapshots = new List<SourcingCatalogSnapshot>(array.Count);
+        foreach (var node in array)
+        {
+            var item = RequireObject(node, [
+                "catalog_content_digest", "line_id", "line_version", "snapshot_ref", "supplier_ref"
+            ]);
+            var supplier = RequireObject(item["supplier_ref"], ["id", "version"]);
+            snapshots.Add(new SourcingCatalogSnapshot(
+                ReadContentRef(item["snapshot_ref"]),
+                item["line_id"]!.GetValue<Guid>(),
+                item["line_version"]!.GetValue<int>(),
+                new SourcingEntityRef(
+                    supplier["id"]!.GetValue<Guid>(), supplier["version"]!.GetValue<int>()),
+                item["catalog_content_digest"]!.GetValue<string>()));
+        }
+
+        return snapshots;
+    }
+
     /// <summary>Targets of one quotation waiver: line reference, count and exact quotation versions.</summary>
     public static string WaiverTargets(IEnumerable<SourcingWaiverTarget> targets) => new JsonArray(
         (targets ?? []).OrderBy(target => target.LineRef.Id).Select(target => (JsonNode)new JsonObject
