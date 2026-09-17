@@ -6,6 +6,7 @@ using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
+using ProcureToPay.Domain.Modules.Sourcing;
 using ProcureToPay.Domain.Modules.Suppliers;
 using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Organization;
@@ -94,6 +95,113 @@ public sealed class SourcingHarness : IAsyncDisposable
 
     public SourcingProposalService CreateProposalService(ProcureToPayDbContext context) => new(context);
 
+    public SourcingAwardService CreateAwardService(ProcureToPayDbContext context) => new(context);
+
+    /// <summary>
+    /// Publishes a successor supplier version and points the root at it, which is the real way the
+    /// awarded version stops being current (REQ-11). Historical rows are never rewritten.
+    /// </summary>
+    public async Task AdvanceSupplierVersionAsync(
+        ProcureToPayDbContext context,
+        CancellationToken cancellationToken)
+    {
+        var previous = await context.SupplierVersions
+            .AsNoTracking()
+            .SingleAsync(record => record.SupplierId == SupplierId && record.Version == 1, cancellationToken);
+        context.SupplierVersions.Add(new SupplierVersionRecord
+        {
+            SupplierId = SupplierId,
+            Version = 2,
+            OrganizationId = OrganizationId,
+            PredecessorVersion = 1,
+            LegalName = previous.LegalName,
+            CountryCode = previous.CountryCode,
+            TaxId = previous.TaxId,
+            AddressesJson = previous.AddressesJson,
+            ContactsJson = previous.ContactsJson,
+            PaymentTermsJson = previous.PaymentTermsJson,
+            SupportedCurrenciesJson = previous.SupportedCurrenciesJson,
+            CategoriesSuppliedJson = previous.CategoriesSuppliedJson,
+            PerformanceJson = previous.PerformanceJson,
+            BankingRefsJson = previous.BankingRefsJson,
+            Status = previous.Status,
+            RiskStatus = previous.RiskStatus,
+            ContentDigest = Digest('7'),
+            ActorUserId = BuyerId,
+            OccurredAt = DateTimeOffset.UtcNow,
+            Reason = "Successor version of the integration fixture"
+        });
+        var root = await context.Suppliers.SingleAsync(record => record.Id == SupplierId, cancellationToken);
+        root.OperationalVersion = 2;
+        await context.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>Policy version the seeded request bundle points at; reused by the award fixtures.</summary>
+    public Guid PolicySetVersionId { get; private set; }
+
+    /// <summary>
+    /// Seeds the sourcing policy evaluation of a proposal and its completed approval case, which is
+    /// the persisted state a published award must find (REQ-11, REQ-12).
+    /// </summary>
+    public async Task SeedProposalApprovalAsync(
+        ProcureToPayDbContext context,
+        Guid proposalId,
+        int proposalVersion,
+        string proposalDigest,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var bundle = new ProcureToPay.Domain.Modules.Policy.PolicyEvaluationBundle(
+            Guid.NewGuid(),
+            "sourcing-proposal-evaluation",
+            new ProcureToPay.Domain.Modules.Policy.PolicySubjectReference(proposalId, proposalVersion),
+            now,
+            Digest('1'),
+            Digest('2'),
+            [],
+            [],
+            ProcureToPay.Domain.Modules.Policy.PolicyResult.Passed,
+            Digest('3'))
+        {
+            Operation = "SOURCING_PO",
+            FactsDigest = Digest('4'),
+            ManifestDigest = Digest('5')
+        };
+        await new ProcureToPay.Infrastructure.Persistence.Policy.PolicyPersistenceService(context)
+            .AppendEvaluationAsync(
+                bundle,
+                new ProcureToPay.Infrastructure.Persistence.Policy.PolicyEvaluationCaller(
+                    OrganizationId,
+                    "internal://procure-to-pay",
+                    "sourcing-domain",
+                    "SOURCING_PO",
+                    $"sourcing-proposal-{proposalId:N}",
+                    PolicySetVersionId,
+                    "seed-sourcing-evaluation"),
+                cancellationToken);
+        context.ApprovalCases.Add(new ProcureToPay.Infrastructure.Persistence.Approval.ApprovalCaseRecord
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = OrganizationId,
+            SubjectType = SourcingCodes.ApprovalSubjectType,
+            SubjectId = proposalId,
+            SubjectVersion = proposalVersion,
+            Operation = SourcingCodes.ApprovalOperation,
+            SourceSnapshotDigest = proposalDigest,
+            WorkloadIssuer = "internal://procure-to-pay",
+            WorkloadClientId = SourcingCodes.QuotationStatusProcessorId,
+            SubmissionKey = $"sourcing-proposal-{proposalId:N}",
+            SubmissionFingerprint = Digest('6'),
+            OriginatorId = BuyerId,
+            RequesterId = BuyerId,
+            Status = (int)ProcureToPay.Domain.Modules.Approval.ApprovalCaseStatus.Completed,
+            Version = 1,
+            CreatedAt = now,
+            CorrelationReference = "seed-sourcing-approval"
+        });
+        await context.SaveChangesAsync(cancellationToken);
+    }
+
     /// <summary>
     /// Provider over the real composition: it is wired to the same PR fact provider the production
     /// registry resolves, so its envelope is built from attested facts instead of test doubles.
@@ -123,10 +231,10 @@ public sealed class SourcingHarness : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-        var policyVersionId = Guid.NewGuid();
+        PolicySetVersionId = Guid.NewGuid();
         context.PolicySetVersions.Add(new ProcureToPay.Infrastructure.Persistence.Policy.PolicySetVersionRecord
         {
-            Id = policyVersionId,
+            Id = PolicySetVersionId,
             OrganizationId = OrganizationId,
             Sequence = 1,
             ScopesJson = "[\"LINE\"]",
@@ -158,7 +266,7 @@ public sealed class SourcingHarness : IAsyncDisposable
                 EvaluationSequence = 1,
                 SubjectId = RequestId,
                 SubjectVersion = 1,
-                PolicySetVersionId = policyVersionId,
+                PolicySetVersionId = PolicySetVersionId,
                 EvaluatedAt = now,
                 PolicyContentDigest = Digest('6'),
                 InputDigest = Digest('7'),

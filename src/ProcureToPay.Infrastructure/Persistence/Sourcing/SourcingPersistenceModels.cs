@@ -448,3 +448,63 @@ public sealed class SourcingProposalVersionRecord
 
     public SourcingProposalRecord Proposal { get; set; } = null!;
 }
+
+/// <summary>
+/// Root of one published award (REQ-12). Every publication or correction appends a successor version;
+/// the root keeps the current pointer and never rewrites history.
+/// </summary>
+public sealed class SourcingAwardRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid ProcessId { get; set; }
+    public Guid RfqId { get; set; }
+    public Guid SupplierId { get; set; }
+    public int CurrentVersion { get; set; }
+    public byte[] RowVersion { get; set; } = [];
+}
+
+/// <summary>Append-only award version (<c>award-version/v1</c>, REQ-12).</summary>
+public sealed class SourcingAwardVersionRecord
+{
+    public Guid AwardId { get; set; }
+    public int Version { get; set; }
+    public Guid OrganizationId { get; set; }
+    public Guid ProcessId { get; set; }
+    public Guid RfqId { get; set; }
+    public Guid ProposalId { get; set; }
+    public int ProposalVersion { get; set; }
+    public Guid RequestId { get; set; }
+    public int RequestVersion { get; set; }
+    public Guid SupplierId { get; set; }
+    public int SupplierVersion { get; set; }
+    public int SelectionBasis { get; set; }
+    public Guid? EvaluationId { get; set; }
+    public int? EvaluationVersion { get; set; }
+    public string? EvaluationContentDigest { get; set; }
+    public Guid? WaiverFactsId { get; set; }
+    public string LinesJson { get; set; } = null!;
+    public string DocumentJson { get; set; } = null!;
+    public string ContentDigest { get; set; } = null!;
+    public string AwardKey { get; set; } = null!;
+    public int? PredecessorVersion { get; set; }
+    public bool Superseded { get; set; }
+    public Guid ActorUserId { get; set; }
+    public DateTimeOffset PublishedAt { get; set; }
+    public string Reason { get; set; } = null!;
+
+    public SourcingAwardRecord Award { get; set; } = null!;
+}
+
+/// <summary>
+/// Current award of one Purchase Request line (REQ-12): the unique index makes a double award
+/// impossible even for a direct SQL writer, so a line is never split between suppliers.
+/// </summary>
+public sealed class SourcingCurrentAwardLineRecord
+{
+    public Guid LineId { get; set; }
+    public int LineVersion { get; set; }
+    public Guid AwardId { get; set; }
+    public int AwardVersion { get; set; }
+    public Guid OrganizationId { get; set; }
+}

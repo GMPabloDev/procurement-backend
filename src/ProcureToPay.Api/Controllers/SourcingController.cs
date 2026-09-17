@@ -25,7 +25,8 @@ public sealed class SourcingController(
     SourcingEvaluationService evaluations,
     SourcingSelectionService selections,
     SourcingWaiverService waivers,
-    SourcingProposalService proposals)
+    SourcingProposalService proposals,
+    SourcingAwardService awards)
     : ControllerBase
 {
     [HttpPost("processes")]
@@ -674,6 +675,52 @@ public sealed class SourcingController(
         return Ok(await proposals.GetProposalAsync(organizationId, proposalId, version, cancellationToken));
     }
 
+    [HttpPost("proposals/{proposalId:guid}/versions/{version:int}/award")]
+    public async Task<ActionResult<SourcingAwardView>> PublishAward(
+        Guid proposalId,
+        int version,
+        PublishAwardRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actor = await RequireBuyerAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        var award = await awards.PublishAsync(
+            new PublishAwardCommand(
+                organizationId,
+                proposalId,
+                version,
+                request.ExpectedProcessVersion,
+                request.ExpectedAwardVersion,
+                request.AwardKey ?? string.Empty,
+                request.Reason ?? string.Empty),
+            actor.Id,
+            HttpContext.TraceIdentifier,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        return Created($"/api/v1/sourcing/awards/{award.AwardId}/versions/{award.Version}", award);
+    }
+
+    [HttpGet("awards/{awardId:guid}/versions/{version:int}")]
+    public async Task<ActionResult<SourcingAwardView>> GetAward(
+        Guid awardId,
+        int version,
+        CancellationToken cancellationToken)
+    {
+        await RequireBuyerOrAuditorAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        return Ok(await awards.GetAwardAsync(organizationId, awardId, version, cancellationToken));
+    }
+
+    [HttpGet("rfqs/{rfqId:guid}/awards")]
+    public async Task<ActionResult<IReadOnlyList<SourcingAwardView>>> ListAwards(
+        Guid rfqId,
+        CancellationToken cancellationToken)
+    {
+        await RequireBuyerOrAuditorAsync(cancellationToken);
+        var organizationId = await OrganizationIdAsync(cancellationToken);
+        return Ok(await awards.ListAwardsAsync(organizationId, rfqId, cancellationToken));
+    }
+
     private async Task<UserProfileRecord> RequireBuyerAsync(CancellationToken cancellationToken)
     {
         var actor = await RequireAuthenticatedAsync(cancellationToken);
@@ -868,6 +915,12 @@ public sealed record EvaluateRfqRequest(string? CommandKey);
 public sealed record RequestWaiverRequest(string? RequirementKey, string? CommandKey);
 
 public sealed record BuildProposalRequest(Guid SupplierId, string? CommandKey);
+
+public sealed record PublishAwardRequest(
+    int ExpectedProcessVersion,
+    int? ExpectedAwardVersion,
+    string? AwardKey,
+    string? Reason);
 
 public sealed record SelectLineRequest(
     Guid LineId,

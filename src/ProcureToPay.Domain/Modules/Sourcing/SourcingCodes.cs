@@ -36,6 +36,8 @@ public static class SourcingCodes
     public const string QuotationStatusEvidenceContract = "quotation-status-evidence/v1";
     public const string ProcurementStageEvidenceContract = "procurement-stage-evidence/v1";
     public const string AwardConsumptionContract = "award-consumption/v1";
+    public const string AwardConsumptionVerifierId = "sourcing-domain";
+    public const string AwardChangedContract = "sourcing-award-changed/v1";
 
     /// <summary>Adapter/processor identities of the two SPEC 05 owners implemented here.</summary>
     public const string QuotationStatusOwnerAdapterId = "quotation-status-owner";
@@ -78,6 +80,8 @@ public static class SourcingCodes
     public const string ActionLineSelected = "SOURCING_LINE_SELECTED";
     public const string ActionWaiverRequested = "SOURCING_QUOTATION_WAIVER_REQUESTED";
     public const string ActionProposalBuilt = "SOURCING_PROPOSAL_BUILT";
+    public const string ActionAwardPublished = "SOURCING_AWARD_PUBLISHED";
+    public const string ActionAwardConsumed = "SOURCING_AWARD_CONSUMED";
 
     public const string TargetProcess = "SourcingProcess";
     public const string TargetRfq = "RfqVersion";
@@ -85,6 +89,7 @@ public static class SourcingCodes
     public const string TargetAttachment = "SourcingAttachment";
     public const string TargetSelection = "SourcingSelection";
     public const string TargetProposal = "SourcingProposal";
+    public const string TargetAward = "SourcingAward";
 
     public const int MaxLinesPerProcess = 500;
     public const int MaxSuppliersPerRfq = 100;

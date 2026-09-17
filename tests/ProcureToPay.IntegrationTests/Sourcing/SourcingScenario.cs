@@ -66,6 +66,43 @@ public static class SourcingScenario
             DateTimeOffset.UtcNow,
             cancellationToken);
 
+    /// <summary>
+    /// Full module scenario up to a built proposal: open RFQ with a valid quotation, evaluation,
+    /// selection and proposal over the seeded request manifest and policy bundle.
+    /// </summary>
+    public static async Task<(SourcingProcessView Process, SourcingRfqOutcome Rfq, SourcingProposalView Proposal)>
+        BuildProposalAsync(
+            SourcingHarness harness,
+            ProcureToPayDbContext context,
+            CancellationToken cancellationToken)
+    {
+        var (created, rfq) = await OpenRfqAsync(harness, context, cancellationToken);
+        var process = await harness.CreateProcessService(context)
+            .GetProcessAsync(harness.OrganizationId, created.ProcessId, cancellationToken);
+        await EvaluateAsync(harness, context, rfq, cancellationToken);
+        await SelectAsync(harness, context, rfq, cancellationToken);
+        await harness.SeedProposalFixturesAsync(context, cancellationToken);
+        var proposal = await harness.CreateProposalService(context).BuildAsync(
+            new BuildProposalCommand(
+                harness.OrganizationId, rfq.RfqId, harness.SupplierId, $"proposal-{Guid.NewGuid():N}"),
+            harness.BuyerId,
+            "corr-proposal",
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        // The approval evidence is seeded explicitly by the tests that need it, so the negative case
+        // (a proposal without a completed case) stays testable.
+        return (process, rfq, proposal);
+    }
+
+    /// <summary>Seeds the complete approval evidence of one proposal (REQ-11).</summary>
+    public static async Task SeedApprovalAsync(
+        SourcingHarness harness,
+        ProcureToPayDbContext context,
+        SourcingProposalView proposal,
+        CancellationToken cancellationToken) =>
+        await harness.SeedProposalApprovalAsync(
+            context, proposal.ProposalId, proposal.Version, proposal.ContentDigest, cancellationToken);
+
     /// <summary>Selects the single valid supplier of the line with the recommendation (REQ-09).</summary>
     public static async Task<SourcingSelectionView> SelectAsync(
         SourcingHarness harness,

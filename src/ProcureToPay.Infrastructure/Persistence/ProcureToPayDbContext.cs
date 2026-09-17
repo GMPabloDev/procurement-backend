@@ -133,6 +133,9 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<SourcingWaiverFactsRecord> SourcingWaiverFacts => Set<SourcingWaiverFactsRecord>();
     public DbSet<SourcingProposalRecord> SourcingProposals => Set<SourcingProposalRecord>();
     public DbSet<SourcingProposalVersionRecord> SourcingProposalVersions => Set<SourcingProposalVersionRecord>();
+    public DbSet<SourcingAwardRecord> SourcingAwards => Set<SourcingAwardRecord>();
+    public DbSet<SourcingAwardVersionRecord> SourcingAwardVersions => Set<SourcingAwardVersionRecord>();
+    public DbSet<SourcingCurrentAwardLineRecord> SourcingCurrentAwardLines => Set<SourcingCurrentAwardLineRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

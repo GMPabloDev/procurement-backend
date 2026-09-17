@@ -35,6 +35,9 @@ public static class SourcingModelConfiguration
         ConfigureWaiverFacts(modelBuilder);
         ConfigureProposal(modelBuilder);
         ConfigureProposalVersion(modelBuilder);
+        ConfigureAward(modelBuilder);
+        ConfigureAwardVersion(modelBuilder);
+        ConfigureCurrentAwardLine(modelBuilder);
         ConfigureSelectionVersion(modelBuilder);
     }
 
@@ -264,6 +267,42 @@ public static class SourcingModelConfiguration
         entity.Property(record => record.EvidenceJson).HasMaxLength(2_000).IsRequired();
         entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
         entity.HasIndex(record => new { record.OrganizationId, record.RfqId, record.LineId, record.SupplierId, record.Criterion });
+    }
+
+    private static void ConfigureAward(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingAwardRecord>();
+        entity.ToTable("SourcingAwards", Schema);
+        entity.HasKey(record => record.Id);
+        entity.Property(record => record.RowVersion).IsRowVersion();
+        entity.HasIndex(record => new { record.OrganizationId, record.ProcessId, record.SupplierId }).IsUnique();
+    }
+
+    private static void ConfigureAwardVersion(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingAwardVersionRecord>();
+        entity.ToTable("SourcingAwardVersions", Schema, table => table.UseSqlOutputClause(false));
+        entity.HasKey(record => new { record.AwardId, record.Version });
+        entity.Property(record => record.EvaluationContentDigest).HasMaxLength(64);
+        entity.Property(record => record.LinesJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.DocumentJson).HasColumnType("nvarchar(max)").IsRequired();
+        entity.Property(record => record.ContentDigest).HasMaxLength(64).IsRequired();
+        entity.Property(record => record.AwardKey).HasMaxLength(128).IsRequired();
+        entity.Property(record => record.Reason).HasMaxLength(4_000).IsRequired();
+        entity.HasIndex(record => new { record.OrganizationId, record.RfqId });
+        entity.HasIndex(record => new { record.OrganizationId, record.ActorUserId, record.AwardKey }).IsUnique();
+        entity.HasOne(record => record.Award)
+            .WithMany()
+            .HasForeignKey(record => record.AwardId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void ConfigureCurrentAwardLine(ModelBuilder modelBuilder)
+    {
+        var entity = modelBuilder.Entity<SourcingCurrentAwardLineRecord>();
+        entity.ToTable("SourcingCurrentAwardLines", Schema);
+        entity.HasKey(record => record.LineId);
+        entity.HasIndex(record => new { record.AwardId, record.AwardVersion });
     }
 
     private static void ConfigureProposal(ModelBuilder modelBuilder)
