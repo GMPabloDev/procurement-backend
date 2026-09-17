@@ -30,6 +30,29 @@ public static class SourcingCanonicalizer
         DateTimeOffset? openedAt,
         DateTimeOffset responseDeadline,
         int? predecessorVersion,
+        IEnumerable<RfqLine> lines) =>
+        PolicyCanonicalizer.Hash(RfqDocument(
+            rfqId, version, organizationId, processId, requestId, requestVersion, status, currency, terms,
+            weights, openedAt, responseDeadline, predecessorVersion, lines));
+
+    /// <summary>
+    /// Canonical <c>rfq-version/v1</c> document: exactly the digest preimage, so a golden fixture can
+    /// publish its bytes and SHA-256 (SPEC 10 Datos y contratos).
+    /// </summary>
+    public static string RfqDocument(
+        Guid rfqId,
+        int version,
+        Guid organizationId,
+        Guid processId,
+        Guid requestId,
+        int requestVersion,
+        RfqStatus status,
+        string currency,
+        CommercialTerms terms,
+        EvaluationWeightSet weights,
+        DateTimeOffset? openedAt,
+        DateTimeOffset responseDeadline,
+        int? predecessorVersion,
         IEnumerable<RfqLine> lines)
     {
         ArgumentNullException.ThrowIfNull(terms);
@@ -62,7 +85,7 @@ public static class SourcingCanonicalizer
             ["terms"] = Terms(terms),
             ["version"] = version
         };
-        return PolicyCanonicalizer.Hash(PolicyCanonicalizer.SerializeCanonical(preimage));
+        return PolicyCanonicalizer.SerializeCanonical(preimage);
     }
 
     /// <summary>
@@ -71,6 +94,28 @@ public static class SourcingCanonicalizer
     /// late answer cannot be re-registered as on time (REQ-03, REQ-04).
     /// </summary>
     public static string QuotationContentDigest(
+        int version,
+        int? predecessorVersion,
+        Guid organizationId,
+        SourcingContentRef rfqRef,
+        SourcingEntityRef supplierRef,
+        string currency,
+        CommercialTerms terms,
+        QuotationTimeliness timeliness,
+        DateTimeOffset receivedAt,
+        DateTimeOffset registeredAt,
+        IEnumerable<QuotationLine> lines,
+        IEnumerable<SourcingAttachmentRef> attachments,
+        QuotationReview review) =>
+        PolicyCanonicalizer.Hash(QuotationDocument(
+            version, predecessorVersion, organizationId, rfqRef, supplierRef, currency, terms, timeliness,
+            receivedAt, registeredAt, lines, attachments, review));
+
+    /// <summary>
+    /// Canonical <c>quotation-version/v1</c> document: exactly the digest preimage, so a golden
+    /// fixture can publish its bytes and SHA-256 (SPEC 10 Datos y contratos).
+    /// </summary>
+    public static string QuotationDocument(
         int version,
         int? predecessorVersion,
         Guid organizationId,
@@ -119,7 +164,7 @@ public static class SourcingCanonicalizer
             ["timeliness"] = SourcingStateCodes.Timeliness(timeliness),
             ["version"] = version
         };
-        return PolicyCanonicalizer.Hash(PolicyCanonicalizer.SerializeCanonical(preimage));
+        return PolicyCanonicalizer.SerializeCanonical(preimage);
     }
 
     /// <summary>

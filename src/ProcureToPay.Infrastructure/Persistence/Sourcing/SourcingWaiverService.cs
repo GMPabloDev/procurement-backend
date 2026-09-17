@@ -153,6 +153,9 @@ public sealed class SourcingWaiverService(
             ? configured
             : int.Parse(DefaultValidityDays, CultureInfo.InvariantCulture);
 
+        var factsDocument = facts.CanonicalDocument();
+        SourcingCodes.RequireCanonicalDocument(factsDocument);
+
         // The facts are persisted before the case exists, so an unavailable Policy dependency leaves
         // audited evidence instead of a silent waiver (REQ-05).
         var record = new SourcingWaiverFactsRecord
@@ -173,7 +176,7 @@ public sealed class SourcingWaiverService(
             To = facts.To,
             Floor = facts.Floor,
             TargetsJson = SourcingSerialization.WaiverTargets(facts.Targets),
-            DocumentJson = facts.CanonicalDocument(),
+            DocumentJson = factsDocument,
             ContentDigest = facts.Digest,
             CommandKey = command.CommandKey,
             ActorUserId = actorUserId,

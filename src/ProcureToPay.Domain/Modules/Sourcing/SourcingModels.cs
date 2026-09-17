@@ -525,6 +525,12 @@ public sealed record QuotationVersionView(
     string Reason)
 {
     public string Timeliness => SourcingStateCodes.Timeliness(Content.Timeliness);
+
+    /// <summary>Canonical <c>quotation-version/v1</c> document of this immutable version (SPEC 10).</summary>
+    public string CanonicalDocument() => SourcingCanonicalizer.QuotationDocument(
+        Version, PredecessorVersion, Content.OrganizationId, Content.RfqRef, Content.SupplierRef,
+        Content.Currency, Content.Terms, Content.Timeliness, Content.ReceivedAt, Content.RegisteredAt,
+        Content.Lines, Content.Attachments, Content.Review);
 }
 
 /// <summary>Administrative view of one RFQ version (REQ-02).</summary>
@@ -549,6 +555,11 @@ public sealed record RfqVersionView(
     string? Reason)
 {
     public string StatusCode => SourcingStateCodes.RfqStatusCode(Status);
+
+    /// <summary>Canonical <c>rfq-version/v1</c> document of this immutable version (SPEC 10).</summary>
+    public string CanonicalDocument() => SourcingCanonicalizer.RfqDocument(
+        RfqId, Version, OrganizationId, ProcessId, RequestId, RequestVersion, Status, Currency, Terms,
+        Weights, OpenedAt, ResponseDeadline, PredecessorVersion, Lines);
 }
 
 /// <summary>

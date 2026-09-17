@@ -121,7 +121,7 @@ public sealed class SourcingQuotationService(
         var normalizedType = SourcingCodes.ContentType(contentType);
         if (length is < 1 or > SourcingCodes.MaxAttachmentBytes)
         {
-            throw new DomainValidationException(
+            throw new SourcingPayloadTooLargeException(
                 $"A quotation attachment must be between 1 byte and {SourcingCodes.MaxAttachmentBytes} bytes.");
         }
 
@@ -316,12 +316,24 @@ public sealed class SourcingQuotationService(
                 cancellationToken);
         if (root is null)
         {
+            var suppliers = await dbContext.Quotations
+                .AsNoTracking()
+                .Where(record => record.RfqId == command.RfqId)
+                .Select(record => record.SupplierId)
+                .Distinct()
+                .CountAsync(cancellationToken);
+            if (suppliers >= SourcingCodes.MaxSuppliersPerRfq)
+            {
+                throw new SourcingPayloadTooLargeException(
+                    $"An RFQ admits at most {SourcingCodes.MaxSuppliersPerRfq} suppliers.");
+            }
+
             var quotations = await dbContext.Quotations
                 .AsNoTracking()
                 .CountAsync(record => record.RfqId == command.RfqId, cancellationToken);
             if (quotations >= SourcingCodes.MaxQuotationsPerRfq)
             {
-                throw new DomainConflictException(
+                throw new SourcingPayloadTooLargeException(
                     $"An RFQ admits at most {SourcingCodes.MaxQuotationsPerRfq} quotations.");
             }
 

@@ -69,10 +69,16 @@ public sealed class ApprovalWorkflowWorker(
         // administrative call.
         var budgetPrerequisites = scope.ServiceProvider
             .GetRequiredService<ProcureToPay.Infrastructure.Persistence.BudgetLedger.BudgetPrerequisiteProcessor>();
+        // SPEC 10 REQ-13: the real sourcing owners advance their quotation/procurement attempts in the
+        // same sweep, so a satisfied prerequisite signals inside the operational budget without an
+        // administrative call.
+        var sourcingPrerequisites = scope.ServiceProvider
+            .GetRequiredService<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingPrerequisiteProcessor>();
         var identity = scope.ServiceProvider.GetRequiredService<ApprovalInstanceIdentity>();
         var utcNow = DateTimeOffset.UtcNow;
 
         await budgetPrerequisites.ProcessDueAsync(utcNow, cancellationToken);
+        await sourcingPrerequisites.ProcessDueAsync(utcNow, cancellationToken);
 
         await RequestOrganizationChangeRunsAsync(dbContext, reconciliation, utcNow, cancellationToken);
 

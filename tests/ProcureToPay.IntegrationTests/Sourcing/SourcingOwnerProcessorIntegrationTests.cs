@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Sourcing;
 using ProcureToPay.Domain.SharedKernel;
@@ -14,6 +15,82 @@ namespace ProcureToPay.IntegrationTests.Sourcing;
 /// </summary>
 public sealed class SourcingOwnerProcessorIntegrationTests
 {
+    [Fact]
+    public async Task The_quotation_owner_consumes_an_approved_waiver_reduction()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await SourcingHarness.StartAsync(cancellationToken);
+        await using var context = harness.CreateContext();
+        await harness.RegisterOwnerAsync(context, SourcingCodes.QuotationStatusOwnerAdapterId, cancellationToken);
+        var (_, rfq) = await SourcingScenario.OpenRfqAsync(harness, context, cancellationToken);
+        await SourcingScenario.SetQuotationAllowanceAsync(harness, context, minimum: 2, floor: 1, cancellationToken);
+        var prerequisiteId = await harness.QuotationPrerequisiteIdAsync(cancellationToken);
+
+        // One approved waiver reduced the minimum to the recalculated count (REQ-05, REQ-13).
+        SourcingWaiverFactsRecord facts;
+        await using (var seeding = harness.CreateContext())
+        {
+            facts = await harness.BuildWaiverFactsAsync(
+                seeding, rfq, prerequisiteId, to: 1, recordedQuotations: 1, approved: true, cancellationToken);
+            seeding.SourcingWaiverFacts.Add(facts);
+            await seeding.SaveChangesAsync(cancellationToken);
+        }
+
+        var outcome = (await harness.CreatePrerequisiteProcessor(context)
+                .ProcessDueAsync(DateTimeOffset.UtcNow, cancellationToken))
+            .Single(candidate => candidate.PrerequisiteId == prerequisiteId);
+        Assert.Equal("SATISFIED", outcome.SignalResult);
+
+        await using var verification = harness.CreateContext();
+        var evidence = await verification.SourcingOwnerEvidence
+            .AsNoTracking()
+            .SingleAsync(record => record.PrerequisiteId == prerequisiteId, cancellationToken);
+        Assert.Contains($"\"minimum_valid\":1", evidence.DocumentJson, StringComparison.Ordinal);
+        Assert.Contains(
+            $"\"waiver_verification_digest\":\"{facts.ContentDigest}\"",
+            evidence.DocumentJson,
+            StringComparison.Ordinal);
+        _ = rfq;
+    }
+
+    [Fact]
+    public async Task A_waiver_whose_recalculated_facts_changed_no_longer_reduces_the_minimum()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await SourcingHarness.StartAsync(cancellationToken);
+        await using var context = harness.CreateContext();
+        await harness.RegisterOwnerAsync(context, SourcingCodes.QuotationStatusOwnerAdapterId, cancellationToken);
+        var (_, rfq) = await SourcingScenario.OpenRfqWithoutQuotationAsync(harness, context, cancellationToken);
+        await SourcingScenario.SetQuotationAllowanceAsync(harness, context, minimum: 2, floor: 1, cancellationToken);
+        var prerequisiteId = await harness.QuotationPrerequisiteIdAsync(cancellationToken);
+
+        // The RFQ never received an answer, but the waiver recorded one: the facts no longer describe
+        // the trace, so the reduction is not usable and no signal is emitted (REQ-05).
+        await using (var seeding = harness.CreateContext())
+        {
+            seeding.SourcingWaiverFacts.Add(await harness.BuildWaiverFactsAsync(
+                seeding, rfq, prerequisiteId, to: 1, recordedQuotations: 1, approved: true, cancellationToken));
+            await seeding.SaveChangesAsync(cancellationToken);
+        }
+
+        var outcome = (await harness.CreatePrerequisiteProcessor(context)
+                .ProcessDueAsync(DateTimeOffset.UtcNow, cancellationToken))
+            .Single(candidate => candidate.PrerequisiteId == prerequisiteId);
+        Assert.Null(outcome.SignalResult);
+
+        await using var verification = harness.CreateContext();
+        Assert.False(await verification.ApprovalPrerequisiteSignals.AnyAsync(
+            record => record.PrerequisiteId == prerequisiteId, cancellationToken));
+        Assert.Equal(
+            (int)PrerequisiteStatus.Waiting,
+            await verification.ApprovalPrerequisites
+                .AsNoTracking()
+                .Where(record => record.Id == prerequisiteId)
+                .Select(record => record.Status)
+                .SingleAsync(cancellationToken));
+        _ = rfq;
+    }
+
     [Fact]
     public async Task Exactly_one_registration_is_required_to_claim()
     {

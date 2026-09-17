@@ -112,7 +112,7 @@ public sealed class SourcingProcessService(
 
         if (drafts.Length > SourcingCodes.MaxLinesPerProcess)
         {
-            throw new DomainValidationException(
+            throw new SourcingPayloadTooLargeException(
                 $"A sourcing process supports at most {SourcingCodes.MaxLinesPerProcess} lines.");
         }
 

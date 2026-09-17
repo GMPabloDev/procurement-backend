@@ -162,6 +162,15 @@ public sealed class ApiExceptionHandler(
                 Type = "/problems/sourcing-dependency-unavailable",
                 Detail = sourcingDependencyException.Message
             },
+            // SPEC 10 REQ-14: a contractual sourcing limit is a payload condition, never a 400 that
+            // hides the documented maximum.
+            SourcingPayloadTooLargeException sourcingTooLargeException => new ProblemDetails
+            {
+                Status = StatusCodes.Status413PayloadTooLarge,
+                Title = "Payload too large",
+                Type = "/problems/payload-too-large",
+                Detail = sourcingTooLargeException.Message
+            },
             PolicyDependencyUnavailableException dependencyException => new ProblemDetails
             {
                 Status = StatusCodes.Status503ServiceUnavailable,

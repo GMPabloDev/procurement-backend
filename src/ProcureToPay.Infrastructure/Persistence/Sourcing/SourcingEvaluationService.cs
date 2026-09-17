@@ -303,6 +303,7 @@ public sealed class SourcingEvaluationService(ProcureToPayDbContext dbContext)
 
         var version = root.CurrentVersion + 1;
         var document = evaluation.CanonicalDocument();
+        SourcingCodes.RequireCanonicalDocument(document);
         var digest = PolicyCanonicalizer.Hash(document);
         dbContext.QuoteEvaluationVersions.Add(new QuoteEvaluationVersionRecord
         {

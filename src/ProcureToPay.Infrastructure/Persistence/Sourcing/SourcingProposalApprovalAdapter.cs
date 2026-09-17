@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using ProcureToPay.Application.Abstractions;
 using ProcureToPay.Domain.Modules.Approval;
@@ -100,7 +101,7 @@ public sealed class SourcingProposalApprovalAdapter(
             throw new ApprovalDependencyUnavailableException("The persisted policy evaluation is corrupted.");
         }
 
-        if (!string.Equals(bundle.ManifestDigest, proposal.ManifestDigest, StringComparison.Ordinal))
+        if (!ProposalManifestBound(bundle, proposal))
         {
             // The manifest digest is the published binding between the proposal and the Policy bundle
             // that evaluated its facts (REQ-10); anything else is diverging evidence.
@@ -183,6 +184,40 @@ public sealed class SourcingProposalApprovalAdapter(
                 ["proposal_content_digest"] = proposal.ContentDigest,
                 ["request_result_digest"] = requestBundleRef.ResultDigest
             }));
+
+    /// <summary>
+    /// True when the persisted Policy bundle attests the completeness manifest of the proposal: either
+    /// its own manifest digest is that document (historical shape) or the sourcing evaluation carries
+    /// the digest in <c>provider_attestation.attestation_digest</c> (published REQ-10 shape).
+    /// </summary>
+    private static bool ProposalManifestBound(
+        PolicyEvaluationBundle bundle,
+        SourcingProposalVersionRecord proposal) =>
+        string.Equals(bundle.ManifestDigest, proposal.ManifestDigest, StringComparison.Ordinal) ||
+        string.Equals(
+            AttestationDigest(bundle.ManifestCanonicalJson), proposal.ManifestDigest, StringComparison.Ordinal);
+
+    private static string? AttestationDigest(string? manifestCanonicalJson)
+    {
+        if (string.IsNullOrWhiteSpace(manifestCanonicalJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            var root = JsonDocument.Parse(manifestCanonicalJson).RootElement;
+            return root.TryGetProperty("provider_attestation", out var attestation) &&
+                   attestation.TryGetProperty("attestation_digest", out var digest) &&
+                   digest.ValueKind == JsonValueKind.String
+                ? digest.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     private static PolicyEvaluationBundle Rehydrate(PolicyEvaluationBundleRecord record)
     {

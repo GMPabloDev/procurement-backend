@@ -89,6 +89,7 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             ?? throw new DomainNotFoundException("The proposal version does not exist.");
         var content = SourcingProposalDocument.Read(proposal.DocumentJson, proposal.ContentDigest);
         var process = await dbContext.SourcingProcesses
+            .AsNoTracking()
             .SingleOrDefaultAsync(
                 record => record.Id == proposal.ProcessId &&
                           record.OrganizationId == command.OrganizationId,
@@ -108,14 +109,14 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             return Read(replay);
         }
 
-        if (process.State != (int)SourcingProcessState.Active)
-        {
-            throw new DomainConflictException("Only an active sourcing process can publish an award.");
-        }
-
         if (process.Version != command.ExpectedProcessVersion)
         {
             throw new DomainConflictException("The sourcing process version is stale.");
+        }
+
+        if (process.State is not ((int)SourcingProcessState.Active) and not ((int)SourcingProcessState.Awarded))
+        {
+            throw new DomainConflictException("Only an active or awarded sourcing process can publish an award.");
         }
 
         var takeover = await dbContext.SourcingTakeovers
@@ -194,12 +195,45 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             dbContext.SourcingAwards.Add(award);
         }
 
-        // REQ-01/REQ-12: the process leaves ACTIVE exactly once; the loser of the race re-reads and
-        // reports the conflict instead of publishing a second award.
+        // REQ-12: a correction supersedes the current award of the same process (same supplier or a
+        // supplier change), while the first publication finds every selected line free. The takeover
+        // is never released: only the current pointer of each line moves.
+        var selectedLineIds = content.SelectedLines.Select(line => line.Id).ToArray();
+        var currentLines = await dbContext.SourcingCurrentAwardLines
+            .Where(row => selectedLineIds.Contains(row.LineId))
+            .ToArrayAsync(cancellationToken);
+        var processAwardVersions = await dbContext.SourcingAwardVersions
+            .Where(row => row.OrganizationId == command.OrganizationId && row.ProcessId == process.Id)
+            .ToArrayAsync(cancellationToken);
+        if (process.State == (int)SourcingProcessState.Active)
+        {
+            if (currentLines.Length != 0)
+            {
+                throw new DomainConflictException("Another current award already owns one of the selected lines.");
+            }
+        }
+        else if (currentLines.Length != content.SelectedLines.Count)
+        {
+            throw new DomainConflictException(
+                "A successor award must supersede the current award of every selected line.");
+        }
+
+        foreach (var current in currentLines)
+        {
+            var owner = processAwardVersions.SingleOrDefault(
+                row => row.AwardId == current.AwardId && row.Version == current.AwardVersion)
+                ?? throw new DomainConflictException(
+                    "The selected lines are owned by an award of another sourcing process.");
+            owner.Superseded = true;
+        }
+
+        // REQ-01/REQ-12: the process leaves ACTIVE exactly once; a supersession keeps AWARDED and
+        // advances its version, so only one branch ever affects the row and the loser re-reads.
         var applied = await dbContext.SourcingProcesses
             .Where(record =>
                 record.Id == process.Id &&
-                record.State == (int)SourcingProcessState.Active &&
+                (record.State == (int)SourcingProcessState.Active ||
+                 record.State == (int)SourcingProcessState.Awarded) &&
                 record.Version == command.ExpectedProcessVersion)
             .ExecuteUpdateAsync(
                 updates => updates
@@ -240,6 +274,7 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             content.AwardCandidate,
             reason);
         var document = record.CanonicalDocument();
+        SourcingCodes.RequireCanonicalDocument(document);
         dbContext.SourcingAwardVersions.Add(new SourcingAwardVersionRecord
         {
             AwardId = award.Id,
@@ -286,14 +321,9 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             }
             else
             {
-                // A successor award may only supersede the previous version of the same lineage; two
-                // different awards can never own the same line (REQ-12).
-                if (existing.AwardId != award.Id)
-                {
-                    throw new DomainConflictException(
-                        "Another current award already owns one of the selected lines.");
-                }
-
+                // The line pointer moves to the published successor; the superseded version was
+                // already marked above and stays append-only (REQ-12).
+                existing.AwardId = award.Id;
                 existing.AwardVersion = version;
             }
         }
@@ -301,7 +331,7 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
         await MarkPreviousSupersededAsync(award.Id, version, cancellationToken);
         award.CurrentVersion = version;
         AddOutbox(
-            command.OrganizationId, record, document, now);
+            command.OrganizationId, award.Id, record, now);
         AddAudit(
             command.OrganizationId, SourcingCodes.ActionAwardPublished, actorUserId, correlationReference,
             $"award:{award.Id:D}:v{version}", now);
@@ -542,8 +572,8 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
 
     private void AddOutbox(
         Guid organizationId,
+        Guid awardId,
         SourcingAwardVersion award,
-        string document,
         DateTimeOffset occurredAt) =>
         dbContext.SourcingOutbox.Add(new SourcingOutboxRecord
         {
@@ -553,7 +583,7 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             PayloadJson = new JsonObject
             {
                 ["award_content_digest"] = award.ComputeDigest(),
-                ["award_id"] = award.ProcessRef.Id.ToString("D"),
+                ["award_id"] = awardId.ToString("D"),
                 ["award_version"] = award.Version,
                 ["contract_version"] = SourcingCodes.AwardChangedContract,
                 ["occurred_at"] = SourcingCodes.FormatUtc(occurredAt),

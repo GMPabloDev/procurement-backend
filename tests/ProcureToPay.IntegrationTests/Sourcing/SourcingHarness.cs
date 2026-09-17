@@ -11,6 +11,7 @@ using ProcureToPay.Domain.Modules.Suppliers;
 using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.Sourcing;
@@ -293,7 +294,8 @@ public sealed class SourcingHarness : IAsyncDisposable
     /// </summary>
     public async Task AdvanceSupplierVersionAsync(
         ProcureToPayDbContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SupplierOperationalStatus? status = null)
     {
         var previous = await context.SupplierVersions
             .AsNoTracking()
@@ -314,7 +316,7 @@ public sealed class SourcingHarness : IAsyncDisposable
             CategoriesSuppliedJson = previous.CategoriesSuppliedJson,
             PerformanceJson = previous.PerformanceJson,
             BankingRefsJson = previous.BankingRefsJson,
-            Status = previous.Status,
+            Status = (int)(status ?? (SupplierOperationalStatus)previous.Status),
             RiskStatus = previous.RiskStatus,
             ContentDigest = Digest('7'),
             ActorUserId = BuyerId,
@@ -324,6 +326,99 @@ public sealed class SourcingHarness : IAsyncDisposable
         var root = await context.Suppliers.SingleAsync(record => record.Id == SupplierId, cancellationToken);
         root.OperationalVersion = 2;
         await context.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>A blocked successor becomes current, which is the eligibility break REQ-11 refuses.</summary>
+    public async Task BlockSupplierAsync(
+        ProcureToPayDbContext context,
+        CancellationToken cancellationToken) =>
+        await AdvanceSupplierVersionAsync(context, cancellationToken, SupplierOperationalStatus.Blocked);
+
+    /// <summary>
+    /// Seeds one persisted quotation waiver and its approval case, so the owner processor can be
+    /// proven to consume (or reject) the verified reduction without the SPEC 05 workflow (REQ-05).
+    /// </summary>
+    public async Task<SourcingWaiverFactsRecord> BuildWaiverFactsAsync(
+        ProcureToPayDbContext context,
+        SourcingRfqOutcome rfq,
+        Guid prerequisiteId,
+        int to,
+        int recordedQuotations,
+        bool approved,
+        CancellationToken cancellationToken)
+    {
+        var current = await context.RfqVersions
+            .AsNoTracking()
+            .SingleAsync(
+                record => record.RfqId == rfq.RfqId && record.Version == rfq.Version, cancellationToken);
+        var lines = SourcingSerialization.ReadRfqLines(current.LinesJson);
+        // The waiver is bound to the real case of its prerequisite; creating a second case for the
+        // same subject would make the owner resolution ambiguous.
+        var prerequisite = await context.ApprovalPrerequisites
+            .AsNoTracking()
+            .SingleAsync(record => record.Id == prerequisiteId, cancellationToken);
+        var caseId = prerequisite.CaseId;
+        var prerequisiteTargets = ApprovalJsonPersistence.DeserializeTargets(prerequisite.TargetsJson)
+            .Select(target => target.Id)
+            .ToHashSet();
+        if (approved)
+        {
+            var caseRecord = await context.ApprovalCases
+                .SingleAsync(record => record.Id == caseId, cancellationToken);
+            caseRecord.Status = (int)ApprovalCaseStatus.Completed;
+        }
+
+        var targets = lines
+            .Where(line => prerequisiteTargets.Contains(line.LineRef.Id))
+            .Select(line => new SourcingWaiverTarget(
+            line.LineRef,
+            Enumerable.Range(0, recordedQuotations)
+                .Select(index => new SourcingContentRef(
+                    Guid.Parse($"{index + 1:x8}-0000-4000-8000-000000000001"),
+                    1,
+                    Digest('f')))
+                .ToArray())).ToArray();
+        var facts = new SourcingWaiverFacts(
+            OrganizationId,
+            current.ProcessId,
+            new SourcingContentRef(current.RfqId, current.Version, current.ContentDigest),
+            prerequisiteId,
+            "QUOTES",
+            Guid.NewGuid(),
+            Digest('c'),
+            Guid.NewGuid(),
+            Digest('d'),
+            Digest('e'),
+            2,
+            to,
+            1,
+            targets,
+            DateTimeOffset.UtcNow);
+        return new SourcingWaiverFactsRecord
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = OrganizationId,
+            ProcessId = current.ProcessId,
+            RfqId = current.RfqId,
+            RfqVersion = current.Version,
+            PrerequisiteId = prerequisiteId,
+            RequirementKey = "QUOTES",
+            BaseBundleId = facts.BaseBundleId,
+            BaseResultDigest = facts.BaseResultDigest,
+            PolicyVersionId = facts.PolicyVersionId,
+            PolicyContentDigest = facts.PolicyContentDigest,
+            ManifestDigest = facts.ManifestDigest,
+            From = facts.From,
+            To = facts.To,
+            Floor = facts.Floor,
+            TargetsJson = SourcingSerialization.WaiverTargets(facts.Targets),
+            DocumentJson = facts.CanonicalDocument(),
+            ContentDigest = facts.Digest,
+            CommandKey = $"waiver-fixture-{caseId:N}",
+            ApprovalCaseId = caseId,
+            ActorUserId = BuyerId,
+            OccurredAt = DateTimeOffset.UtcNow
+        };
     }
 
     /// <summary>Policy version the seeded request bundle points at; reused by the award fixtures.</summary>
@@ -394,7 +489,7 @@ public sealed class SourcingHarness : IAsyncDisposable
                     "internal://procure-to-pay",
                     "sourcing-domain",
                     "SOURCING_PO",
-                    $"sourcing-proposal-{proposalId:N}",
+                    $"sourcing-proposal-{proposalId:N}-v{proposalVersion}",
                     PolicySetVersionId,
                     "seed-sourcing-evaluation"),
                 cancellationToken);
@@ -415,7 +510,7 @@ public sealed class SourcingHarness : IAsyncDisposable
             SourceSnapshotDigest = proposalDigest,
             WorkloadIssuer = "internal://procure-to-pay",
             WorkloadClientId = SourcingCodes.QuotationStatusProcessorId,
-            SubmissionKey = $"sourcing-proposal-{proposalId:N}",
+            SubmissionKey = $"sourcing-proposal-{proposalId:N}-v{proposalVersion}",
             SubmissionFingerprint = Digest('6'),
             OriginatorId = BuyerId,
             RequesterId = BuyerId,

@@ -544,8 +544,14 @@ public sealed class SourcingPrerequisiteProcessor(
         }
 
         // The facts must still describe the trace: the counts they recorded are rechecked here, so a
-        // withdrawn or invalidated answer invalidates the waiver too (REQ-05).
+        // withdrawn or invalidated answer invalidates the waiver too (REQ-05). A tampered document
+        // never reduces the minimum either: it must rehash to its recorded digest.
         var facts = SourcingSerialization.ReadWaiverFacts(waiver.DocumentJson);
+        if (!string.Equals(facts.ComputeDigest(), waiver.ContentDigest, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
         if (facts.Targets.Any(target =>
                 !countsByTarget.TryGetValue(target.LineRef.Id, out var count) ||
                 count < target.ValidQuotations ||
@@ -905,8 +911,11 @@ public sealed class SourcingPrerequisiteProcessor(
         SourcingOwnerAttemptRecord attempt,
         QuotationStatusEvidence evidence,
         string contractVersion,
-        DateTimeOffset now) =>
-        new()
+        DateTimeOffset now)
+    {
+        var document = evidence.CanonicalDocument();
+        SourcingCodes.RequireCanonicalDocument(document);
+        return new SourcingOwnerEvidenceRecord
         {
             Id = Guid.NewGuid(),
             OrganizationId = attempt.OrganizationId,
@@ -915,18 +924,22 @@ public sealed class SourcingPrerequisiteProcessor(
             ContractVersion = contractVersion,
             Result = "SATISFIED",
             SignalKey = attempt.SignalKey,
-            DocumentJson = evidence.CanonicalDocument(),
+            DocumentJson = document,
             ContentDigest = evidence.Digest,
             ActorUserId = attempt.Id,
             OccurredAt = now
         };
+    }
 
     private static SourcingOwnerEvidenceRecord Evidence(
         SourcingOwnerAttemptRecord attempt,
         ProcurementStageEvidence evidence,
         string contractVersion,
-        DateTimeOffset now) =>
-        new()
+        DateTimeOffset now)
+    {
+        var document = evidence.CanonicalDocument();
+        SourcingCodes.RequireCanonicalDocument(document);
+        return new SourcingOwnerEvidenceRecord
         {
             Id = Guid.NewGuid(),
             OrganizationId = attempt.OrganizationId,
@@ -935,11 +948,12 @@ public sealed class SourcingPrerequisiteProcessor(
             ContractVersion = contractVersion,
             Result = "SATISFIED",
             SignalKey = attempt.SignalKey,
-            DocumentJson = evidence.CanonicalDocument(),
+            DocumentJson = document,
             ContentDigest = evidence.Digest,
             ActorUserId = attempt.Id,
             OccurredAt = now
         };
+    }
 
     /// <summary>Stable processor id registered for one owner, which is also its workload client.</summary>
     private static string ProcessorId(string adapterId) => adapterId switch

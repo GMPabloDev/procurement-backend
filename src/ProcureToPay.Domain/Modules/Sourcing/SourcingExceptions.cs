@@ -8,3 +8,10 @@ namespace ProcureToPay.Domain.Modules.Sourcing;
 /// waiver, recommendation, signal or award (SPEC 10 REQ-14, NFR-04).
 /// </summary>
 public sealed class SourcingDependencyUnavailableException(string message) : DomainException(message);
+
+/// <summary>
+/// One contractual limit of the sourcing surface was exceeded (lines per process, suppliers or
+/// quotations per RFQ, attachment bytes or a canonical document). It maps to
+/// <c>413 /problems/payload-too-large</c> and is rejected before anything is persisted (REQ-14).
+/// </summary>
+public sealed class SourcingPayloadTooLargeException(string message) : DomainException(message);

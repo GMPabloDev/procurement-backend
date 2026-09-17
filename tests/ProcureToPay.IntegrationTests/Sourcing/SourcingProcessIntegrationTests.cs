@@ -436,6 +436,30 @@ public sealed class SourcingProcessIntegrationTests
             DateTimeOffset.UtcNow,
             cancellationToken);
 
+    [Fact]
+    public async Task An_attachment_over_the_contractual_limit_is_a_payload_condition()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await SourcingHarness.StartAsync(cancellationToken);
+        await using var context = harness.CreateContext();
+        var quotations = harness.CreateQuotationService(context);
+
+        // REQ-14: 20 MiB is the contractual maximum for one attachment; the limit is a payload
+        // condition (413) and is decided before any row exists.
+        var exception = await Assert.ThrowsAsync<SourcingPayloadTooLargeException>(() =>
+            quotations.StageAttachmentAsync(
+                harness.OrganizationId,
+                Guid.NewGuid(),
+                harness.BuyerId,
+                "huge.pdf",
+                "application/pdf",
+                SourcingCodes.MaxAttachmentBytes + 1,
+                new MemoryStream(new byte[8]),
+                DateTimeOffset.UtcNow,
+                cancellationToken));
+        Assert.Contains("bytes", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static CommercialTerms Terms() => new(15, "EXW", "NET30", 365);
 
     private static EvaluationWeightSet Weights() => new(

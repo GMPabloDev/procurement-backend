@@ -458,7 +458,10 @@ public sealed class PurchaseRequestAttestationService(
 
         if (!response.Active)
         {
-            throw new DomainValidationException("A referenced entity or code is not usable for this request.");
+            // The message names the slot (assertion/reference family), never the reference itself.
+            throw new DomainValidationException(
+                $"The referenced {slot.SourceRef.Type} of '{PurchaseRequestCodes.Code(slot.AssertionType)}' " +
+                "is not usable for this request.");
         }
 
         return new PurchaseRequestReferenceAssertion(

@@ -119,6 +119,64 @@ public static class SourcingScenario
             DateTimeOffset.UtcNow,
             cancellationToken);
 
+    /// <summary>
+    /// Registers and validates a second supplier answer before the evaluation, so a supplier change
+    /// after an award can be built from the same frozen evaluation (REQ-09, REQ-12).
+    /// </summary>
+    public static async Task RegisterSupplierQuotationAsync(
+        SourcingHarness harness,
+        ProcureToPayDbContext context,
+        SourcingRfqOutcome rfq,
+        Guid supplierId,
+        string lineUnitPrice,
+        string otherLineUnitPrice,
+        CancellationToken cancellationToken)
+    {
+        var quotations = harness.CreateQuotationService(context);
+        var evidence = await ConfirmedEvidenceAsync(harness, context, rfq.RfqId, cancellationToken);
+        var registered = await quotations.RegisterQuotationAsync(
+            new RegisterQuotationCommand(
+                harness.OrganizationId,
+                rfq.RfqId,
+                supplierId,
+                1,
+                "PEN",
+                new CommercialTerms(15, "EXW", "NET30", 365),
+                DateTimeOffset.UtcNow.AddMinutes(-10),
+                [
+                    new QuotationLineDraft(
+                        harness.LineId, "2", lineUnitPrice,
+                        (2m * decimal.Parse(lineUnitPrice, System.Globalization.CultureInfo.InvariantCulture))
+                        .ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "0", "0", "0",
+                        (2m * decimal.Parse(lineUnitPrice, System.Globalization.CultureInfo.InvariantCulture))
+                        .ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "second supplier offer"),
+                    new QuotationLineDraft(
+                        harness.OtherLineId, "1", otherLineUnitPrice, otherLineUnitPrice,
+                        "0", "0", "0", otherLineUnitPrice, "second supplier offer")
+                ],
+                [evidence],
+                $"quote-{Guid.NewGuid():N}"),
+            harness.BuyerId,
+            "corr-quote-second",
+            DateTimeOffset.UtcNow.AddMinutes(-9),
+            cancellationToken);
+        await quotations.ReviewQuotationAsync(
+            new ReviewQuotationCommand(
+                harness.OrganizationId,
+                registered.QuotationId,
+                registered.Version,
+                QuotationReviewStatus.Valid,
+                [],
+                null,
+                $"review-{Guid.NewGuid():N}"),
+            harness.BuyerId,
+            "corr-review-second",
+            DateTimeOffset.UtcNow.AddMinutes(-8),
+            cancellationToken);
+    }
+
     /// <summary>Stages and confirms one evidence file of the RFQ, returning its exact reference (REQ-03).</summary>
     public static async Task<SourcingAttachmentRef> ConfirmedEvidenceAsync(
         SourcingHarness harness,

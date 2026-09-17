@@ -258,6 +258,19 @@ public static class SourcingCodes
     public static string Decimal(decimal value) =>
         value.ToString("0.############################", CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// REQ-14: a canonical document admits at most five mebibytes. The check happens before the row
+    /// is written, so an oversized document never reaches persistence.
+    /// </summary>
+    public static void RequireCanonicalDocument(string? document)
+    {
+        if (document is null || Encoding.UTF8.GetByteCount(document) > MaxCanonicalDocumentBytes)
+        {
+            throw new SourcingPayloadTooLargeException(
+                $"A canonical sourcing document admits at most {MaxCanonicalDocumentBytes} bytes.");
+        }
+    }
+
     /// <summary>Rounds to the contractual twelve-decimal scale of normalized amounts (REQ-08).</summary>
     public static decimal Decimal12(decimal value) =>
         decimal.Round(value, 12, MidpointRounding.ToEven);

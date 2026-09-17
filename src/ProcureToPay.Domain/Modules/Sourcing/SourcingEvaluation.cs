@@ -68,7 +68,13 @@ public sealed record SourcingFxSnapshot
     /// <c>sourcing-fx-snapshot/v1</c> digest. Every published property is part of the preimage, so a
     /// tampered rate, instant or reference is detectable without trusting the caller (REQ-08).
     /// </summary>
-    public string ComputeDigest()
+    public string ComputeDigest() => PolicyCanonicalizer.Hash(CanonicalDocument());
+
+    /// <summary>
+    /// Canonical <c>sourcing-fx-snapshot/v1</c> document: exactly the digest preimage, so a golden
+    /// fixture can publish its bytes and SHA-256 (SPEC 10 Datos y contratos).
+    /// </summary>
+    public string CanonicalDocument()
     {
         var preimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -81,7 +87,7 @@ public sealed record SourcingFxSnapshot
             ["source_currency"] = SourceCurrency,
             ["source_reference"] = SourceReference
         };
-        return PolicyCanonicalizer.Hash(PolicyCanonicalizer.SerializeCanonical(preimage));
+        return PolicyCanonicalizer.SerializeCanonical(preimage);
     }
 
     /// <summary><c>normalized_base_amount = source_amount * rate</c>, rounded to twelve decimals (REQ-08).</summary>

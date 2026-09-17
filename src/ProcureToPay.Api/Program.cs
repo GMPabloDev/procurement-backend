@@ -165,9 +165,9 @@ builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 
 // Productive workers (REQ-10): the outbox dispatcher and the reconciliation runs execute
-// automatically. Tests opt out and the host fails closed on a v1 baseline before starting.
-if (!builder.Environment.IsEnvironment("Testing") &&
-    builder.Configuration.GetValue("Approval:Worker:Enabled", true))
+// automatically. Tests opt out by default and may enable it explicitly to exercise the real
+// background sweep; the host fails closed on a v1 baseline before starting.
+if (builder.Configuration.GetValue("Approval:Worker:Enabled", !builder.Environment.IsEnvironment("Testing")))
 {
     builder.Services.AddHostedService<ApprovalWorkflowWorker>();
 }

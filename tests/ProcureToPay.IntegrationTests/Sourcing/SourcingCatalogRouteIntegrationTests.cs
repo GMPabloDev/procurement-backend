@@ -99,6 +99,17 @@ public sealed class SourcingCatalogRouteIntegrationTests
                 cancellationToken));
 
         await harness.SetRequestSupplierAsync(context, harness.SupplierId, 1, cancellationToken);
+        // An expired agreement is not an active snapshot: the route stays unavailable (REQ-06).
+        var expired = await Assert.ThrowsAnyAsync<DomainException>(() => harness.CreateCatalogRouteService(
+                context, agreementStatus: "EXPIRED")
+            .ConfirmAsync(
+                new ConfirmCatalogRouteCommand(
+                    harness.OrganizationId, process.ProcessId, process.Version, $"catalog-{Guid.NewGuid():N}"),
+                harness.BuyerId,
+                "corr-catalog",
+                DateTimeOffset.UtcNow,
+                cancellationToken));
+        Assert.Contains("agreement", expired.Message, StringComparison.OrdinalIgnoreCase);
         await Assert.ThrowsAsync<DomainConflictException>(() => harness.CreateCatalogRouteService(
                 context, preferred: false)
             .ConfirmAsync(
@@ -158,5 +169,40 @@ public sealed class SourcingCatalogRouteIntegrationTests
         await using var verification = harness.CreateContext();
         Assert.False(await verification.SourcingCatalogRoutes.AnyAsync(cancellationToken));
         Assert.False(await verification.SourcingTakeovers.AnyAsync(cancellationToken));
+    }
+
+    [Fact]
+    public async Task A_supplier_blocked_before_publication_never_receives_an_award()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await SourcingHarness.StartAsync(cancellationToken);
+        await using var context = harness.CreateContext();
+        var (process, _, proposal) = await SourcingScenario.BuildProposalAsync(harness, context, cancellationToken);
+        await SourcingScenario.SeedApprovalAsync(harness, context, proposal, cancellationToken);
+
+        // REQ-06/REQ-11: the approved catalogue/supplier is re-verified server-side before publishing;
+        // a blocked supplier blocks with 422 and no award or process transition is written.
+        await harness.BlockSupplierAsync(context, cancellationToken);
+        await Assert.ThrowsAsync<AwardNotEligibleException>(() => harness.CreateAwardService(context)
+            .PublishAsync(
+                new PublishAwardCommand(
+                    harness.OrganizationId, proposal.ProposalId, proposal.Version, process.Version, null,
+                    $"award-{Guid.NewGuid():N}", "Award the blocked supplier"),
+                harness.BuyerId,
+                "corr-award-blocked",
+                DateTimeOffset.UtcNow,
+                cancellationToken));
+
+        await using var verification = harness.CreateContext();
+        Assert.False(await verification.SourcingAwards.AnyAsync(cancellationToken));
+        Assert.False(await verification.SourcingAwardVersions.AnyAsync(cancellationToken));
+        Assert.False(await verification.SourcingCurrentAwardLines.AnyAsync(cancellationToken));
+        Assert.Equal(
+            (int)SourcingProcessState.Active,
+            (await verification.SourcingProcesses
+                .AsNoTracking()
+                .Where(record => record.Id == process.ProcessId)
+                .Select(record => record.State)
+                .SingleAsync(cancellationToken)));
     }
 }

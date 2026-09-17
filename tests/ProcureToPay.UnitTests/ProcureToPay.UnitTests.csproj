@@ -10,6 +10,8 @@
 
   <ItemGroup>
     <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Contractual goldens of SPEC 10: shared bytes, published with their SHA-256. -->
+    <Content Include="..\ContractFixtures\**\*" LinkBase="ContractFixtures" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

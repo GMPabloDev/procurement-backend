@@ -303,10 +303,9 @@ public static class SourcingSerialization
             "requirement_key", "rfq_ref", "targets", "to"
         ]);
         var targetNodes = item["targets"]!.AsArray();
-        var wrapper = new JsonObject
-        {
-            ["targets"] = new JsonArray(targetNodes.Select(node => node!.DeepClone()).ToArray())
-        };
+        // The targets document is an array; wrapping it in an object would break the reader contract.
+        var targetsJson = new JsonArray(targetNodes.Select(node => node!.DeepClone()).ToArray())
+            .ToJsonString(Options);
         return new SourcingWaiverFacts(
             Guid.Parse(item["organization_id"]!.GetValue<string>()),
             Guid.Parse(item["process_id"]!.GetValue<string>()),
@@ -321,7 +320,7 @@ public static class SourcingSerialization
             item["from"]!.GetValue<int>(),
             item["to"]!.GetValue<int>(),
             item["floor"]!.GetValue<int>(),
-            ReadWaiverTargets(wrapper.ToJsonString(Options)),
+            ReadWaiverTargets(targetsJson),
             DateTimeOffset.Parse(
                 item["computed_at"]!.GetValue<string>(), CultureInfo.InvariantCulture,
                 DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal));

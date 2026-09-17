@@ -197,6 +197,7 @@ public sealed class SourcingProposalService(ProcureToPayDbContext dbContext)
             distinctTerms[0],
             awardCandidate);
         var document = proposal.CanonicalDocument();
+        SourcingCodes.RequireCanonicalDocument(document);
         var digest = PolicyCanonicalizer.Hash(document);
         var manifest = new SourcingCompletenessManifest(
             SourcingCodes.PolicyFactProviderId,
@@ -214,6 +215,8 @@ public sealed class SourcingProposalService(ProcureToPayDbContext dbContext)
             SourcingCatalogSnapshotSet.ComputeDigest(command.OrganizationId, root.Id, version, []),
             awardCandidate.ComputeDigest(),
             PolicyCanonicalizer.Hash(PolicyCanonicalizer.SerializeCanonical(SourcingCanonicalizer.Terms(distinctTerms[0]))));
+        var manifestDocument = manifest.CanonicalDocument();
+        SourcingCodes.RequireCanonicalDocument(manifestDocument);
         dbContext.SourcingProposalVersions.Add(new SourcingProposalVersionRecord
         {
             ProposalId = root.Id,
@@ -239,7 +242,7 @@ public sealed class SourcingProposalService(ProcureToPayDbContext dbContext)
             TermsJson = SourcingSerialization.Terms(distinctTerms[0]),
             DocumentJson = document,
             ContentDigest = digest,
-            ManifestJson = manifest.CanonicalDocument(),
+            ManifestJson = manifestDocument,
             ManifestDigest = manifest.ComputeDigest(),
             State = (int)SourcingProposalState.Draft,
             CommandKey = command.CommandKey,
@@ -396,10 +399,13 @@ public sealed class SourcingProposalService(ProcureToPayDbContext dbContext)
             .SingleAsync(
                 record => record.RequestId == requestId && record.RequestVersion == requestVersion,
                 cancellationToken);
+        // The facts digest published by the persisted bundle is the one Policy compares against its
+        // own recomputation; the input digest is only the digest of the input document (REQ-10).
+        var rehydrated = PolicyEvaluationBundleRehydrator.FromJson(bundle.BundleJson);
         return new SourcingPolicyEvaluationRef(
             bundle.EvaluationSequence,
             bundle.Id,
-            bundle.InputDigest,
+            rehydrated.FactsDigest ?? bundle.InputDigest,
             bundle.InputDigest,
             manifest.PolicyManifestDigest,
             bundle.PolicyContentDigest,
