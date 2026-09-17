@@ -5,6 +5,7 @@ using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 using ProcureToPay.Infrastructure.Persistence.ReferenceCatalogs;
+using ProcureToPay.Infrastructure.Persistence.Sourcing;
 using ProcureToPay.Infrastructure.Persistence.Suppliers;
 
 namespace ProcureToPay.Infrastructure.Persistence;
@@ -110,6 +111,36 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<SupplierAuditRecord> SupplierAuditRecords => Set<SupplierAuditRecord>();
     public DbSet<SupplierApprovalResultRecord> SupplierApprovalResults => Set<SupplierApprovalResultRecord>();
     public DbSet<SupplierStatusOutboxRecord> SupplierStatusOutbox => Set<SupplierStatusOutboxRecord>();
+    public DbSet<SourcingProcessRecord> SourcingProcesses => Set<SourcingProcessRecord>();
+    public DbSet<SourcingProcessLineRecord> SourcingProcessLines => Set<SourcingProcessLineRecord>();
+    public DbSet<SourcingTakeoverRecord> SourcingTakeovers => Set<SourcingTakeoverRecord>();
+    public DbSet<RfqRecord> Rfqs => Set<RfqRecord>();
+    public DbSet<RfqVersionRecord> RfqVersions => Set<RfqVersionRecord>();
+    public DbSet<RfqDeadlineExtensionRecord> RfqDeadlineExtensions => Set<RfqDeadlineExtensionRecord>();
+    public DbSet<QuotationRecord> Quotations => Set<QuotationRecord>();
+    public DbSet<QuotationVersionRecord> QuotationVersions => Set<QuotationVersionRecord>();
+    public DbSet<QuotationLineScopeRecord> QuotationLineScopes => Set<QuotationLineScopeRecord>();
+    public DbSet<SourcingAttachmentRecord> SourcingAttachments => Set<SourcingAttachmentRecord>();
+    public DbSet<SourcingCommandRecord> SourcingCommands => Set<SourcingCommandRecord>();
+    public DbSet<SourcingAuditRecord> SourcingAuditRecords => Set<SourcingAuditRecord>();
+    public DbSet<SourcingOutboxRecord> SourcingOutbox => Set<SourcingOutboxRecord>();
+    public DbSet<SourcingEvaluationRecord> SourcingEvaluations => Set<SourcingEvaluationRecord>();
+    public DbSet<QuoteEvaluationVersionRecord> QuoteEvaluationVersions => Set<QuoteEvaluationVersionRecord>();
+    public DbSet<SourcingFxSnapshotRecord> SourcingFxSnapshots => Set<SourcingFxSnapshotRecord>();
+    public DbSet<SourcingManualScoreRecord> SourcingManualScores => Set<SourcingManualScoreRecord>();
+    public DbSet<SourcingSelectionRecord> SourcingSelections => Set<SourcingSelectionRecord>();
+    public DbSet<SourcingSelectionVersionRecord> SourcingSelectionVersions => Set<SourcingSelectionVersionRecord>();
+    public DbSet<SourcingWaiverFactsRecord> SourcingWaiverFacts => Set<SourcingWaiverFactsRecord>();
+    public DbSet<SourcingProposalRecord> SourcingProposals => Set<SourcingProposalRecord>();
+    public DbSet<SourcingProposalVersionRecord> SourcingProposalVersions => Set<SourcingProposalVersionRecord>();
+    public DbSet<SourcingAwardRecord> SourcingAwards => Set<SourcingAwardRecord>();
+    public DbSet<SourcingAwardVersionRecord> SourcingAwardVersions => Set<SourcingAwardVersionRecord>();
+    public DbSet<SourcingCurrentAwardLineRecord> SourcingCurrentAwardLines => Set<SourcingCurrentAwardLineRecord>();
+    public DbSet<SourcingCatalogRouteRecord> SourcingCatalogRoutes => Set<SourcingCatalogRouteRecord>();
+    public DbSet<SourcingOwnerAttemptRecord> SourcingOwnerAttempts => Set<SourcingOwnerAttemptRecord>();
+    public DbSet<SourcingOwnerEvidenceRecord> SourcingOwnerEvidence => Set<SourcingOwnerEvidenceRecord>();
+    public DbSet<SourcingPrerequisiteProcessorRegistrationRecord> SourcingPrerequisiteProcessorRegistrations =>
+        Set<SourcingPrerequisiteProcessorRegistrationRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -175,6 +206,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigureBudgetPrerequisiteProcessorRegistration(modelBuilder);
         ConfigureBudgetAudit(modelBuilder);
         SupplierModelConfiguration.Configure(modelBuilder);
+        SourcingModelConfiguration.Configure(modelBuilder);
         base.OnModelCreating(modelBuilder);
     }
 

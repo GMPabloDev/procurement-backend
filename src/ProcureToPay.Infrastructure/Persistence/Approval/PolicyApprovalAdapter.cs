@@ -132,6 +132,9 @@ public sealed class PolicyApprovalAdapter(
                 request,
                 budgetDemandBuilder: null,
                 supplierPartitioning: false,
+                SubjectType,
+                Operation,
+                SnapshotDigest(record, bundle, SubjectType),
                 CancellationToken.None).GetAwaiter().GetResult();
 
     /// <summary>
@@ -144,7 +147,27 @@ public sealed class PolicyApprovalAdapter(
         PolicyEvaluationBundleRecord record,
         ApprovalSubmissionRequest request,
         CancellationToken cancellationToken) =>
-        MapCore(dbContext, bundle, material, record, request, budgetDemandBuilder, IsV4, cancellationToken);
+        MapCore(
+            dbContext, bundle, material, record, request, budgetDemandBuilder, IsV4, SubjectType, Operation,
+            SnapshotDigest(record, bundle, SubjectType), cancellationToken);
+
+    /// <summary>
+    /// Mapping under another published identity (SPEC 10 REQ-11): the same control projection, targets
+    /// and dependencies, with the subject type, the operation and the source snapshot digest the
+    /// owning spec publishes. The mapping never invents a target or a parameter for the new subject.
+    /// </summary>
+    public Task<ApprovalSubmission> MapAsAsync(
+        PolicyEvaluationBundle bundle,
+        IReadOnlyDictionary<Guid, ApprovalTarget> material,
+        PolicyEvaluationBundleRecord record,
+        ApprovalSubmissionRequest request,
+        string subjectType,
+        string operation,
+        string sourceSnapshotDigest,
+        CancellationToken cancellationToken) =>
+        MapCore(
+            dbContext, bundle, material, record, request, budgetDemandBuilder, IsV4, subjectType, operation,
+            sourceSnapshotDigest, cancellationToken);
 
     private static async Task<ApprovalSubmission> MapCore(
         ProcureToPayDbContext? dbContext,
@@ -154,6 +177,9 @@ public sealed class PolicyApprovalAdapter(
         ApprovalSubmissionRequest request,
         IBudgetDemandBuilder? budgetDemandBuilder,
         bool supplierPartitioning,
+        string subjectType,
+        string operation,
+        string sourceSnapshotDigest,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(bundle);
@@ -214,11 +240,11 @@ public sealed class PolicyApprovalAdapter(
         return new ApprovalSubmission(
             request.SubmissionKey,
             request.OrganizationId,
-            SubjectType,
+            subjectType,
             request.SubjectId,
             request.SubjectVersion,
-            Operation,
-            SnapshotDigest(record, bundle),
+            operation,
+            sourceSnapshotDigest,
             request.RequesterId,
             request.OriginatorId,
             requirements,
@@ -771,7 +797,10 @@ public sealed class PolicyApprovalAdapter(
             ("targets", ApprovalRequirementDefinition.TargetsValue(targets)),
             ("type", ApprovalCanonicalJson.String(control.Type.ToString().ToUpperInvariant()))));
 
-    private static string SnapshotDigest(PolicyEvaluationBundleRecord record, PolicyEvaluationBundle bundle) =>
+    private static string SnapshotDigest(
+        PolicyEvaluationBundleRecord record,
+        PolicyEvaluationBundle bundle,
+        string subjectType) =>
         ApprovalCanonicalJson.Digest(ApprovalCanonicalJson.Object(
             ("base_result_digest", ApprovalCanonicalJson.String(bundle.ResultDigest)),
             ("bundle_id", ApprovalCanonicalJson.String(record.Id)),
@@ -782,7 +811,7 @@ public sealed class PolicyApprovalAdapter(
             ("policy_content_digest", ApprovalCanonicalJson.String(bundle.PolicyContentDigest)),
             ("policy_version_id", ApprovalCanonicalJson.String(record.PolicySetVersionId)),
             ("subject_id", ApprovalCanonicalJson.String(record.SubjectId)),
-            ("subject_type", ApprovalCanonicalJson.String(SubjectType)),
+            ("subject_type", ApprovalCanonicalJson.String(subjectType)),
             ("subject_version", ApprovalCanonicalJson.Number(record.SubjectVersion))));
 
     /// <summary>

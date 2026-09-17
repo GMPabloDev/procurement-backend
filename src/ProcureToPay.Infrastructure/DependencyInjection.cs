@@ -318,6 +318,46 @@ public static class DependencyInjection
         services.AddSingleton<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierProcessorIdentity>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.Suppliers.SupplierPrerequisiteProcessor>();
 
+        // SPEC 10: sourcing processes, RFQ lifecycle, quotation evidence and the quotation count.
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingProcessService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingQuotationService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingQuotationQueries>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingEvaluationService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingSelectionService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingWaiverService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingProposalService>();
+        // SPEC 10 REQ-06: the catalogue route consumes the approved supplier fact owner of SPEC 09.
+        services.AddScoped(provider =>
+            new ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingCatalogRouteService(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<ProcureToPay.Application.Abstractions.IApprovedSupplierFactOwner>()));
+        // SPEC 10 REQ-12/REQ-14: the award publisher is the same object that verifies consumption
+        // in-process, so a consumer and the publisher can never disagree about eligibility.
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingAwardService>();
+        // SPEC 10 REQ-13: the real processors of the two PROCUREMENT-stage owners.
+        services.AddSingleton<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingProcessorIdentity>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingPrerequisiteProcessor>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.IAwardConsumptionVerifier>(
+            provider => provider.GetRequiredService<
+                ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingAwardService>());
+        // SPEC 10 REQ-11: the proposal approval adapter reuses the SPEC 05 control projection under
+        // the published sourcing identity.
+        services.AddScoped<IApprovalSubmissionAdapter>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingProposalApprovalAdapter(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                new PolicyApprovalAdapter(
+                    provider.GetRequiredService<ProcureToPayDbContext>(),
+                    PolicyApprovalAdapter.ContractVersionV4)));
+        // SPEC 10 REQ-10: the typed sourcing fact provider and its exact-one registry.
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.ISourcingPolicyFactProvider>(
+            provider => new ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingPolicyFactProvider(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<IPolicyFactProviderRegistry>()));
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.Sourcing.ISourcingPolicyFactProviderRegistry>(
+            provider => new ProcureToPay.Infrastructure.Persistence.Sourcing.SourcingPolicyFactProviderRegistry(
+                provider.GetServices<
+                    ProcureToPay.Infrastructure.Persistence.Sourcing.ISourcingPolicyFactProvider>()));
+
         services.AddDefaultAWSOptions(configuration.GetAWSOptions());
         services.AddAWSService<IAmazonS3>();
         services.AddSingleton(S3StorageOptions.FromConfiguration(configuration));

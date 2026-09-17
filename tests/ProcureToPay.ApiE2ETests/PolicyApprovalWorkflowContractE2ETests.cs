@@ -39,6 +39,9 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
     private const string WorkloadIssuer = "https://keycloak.test/realms/procure-to-pay";
     private const string WorkloadClient = "procurement-api";
     private const string PolicyEngineClient = "policy-engine";
+    /// <summary>Operation dispatched to the purchase request evaluation (SPEC 06 REQ-07).</summary>
+    private const string EvaluationOperation = "REQUEST_EVALUATE";
+
     private const string QuotationOwnerClient = "quotation-status-owner";
     private const string BudgetOwnerClient = "budget-check-owner";
     private const string DocumentOwnerClient = "supporting-document-owner";
@@ -89,7 +92,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 subjectType = "PURCHASE_REQUEST",
                 subjectId = SubjectId,
                 subjectVersion = 1,
-                operation = "PURCHASE_REQUEST",
+                operation = EvaluationOperation,
                 evaluationKey = "contract-evaluation"
             },
             cancellationToken))
@@ -396,8 +399,10 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
         using (var waiver = await workload.PostAsJsonAsync(
             $"/api/v1/policies/evaluations/{evaluationId}/quotation-waiver", waiverBody, cancellationToken))
         {
-            Assert.Equal(HttpStatusCode.OK, waiver.StatusCode);
-            var body = await waiver.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+            // The failure message carries the Problem Details so a contract break is diagnosable.
+            var failure = await waiver.Content.ReadAsStringAsync(cancellationToken);
+            Assert.True(waiver.StatusCode == HttpStatusCode.OK, failure);
+            var body = JsonDocument.Parse(failure).RootElement.Clone();
             reducedId = body.GetProperty("id").GetGuid();
             var reduced = body.GetProperty("controls").EnumerateArray()
                 .Single(control => control.GetProperty("requirementKey").GetString() == "RFQ");
@@ -461,7 +466,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 subjectType = "PURCHASE_REQUEST",
                 subjectId = SubjectId,
                 subjectVersion = 1,
-                operation = "PURCHASE_REQUEST",
+                operation = EvaluationOperation,
                 evaluationKey = "ownerless-evaluation"
             },
             cancellationToken))
@@ -508,7 +513,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
                 subjectType = "PURCHASE_REQUEST",
                 subjectId = SubjectId,
                 subjectVersion = 1,
-                operation = "PURCHASE_REQUEST",
+                operation = EvaluationOperation,
                 evaluationKey = "tampered-evaluation"
             },
             cancellationToken))
@@ -716,7 +721,7 @@ public sealed class PolicyApprovalWorkflowContractE2ETests
     private sealed class ContractFactProvider(Guid organizationId, Guid legalEntityId) : IPolicyFactProvider
     {
         public string SubjectType => "PURCHASE_REQUEST";
-        public string Operation => "PURCHASE_REQUEST";
+        public string Operation => EvaluationOperation;
         public string ProviderId => "contract-fact-provider";
         public string ContractVersion => "v1";
 

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Budget;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
+using ProcureToPay.Domain.Modules.Sourcing;
 using ProcureToPay.Domain.Modules.Suppliers;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence.Policy;
@@ -151,6 +152,24 @@ public sealed class ApiExceptionHandler(
                 Title = "Supplier dependency unavailable",
                 Type = "/problems/supplier-dependency-unavailable",
                 Detail = supplierDependencyException.Message
+            },
+            // SPEC 10 REQ-14: an absent, ambiguous, corrupted or unavailable sourcing dependency
+            // never produces a quotation, waiver, recommendation, signal or award.
+            SourcingDependencyUnavailableException sourcingDependencyException => new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Sourcing dependency unavailable",
+                Type = "/problems/sourcing-dependency-unavailable",
+                Detail = sourcingDependencyException.Message
+            },
+            // SPEC 10 REQ-14: a contractual sourcing limit is a payload condition, never a 400 that
+            // hides the documented maximum.
+            SourcingPayloadTooLargeException sourcingTooLargeException => new ProblemDetails
+            {
+                Status = StatusCodes.Status413PayloadTooLarge,
+                Title = "Payload too large",
+                Type = "/problems/payload-too-large",
+                Detail = sourcingTooLargeException.Message
             },
             PolicyDependencyUnavailableException dependencyException => new ProblemDetails
             {
