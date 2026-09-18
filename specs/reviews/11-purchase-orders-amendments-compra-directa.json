@@ -1,0 +1,124 @@
+{
+  "format": "sdd-review/v1",
+  "spec": "11-purchase-orders-amendments-compra-directa.md",
+  "revision": 1,
+  "digest": "3df90fea3a48e59ec84b57a248c6d29cd5c7eae2a10b865ea44f7d69aa3f5cf9",
+  "dependencies": {
+    "01-organizacion-identidad-roles-autoridades-aprobacion.md": "c5f194a4dca2597aff6cbbace581b1f9212197416c2918559e1a124484de458e",
+    "02-motor-de-politicas.md": "63fec425400bc197524e23cb3a130ab2d7d64f6eba823944b3ebee8923e6d688",
+    "03-approval-workflow.md": "f0b61a917c4c4b4adcaee598c75352ef93d03c3bf25b76d15f80177ba3446234",
+    "04-delegacion-y-evolucion-de-aprobaciones.md": "0ffbc76e8ef5a1c88d251ebad74a99d6cb45cebffd0b6f553fddc5210049933f",
+    "05-integracion-policy-approval-workflow.md": "001c559d72845b0f77919df50bad5e7b74eeecb5e6dc8921d52bba932cb20f70",
+    "06-purchase-requests-versionadas.md": "f8c570320cc1093698b8b2998c83eee168335c5345236a2fe457755bf4a41dd8",
+    "07-catalogos-referencia-purchase-requests.md": "64daf9c60d28f2d9a2dc6c286a8e2f12d83dd97a01a7651a3a72e73681f0eed1",
+    "08-budgets-movimientos-presupuestarios.md": "f381a0a03d09ebf344504cc47a64ac6ebcbe20078d143b57af4226012c883326",
+    "09-supplier-master-catalogo-proveedores-homologados.md": "338d7c40ad2d45979e5b053006f3a2f2283f0e9bfc0faa5bd1f0e144754f7faa",
+    "10-sourcing-rfq-cotizaciones-award.md": "6172c3d26718271b05ad262636f6410fc0d8a5d70a2a4e868ba136a111a070f3"
+  },
+  "verdict": "PASS",
+  "mode": "full",
+  "baseline_digest": null,
+  "review_count": 3,
+  "reviewer": "sdd-contract-reviewer (openai-codex/gpt-5.6-luna, effort high): ronda 1 full, ronda 2 delta y ronda 3 acotada a R12-R13 autorizada por el usuario; PASS final.",
+  "reviewed_at": "2026-09-17",
+  "coverage": {
+    "behavior": "REQ-01..REQ-12 y CA-01..CA-10 revisados: PO draft/approval/issue, amendments, Direct Purchase, documents y estados observables quedaron coherentes tras resolver R1-R13.",
+    "boundaries": "Award/PR/Policy/Approval/Budget/Supplier/storage y takeovers se contrastaron con SPEC 05/06/08/09/10; quedaron cerrados ordering evidence, claim/recovery, producer v1, processor registration y provenance de terms.",
+    "failure_modes": "Se cubrieron claim duplicado, Supplier stale, cancelación, takeover por línea, reversas, reserva 0/2, crash/retry, leases/fencing, documents duplicados/corruptos y recuperación sin camino muerto.",
+    "acceptance": "La trazabilidad REQ/NFR→CA→T pasa specctl check; CA-01..CA-10 incluyen concurrencia, contratos/goldens, E2E cross-module, health, migración y negativos realizables.",
+    "implementation_readiness": "Se contrastaron SourcingAwardService, Budget registry/transition, PolicyApprovalAdapter, DI, health y tests existentes; el código aún no implementa PO/documents, lo que no contradice el contrato. La ronda final verificó solo R12-R13 y sus efectos próximos."
+  },
+  "findings": [
+    {
+      "id": "R1",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Award/PR no aportaban delivery y el claim no podía crear un DRAFT válido.",
+      "resolution": "REQ-01/02 y CA-02 permiten delivery null/assignments vacíos solo en DRAFT y exigen una sucesora completa antes de submit."
+    },
+    {
+      "id": "R2",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Award line no contiene subtotal, taxes, charges ni discounts exigidos por PO.",
+      "resolution": "REQ-02/CA-02 fijan transformación Release 1 reproducible: subtotal=gross y taxes/charges/discounts=0, sin afirmar reconstrucción tributaria."
+    },
+    {
+      "id": "R3",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Las refs del award no ligaban de forma exacta el case Approval de la PR ni sus authorities.",
+      "resolution": "REQ-03 publica purchase-request-ordering-evidence/v1 con case, results, requirements, authorities y budget evidence server-side; CA-04 prueba 0/2/stale/insuficiente."
+    },
+    {
+      "id": "R4",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Direct Purchase carecía de expected version, command key/fingerprint y case binding.",
+      "resolution": "direct-purchase-command/v1, authorization_fingerprint y authorization v1 ligan key, PR version, targets, case, ordering evidence y fuentes server-side; CA-07 cubre replay/conflict."
+    },
+    {
+      "id": "R5",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "El takeover request-wide existente no podía representar subsets ni rutas mixtas por línea.",
+      "resolution": "REQ-10 define purchase-request-line-takeover/v1, migración desde Sourcing process lines, resolver exact-one y preflight ante solapamiento; CA-09 lo verifica."
+    },
+    {
+      "id": "R6",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "Un award no reclamado con Supplier stale quedaba bloqueado sin sucesión o cancelación soportada.",
+      "resolution": "REQ-01 añade award-recovery/v1 REOPEN/CANCEL con expected versions, motivo, ausencia de claim y nueva Policy/Approval obligatoria; CA-01 cubre ambas rutas."
+    },
+    {
+      "id": "R7",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "previous_values/new_values del amendment no tenían schema verificable.",
+      "resolution": "purchase-order-amendment/v1 usa previous/replacement purchase-order-line/v1 completos, responsibility changes tipados y deltas derivados; CA-06 fija los negativos."
+    },
+    {
+      "id": "R8",
+      "severity": "question",
+      "status": "resolved",
+      "evidence": "Vendor terms exigía provenance sin refs de Supplier/Award/PR/Policy cerradas.",
+      "resolution": "vendor-terms-snapshot/v1 distingue AWARD/DIRECT_PURCHASE y cierra supplier content, award, request, policy y catalog refs/nulabilidad; CA-03 prueba reproducción."
+    },
+    {
+      "id": "R9",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "No existía registration, DI/worker ni health contractual para supporting-document-owner/v1.",
+      "resolution": "REQ-08 y T-07 definen SupportingDocumentProcessorRegistration, binding workload, hosted worker separado, health/backlog y pruebas con processor real; CA-08 lo cubre."
+    },
+    {
+      "id": "R10",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "La spec registraba budget-transition-command/v1 donde el registry existente resuelve contract_version literal v1.",
+      "resolution": "REQ-04 y Budget contract registran contract_version=v1 y conservan command_version=budget-transition-command/v1; CA-05 usa esa frontera."
+    },
+    {
+      "id": "R11",
+      "severity": "question",
+      "status": "resolved",
+      "evidence": "Documento duplicado no tenía identidad ni regla de conteo.",
+      "resolution": "REQ-08/evidence/CA-08 cuentan una vez por target+sha256+length aunque cambien root, nombre o tipo permitido."
+    },
+    {
+      "id": "R12",
+      "severity": "blocker",
+      "status": "resolved",
+      "evidence": "El resultado del bloque 1 afirmaba assignments completos en el DRAFT inicial y contradecía REQ-01/02.",
+      "resolution": "El resultado distingue DRAFT inicial con takeover de la sucesora DRAFT completada por T-02; la tercera ronda autorizada verificó coherencia con CA-02."
+    },
+    {
+      "id": "R13",
+      "severity": "question",
+      "status": "resolved",
+      "evidence": "REQ-08 deduplicaba entre tipos pero CA-08 sugería conteo por tipo y counts_by_target no podía representarlo.",
+      "resolution": "REQ-08/evidence/CA-08 aplican minimum_count a bytes únicos por target sobre la unión de tipos permitidos, sin cuota por tipo; tercera ronda autorizada PASS."
+    }
+  ]
+}
