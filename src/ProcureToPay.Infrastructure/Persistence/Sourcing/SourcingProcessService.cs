@@ -2,10 +2,12 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.PurchaseOrders;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
 using ProcureToPay.Domain.Modules.Sourcing;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence.Approval;
+using ProcureToPay.Infrastructure.Persistence.PurchaseOrders;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
 
 namespace ProcureToPay.Infrastructure.Persistence.Sourcing;
@@ -74,8 +76,17 @@ public sealed record SourcingRfqOutcome(
 /// </summary>
 public sealed class SourcingProcessService(
     ProcureToPayDbContext dbContext,
-    SourcingPrerequisiteProcessor? prerequisiteProcessor = null)
+    SourcingPrerequisiteProcessor? prerequisiteProcessor = null,
+    PurchaseRequestLineTakeoverService? takeovers = null)
 {
+    /// <summary>
+    /// SPEC 11 REQ-10: the per-line takeover table is authoritative for new operations. A caller
+    /// that does not inject the service still gets the real one over its own context, so no call
+    /// path can silently fall back to the legacy request-wide row.
+    /// </summary>
+    private readonly PurchaseRequestLineTakeoverService takeovers = takeovers ??
+        new PurchaseRequestLineTakeoverService(dbContext);
+
     /// <summary>
     /// Owners of the two PROCUREMENT-stage prerequisites this module satisfies itself. Every other
     /// prerequisite of the current case precedes them, so it must already be satisfied (REQ-01).
@@ -381,17 +392,41 @@ public sealed class SourcingProcessService(
         process.State = (int)SourcingProcessState.Active;
         process.Version += 1;
         process.UpdatedAt = now;
-        dbContext.SourcingTakeovers.Add(new SourcingTakeoverRecord
+        // SPEC 11 REQ-10: the takeover of a new operation is recorded per line, so a subset can be
+        // fenced without locking the whole request. The legacy request-wide row stays historical.
         {
-            Id = Guid.NewGuid(),
-            OrganizationId = command.OrganizationId,
-            RequestId = process.RequestId,
-            RequestVersion = process.RequestVersion,
-            ProcessId = process.Id,
-            ProcessVersion = process.Version,
-            ActorUserId = actorUserId,
-            RegisteredAt = now
-        });
+            var processLines = await dbContext.SourcingProcessLines
+                .AsNoTracking()
+                .Where(line => line.ProcessId == process.Id)
+                .OrderBy(line => line.LineId)
+                .ToArrayAsync(cancellationToken);
+            var requestDigest = await dbContext.PurchaseRequestVersions
+                .AsNoTracking()
+                .Where(row => row.RequestId == process.RequestId && row.Version == process.RequestVersion)
+                .Select(row => row.ContentDigest)
+                .SingleAsync(cancellationToken);
+            await takeovers.AcquireAsync(
+                command.OrganizationId,
+                process.RequestId,
+                process.RequestVersion,
+                requestDigest,
+                processLines
+                    .Select(line => new PurchaseRequestLineTakeoverService.TakeoverLine(
+                        line.LineId, line.LineVersion, line.LineContentDigest))
+                    .ToArray(),
+                PurchaseRequestLineOwner.Sourcing,
+                process.Id,
+                process.Version,
+                SourcingCanonicalizer.RefSetDigest(processLines
+                    .Select(line => new SourcingContentRef(
+                        line.LineId, line.LineVersion, line.LineContentDigest))),
+                "SOURCING",
+                predecessorConsumerId: null,
+                predecessorConsumerVersion: null,
+                actorUserId.ToString("D"),
+                now,
+                cancellationToken);
+        }
         AddCommand(
             command.OrganizationId, actorUserId, SourcingCommandFingerprints.OpenRfq,
             command.CommandKey, fingerprint, rfq.Id, version.Record.Version, now);
@@ -684,6 +719,19 @@ public sealed class SourcingProcessService(
             takeover.ReleaseReason = reason;
         }
 
+        {
+            // SPEC 11 REQ-10: a pre-award cancellation releases every per-line takeover of the
+            // process so another consumer can take the lines over.
+            await takeovers.ReleaseAsync(
+                command.OrganizationId,
+                "SOURCING",
+                process.Id,
+                TakeoverState.Released,
+                reason,
+                now,
+                cancellationToken);
+        }
+
         var rfq = await dbContext.Rfqs
             .SingleOrDefaultAsync(record => record.ProcessId == process.Id, cancellationToken);
         if (rfq is not null)
@@ -732,14 +780,21 @@ public sealed class SourcingProcessService(
     public async Task<bool> HasLiveTakeoverAsync(
         Guid organizationId,
         Guid requestId,
-        CancellationToken cancellationToken = default) =>
-        await dbContext.SourcingTakeovers
+        CancellationToken cancellationToken = default)
+    {
+        if (await takeovers.HasActiveAsync(organizationId, requestId, cancellationToken))
+        {
+            return true;
+        }
+
+        return await dbContext.SourcingTakeovers
             .AsNoTracking()
             .AnyAsync(
                 takeover => takeover.OrganizationId == organizationId &&
                             takeover.RequestId == requestId &&
                             takeover.ReleasedAt == null,
                 cancellationToken);
+    }
 
     public async Task<SourcingProcessView> GetProcessAsync(
         Guid organizationId,
@@ -763,7 +818,8 @@ public sealed class SourcingProcessService(
             .AsNoTracking()
             .AnyAsync(
                 takeover => takeover.ProcessId == processId && takeover.ReleasedAt == null,
-                cancellationToken);
+                cancellationToken) ||
+            await takeovers.HasActiveAsync(process.OrganizationId, process.RequestId, cancellationToken);
         return new SourcingProcessView(
             process.Id,
             process.OrganizationId,

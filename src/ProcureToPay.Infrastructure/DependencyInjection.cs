@@ -358,6 +358,22 @@ public static class DependencyInjection
                 provider.GetServices<
                     ProcureToPay.Infrastructure.Persistence.Sourcing.ISourcingPolicyFactProvider>()));
 
+        // SPEC 11: Purchase Orders, award consumption claim, per-line takeover and the first
+        // productive COMMIT + PURCHASE_ORDER producer of the Budget ledger.
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseRequestLineTakeoverService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderClaimService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderDraftService>();
+        services.AddScoped<
+            ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseRequestOrderingEvidenceService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderBudgetProducer>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderIssuanceService>();
+        services.AddScoped<ProcureToPay.Application.Abstractions.IApprovalSubmissionAdapter>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderApprovalAdapter(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<
+                    ProcureToPay.Infrastructure.Persistence.PurchaseOrders
+                        .PurchaseRequestOrderingEvidenceService>()));
+
         services.AddDefaultAWSOptions(configuration.GetAWSOptions());
         services.AddAWSService<IAmazonS3>();
         services.AddSingleton(S3StorageOptions.FromConfiguration(configuration));

@@ -59,8 +59,18 @@ public sealed record PurchaseRequestView(
 /// </summary>
 public sealed class PurchaseRequestPersistenceService(
     ProcureToPayDbContext dbContext,
-    ILogger<PurchaseRequestPersistenceService> logger)
+    ILogger<PurchaseRequestPersistenceService> logger,
+    ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseRequestLineTakeoverService? takeovers = null)
 {
+    /// <summary>
+    /// SPEC 11 REQ-10: the per-line takeover fence always applies, even when a caller builds this
+    /// service without injecting the takeover service.
+    /// </summary>
+    private readonly ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseRequestLineTakeoverService
+        takeovers = takeovers ??
+            new ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseRequestLineTakeoverService(
+                dbContext);
+
     public const string CommandCreate = "CREATE";
     public const string CommandRevision = "REVISION";
     public const string CommandCancel = "CANCEL";
@@ -800,6 +810,46 @@ public sealed class PurchaseRequestPersistenceService(
         {
             throw new DomainConflictException(
                 "The purchase request is consumed by a live sourcing takeover and cannot change.");
+        }
+
+        // SPEC 11 REQ-10: the per-line takeover table replaces the request-wide lock for new
+        // operations, and an issued Purchase Order, a live claim or an authorized direct purchase
+        // blocks the revision or cancellation of the request with an opaque conflict code.
+        {
+            var organizationId = await dbContext.PurchaseRequests
+                .AsNoTracking()
+                .Where(request => request.Id == requestId)
+                .Select(request => request.OrganizationId)
+                .SingleAsync(cancellationToken);
+            if (await takeovers.HasActiveAsync(organizationId, requestId, cancellationToken))
+            {
+                throw new DomainConflictException("PR_REQUEST_CONSUMED");
+            }
+
+            var poIds = await dbContext.PurchaseOrders
+                .AsNoTracking()
+                .Where(order => order.RequestId == requestId)
+                .Select(order => order.Id)
+                .ToArrayAsync(cancellationToken);
+            var liveClaim = poIds.Length != 0 && await dbContext.AwardConsumptionClaims
+                .AsNoTracking()
+                .AnyAsync(claim => poIds.Contains(claim.PoId) && claim.State < 3, cancellationToken);
+            var livePurchaseOrder = await dbContext.PurchaseOrderVersions
+                .AsNoTracking()
+                .AnyAsync(
+                    version => version.RequestId == requestId && version.State != 5,
+                    cancellationToken);
+            var authorizedDirectPurchase = await dbContext.DirectPurchaseAuthorizations
+                .AsNoTracking()
+                .AnyAsync(
+                    authorization => authorization.OrganizationId == organizationId &&
+                                     authorization.RequestId == requestId &&
+                                     authorization.State == 1,
+                    cancellationToken);
+            if (liveClaim || livePurchaseOrder || authorizedDirectPurchase)
+            {
+                throw new DomainConflictException("PR_REQUEST_CONSUMED");
+            }
         }
     }
 

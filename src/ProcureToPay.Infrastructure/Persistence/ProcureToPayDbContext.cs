@@ -4,6 +4,7 @@ using ProcureToPay.Infrastructure.Persistence.BudgetLedger;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
+using ProcureToPay.Infrastructure.Persistence.PurchaseOrders;
 using ProcureToPay.Infrastructure.Persistence.ReferenceCatalogs;
 using ProcureToPay.Infrastructure.Persistence.Sourcing;
 using ProcureToPay.Infrastructure.Persistence.Suppliers;
@@ -142,6 +143,37 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
     public DbSet<SourcingPrerequisiteProcessorRegistrationRecord> SourcingPrerequisiteProcessorRegistrations =>
         Set<SourcingPrerequisiteProcessorRegistrationRecord>();
 
+    public DbSet<PurchaseOrderRecord> PurchaseOrders => Set<PurchaseOrderRecord>();
+    public DbSet<PurchaseOrderNumberSequenceRecord> PurchaseOrderNumberSequences =>
+        Set<PurchaseOrderNumberSequenceRecord>();
+    public DbSet<PurchaseOrderVersionRecord> PurchaseOrderVersions => Set<PurchaseOrderVersionRecord>();
+    public DbSet<PurchaseOrderLinePointerRecord> PurchaseOrderLinePointers => Set<PurchaseOrderLinePointerRecord>();
+    public DbSet<AwardConsumptionClaimRecord> AwardConsumptionClaims => Set<AwardConsumptionClaimRecord>();
+    public DbSet<PurchaseRequestLineTakeoverRecord> PurchaseRequestLineTakeovers =>
+        Set<PurchaseRequestLineTakeoverRecord>();
+    public DbSet<PurchaseRequestLineProjectionRecord> PurchaseRequestLineProjections =>
+        Set<PurchaseRequestLineProjectionRecord>();
+    public DbSet<PurchaseOrderBudgetAttemptRecord> PurchaseOrderBudgetAttempts =>
+        Set<PurchaseOrderBudgetAttemptRecord>();
+    public DbSet<PurchaseOrderAmendmentRecord> PurchaseOrderAmendments => Set<PurchaseOrderAmendmentRecord>();
+    public DbSet<PurchaseOrderAmendmentRootRecord> PurchaseOrderAmendmentRoots =>
+        Set<PurchaseOrderAmendmentRootRecord>();
+    public DbSet<DirectPurchaseAuthorizationRecord> DirectPurchaseAuthorizations =>
+        Set<DirectPurchaseAuthorizationRecord>();
+    public DbSet<ProcurementSupportingDocumentRecord> ProcurementSupportingDocuments =>
+        Set<ProcurementSupportingDocumentRecord>();
+    public DbSet<SupportingDocumentProcessorRegistrationRecord> SupportingDocumentProcessorRegistrations =>
+        Set<SupportingDocumentProcessorRegistrationRecord>();
+    public DbSet<SupportingDocumentOwnerAttemptRecord> SupportingDocumentOwnerAttempts =>
+        Set<SupportingDocumentOwnerAttemptRecord>();
+    public DbSet<SupportingDocumentOwnerEvidenceRecord> SupportingDocumentOwnerEvidence =>
+        Set<SupportingDocumentOwnerEvidenceRecord>();
+    public DbSet<PurchaseRequestOrderingEvidenceRecord> PurchaseRequestOrderingEvidence =>
+        Set<PurchaseRequestOrderingEvidenceRecord>();
+    public DbSet<PurchaseOrderCommandRecord> PurchaseOrderCommands => Set<PurchaseOrderCommandRecord>();
+    public DbSet<PurchaseOrderAuditRecord> PurchaseOrderAuditRecords => Set<PurchaseOrderAuditRecord>();
+    public DbSet<PurchaseOrderOutboxRecord> PurchaseOrderOutbox => Set<PurchaseOrderOutboxRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ConfigureBootstrapState(modelBuilder);
@@ -207,6 +239,7 @@ public sealed class ProcureToPayDbContext(DbContextOptions<ProcureToPayDbContext
         ConfigureBudgetAudit(modelBuilder);
         SupplierModelConfiguration.Configure(modelBuilder);
         SourcingModelConfiguration.Configure(modelBuilder);
+        PurchaseOrderModelConfiguration.Configure(modelBuilder);
         base.OnModelCreating(modelBuilder);
     }
 
