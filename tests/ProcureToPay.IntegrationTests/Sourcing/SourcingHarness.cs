@@ -1069,7 +1069,7 @@ public sealed class InMemorySourcingStorage : IFileStorage
         Objects[request.ObjectKey] = buffer.ToArray();
     }
 
-    public Uri GenerateTemporaryDownloadUrl(string objectKey) =>
+    public Uri GenerateTemporaryDownloadUrl(string objectKey, TimeSpan? lifetime = null) =>
         new($"https://quotes.test/{Uri.EscapeDataString(objectKey)}");
 
     public Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) =>

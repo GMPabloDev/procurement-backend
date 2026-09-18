@@ -135,7 +135,8 @@ builder.Services
     // SPEC 09 REQ-12: supplier owner, catalog, key provider, adapters, processor and storage.
     .AddCheck<SupplierHealthCheck>("supplier", tags: ["ready"])
     // SPEC 10 REQ-13/REQ-14: owner registrations, typed provider, approval adapter and storage.
-    .AddCheck<SourcingHealthCheck>("sourcing", tags: ["ready"]);
+    .AddCheck<SourcingHealthCheck>("sourcing", tags: ["ready"])
+    .AddCheck<SupportingDocumentHealthCheck>("supporting-documents", tags: ["ready"]);
 
 var telemetryServiceName = builder.Configuration["OpenTelemetry:ServiceName"]
     ?? builder.Environment.ApplicationName;
@@ -170,6 +171,8 @@ builder.Services.AddInfrastructure(builder.Configuration);
 if (builder.Configuration.GetValue("Approval:Worker:Enabled", !builder.Environment.IsEnvironment("Testing")))
 {
     builder.Services.AddHostedService<ApprovalWorkflowWorker>();
+    // SPEC 11 REQ-08: the supporting document owner worker is separate from Sourcing.
+    builder.Services.AddHostedService<SupportingDocumentOwnerWorker>();
 }
 
 var app = builder.Build();

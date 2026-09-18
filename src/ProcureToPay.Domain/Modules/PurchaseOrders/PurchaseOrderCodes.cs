@@ -93,6 +93,8 @@ public static class PurchaseOrderCodes
     public const string ActionAmendmentCreated = "PURCHASE_ORDER_AMENDMENT_CREATED";
     public const string ActionAmendmentSubmitted = "PURCHASE_ORDER_AMENDMENT_SUBMITTED";
     public const string ActionAmendmentApproved = "PURCHASE_ORDER_AMENDMENT_APPROVED";
+    public const string ActionAmendmentChangesRequested = "PURCHASE_ORDER_AMENDMENT_CHANGES_REQUESTED";
+    public const string ActionAmendmentRejected = "PURCHASE_ORDER_AMENDMENT_REJECTED";
     public const string ActionAmendmentApplied = "PURCHASE_ORDER_AMENDMENT_APPLIED";
     public const string ActionAmendmentCancelled = "PURCHASE_ORDER_AMENDMENT_CANCELLED";
     public const string ActionDirectPurchaseAuthorized = "DIRECT_PURCHASE_AUTHORIZED";
@@ -104,6 +106,12 @@ public static class PurchaseOrderCodes
     public const string ActionTakeoverReleased = "PURCHASE_REQUEST_LINE_TAKEOVER_RELEASED";
 
     public const string TargetPurchaseOrder = "PurchaseOrder";
+
+    /// <summary>Consumer type a Purchase Order uses to hold the per-line takeover (REQ-10).</summary>
+    public const string TakeoverConsumerPurchaseOrder = "PURCHASE_ORDER";
+
+    /// <summary>Consumer type a Direct Purchase authorization uses to hold its line takeovers (REQ-07).</summary>
+    public const string TakeoverConsumerDirectPurchase = "DIRECT_PURCHASE_AUTHORIZATION";
     public const string TargetAmendment = "PurchaseOrderAmendment";
     public const string TargetDirectPurchase = "DirectPurchaseAuthorization";
     public const string TargetSupportingDocument = "ProcurementSupportingDocument";

@@ -699,14 +699,33 @@ public sealed class BudgetLedgerService(ProcureToPayDbContext dbContext, BudgetP
         var children = await dbContext.BudgetMovements
             .AsNoTracking()
             .Where(movement => movement.ParentMovementId == parentId)
-            .Select(movement => movement.Amount)
+            .Select(movement => new { movement.Id, movement.Amount })
             .ToArrayAsync(cancellationToken);
+        // SPEC 11 REQ-05: a reversed child no longer consumes its parent, so the remaining amount of
+        // a parent is computed net of the reversals already posted against each child. Without it a
+        // commitment returned to RESERVED could never release its reservation back to AVAILABLE.
+        var childIds = children.Select(child => child.Id).ToArray();
+        var reversedChildren = childIds.Length == 0
+            ? []
+            : await dbContext.BudgetMovements
+                .AsNoTracking()
+                .Where(movement => movement.Type == (int)BudgetMovementType.Reverse &&
+                                   movement.ParentMovementId != null &&
+                                   childIds.Contains(movement.ParentMovementId.Value))
+                .GroupBy(movement => movement.ParentMovementId!.Value)
+                .Select(group => new { Parent = group.Key, Amount = group.Sum(movement => movement.Amount) })
+                .ToArrayAsync(cancellationToken);
+        var consumed = children.Sum(child =>
+        {
+            var reversed = reversedChildren.FirstOrDefault(entry => entry.Parent == child.Id)?.Amount ?? 0m;
+            return child.Amount - reversed > 0m ? child.Amount - reversed : 0m;
+        });
         return new BudgetPostedMovement(
             parentRecord.Id,
             (BudgetMovementType)parentRecord.Type,
             parentRecord.Amount,
             parentRecord.ParentMovementId,
-            children.Sum(),
+            consumed,
             children.Length > 0);
     }
 

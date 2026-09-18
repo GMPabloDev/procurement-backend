@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Headers;
@@ -18,6 +19,8 @@ using Microsoft.IdentityModel.Tokens;
 using ProcureToPay.Api.Authentication;
 using ProcureToPay.Application.Abstractions.Files;
 using ProcureToPay.Domain.Modules.Approval;
+using ProcureToPay.Domain.Modules.Budget;
+using ProcureToPay.Domain.Modules.PurchaseOrders;
 using ProcureToPay.Domain.Modules.Organization;
 using ProcureToPay.Domain.Modules.Policy;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
@@ -53,6 +56,7 @@ public sealed class SourcingCrossModuleE2ETests
     private const string ApproverSubject = "approver-1";
     private const string RequesterSubject = "requester-1";
     private const string AdminSubject = "admin-bootstrap";
+    private const string AuditorSubject = "auditor-1";
 
     [Fact]
     public async Task A_purchase_request_reaches_APPROVED_through_sourcing_owners_and_the_award()
@@ -280,6 +284,263 @@ public sealed class SourcingCrossModuleE2ETests
     }
 
     [Fact]
+    public async Task A_direct_purchase_and_its_documents_are_governed_over_http()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var capture = new CaptureLoggerProvider();
+        await using var environment = await Environment.StartAsync(cancellationToken, capture);
+        using var requester = environment.Client(RequesterSubject);
+        using var buyer = environment.Client(BuyerSubject);
+        using var admin = environment.Client(AdminSubject);
+        using var auditor = environment.Client(AuditorSubject);
+        using var anonymous = environment.AnonymousClient();
+
+        var (requestId, lineId, lineVersion, _) = await environment.CreateAndSubmitRequestAsync(
+            requester, cancellationToken);
+        await environment.CompleteRequestForDirectPurchaseAsync(
+            requestId, lineId, lineVersion, cancellationToken);
+
+        // REQ-01/REQ-11: the Purchase Order command surface enforces the buyer role and never
+        // reveals whether a foreign award exists.
+        using (var deniedClaim = await requester.PostAsJsonAsync(
+            "/api/v1/purchase-orders",
+            new
+            {
+                awardId = Guid.NewGuid(),
+                awardVersion = 1,
+                awardContentDigest = new string('a', 64),
+                coveredLines = new[] { new { id = lineId, version = lineVersion, contentDigest = new string('b', 64) } },
+                claimKey = $"claim-denied-{Guid.NewGuid():N}",
+                poId = (Guid?)null
+            },
+            cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.Forbidden, deniedClaim.StatusCode);
+        }
+
+        using (var unknownAward = await buyer.PostAsJsonAsync(
+            "/api/v1/purchase-orders",
+            new
+            {
+                awardId = Guid.NewGuid(),
+                awardVersion = 1,
+                awardContentDigest = new string('a', 64),
+                coveredLines = new[] { new { id = lineId, version = lineVersion, contentDigest = new string('b', 64) } },
+                claimKey = $"claim-unknown-{Guid.NewGuid():N}",
+                poId = (Guid?)null
+            },
+            cancellationToken))
+        {
+            Assert.True(
+                unknownAward.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.UnprocessableEntity or
+                    HttpStatusCode.ServiceUnavailable,
+                await unknownAward.Content.ReadAsStringAsync(cancellationToken));
+        }
+
+        // REQ-11: a user that is neither the requester of the lines nor a buyer cannot authorize.
+        using (var denied = await admin.PostAsJsonAsync(
+            "/api/v1/direct-purchases",
+            Environment.DirectPurchaseRequest(environment, requestId, lineId, lineVersion, $"dp-no-{Guid.NewGuid():N}"),
+            cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.NotFound, denied.StatusCode);
+        }
+
+        // REQ-07: the requester authorizes its own lines; a replay returns the same authorization.
+        var authorizationKey = $"dp-{Guid.NewGuid():N}";
+        Guid authorizationId;
+        using (var authorized = await requester.PostAsJsonAsync(
+            "/api/v1/direct-purchases",
+            Environment.DirectPurchaseRequest(environment, requestId, lineId, lineVersion, authorizationKey),
+            cancellationToken))
+        {
+            var failure = await authorized.Content.ReadAsStringAsync(cancellationToken);
+            Assert.True(authorized.StatusCode == HttpStatusCode.Created, failure);
+            authorizationId = JsonDocument.Parse(failure).RootElement.GetProperty("authorizationId").GetGuid();
+        }
+
+        using (var replay = await requester.PostAsJsonAsync(
+            "/api/v1/direct-purchases",
+            Environment.DirectPurchaseRequest(environment, requestId, lineId, lineVersion, authorizationKey),
+            cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.Created, replay.StatusCode);
+            var body = JsonDocument.Parse(await replay.Content.ReadAsStringAsync(cancellationToken)).RootElement;
+            Assert.Equal(authorizationId, body.GetProperty("authorizationId").GetGuid());
+            Assert.Equal(
+                $"dp-key-{authorizationKey}",
+                $"dp-key-{authorizationKey}");
+        }
+
+        // The requester reads its own authorization, an auditor too, and an unknown id is 404.
+        using (var read = await requester.GetAsync(
+            $"/api/v1/direct-purchases/{authorizationId}", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.OK, read.StatusCode);
+        }
+
+        using (var audited = await auditor.GetAsync(
+            $"/api/v1/direct-purchases/{authorizationId}", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.OK, audited.StatusCode);
+        }
+
+        using (var missing = await buyer.GetAsync(
+            $"/api/v1/direct-purchases/{Guid.NewGuid():D}", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        }
+
+        // REQ-08/REQ-11: the requester stages and confirms one document of its own target.
+        Guid documentId;
+        using (var staged = await requester.PostAsync(
+            "/api/v1/supporting-documents",
+            DocumentForm(requestId, lineId, lineVersion, [1, 2, 3, 4]),
+            cancellationToken))
+        {
+            var failure = await staged.Content.ReadAsStringAsync(cancellationToken);
+            Assert.True(staged.StatusCode == HttpStatusCode.Created, failure);
+            documentId = JsonDocument.Parse(failure).RootElement.GetProperty("documentId").GetGuid();
+        }
+
+        using (var early = await requester.GetAsync(
+            $"/api/v1/supporting-documents/{documentId}/download", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.Conflict, early.StatusCode);
+        }
+
+        using (var deniedRead = await admin.GetAsync(
+            $"/api/v1/supporting-documents/{documentId}", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.NotFound, deniedRead.StatusCode);
+        }
+
+        using (var confirmed = await requester.PostAsJsonAsync(
+            $"/api/v1/supporting-documents/{documentId}/confirm",
+            new { expectedVersion = 1 },
+            cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.OK, confirmed.StatusCode);
+        }
+
+        using (var download = await requester.GetAsync(
+            $"/api/v1/supporting-documents/{documentId}/download", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.OK, download.StatusCode);
+            var body = JsonDocument.Parse(await download.Content.ReadAsStringAsync(cancellationToken)).RootElement;
+            Assert.Equal(900, body.GetProperty("expiresInSeconds").GetInt32());
+        }
+
+        using (var listed = await auditor.GetAsync(
+            $"/api/v1/supporting-documents/{documentId}", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.OK, listed.StatusCode);
+        }
+
+        // REQ-11 ±1: one byte above the 20 MiB limit is rejected with 413 before the domain runs.
+        using (var oversized = await requester.PostAsync(
+            "/api/v1/supporting-documents",
+            DocumentForm(requestId, lineId, lineVersion, new byte[20 * 1024 * 1024 + 1]),
+            cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.RequestEntityTooLarge, oversized.StatusCode);
+        }
+
+        // NFR-07: the module never writes a location, a file name, a supplier, an amount or a full
+        // digest to the logs and traces of the flow it just executed.
+        var captured = capture.Messages.ToArray();
+        Assert.NotEmpty(captured);
+        var forbidden = new[]
+        {
+            // File name, location, supplier and user ids: none of them belongs to telemetry (NFR-07).
+            "invoice.pdf",
+            "supporting-documents/",
+            environment.SupplierAId.ToString("D"),
+            environment.SupplierAId.ToString("N"),
+            environment.RequesterId.ToString("D"),
+            environment.BuyerId.ToString("D")
+        };
+        foreach (var message in captured)
+        {
+            foreach (var candidate in forbidden)
+            {
+                Assert.DoesNotContain(candidate, message, StringComparison.OrdinalIgnoreCase);
+            }
+
+            Assert.DoesNotMatch("[0-9a-f]{64}", message);
+        }
+
+        // REQ-07: the cancellation releases the hold and returns the line takeover to the request.
+        using (var cancelled = await requester.PostAsJsonAsync(
+            $"/api/v1/direct-purchases/{authorizationId}/cancel",
+            new
+            {
+                expectedVersion = 1,
+                key = $"dp-cancel-{Guid.NewGuid():N}",
+                reason = "The requester no longer needs the purchase"
+            },
+            cancellationToken))
+        {
+            var failure = await cancelled.Content.ReadAsStringAsync(cancellationToken);
+            Assert.True(cancelled.StatusCode == HttpStatusCode.OK, failure);
+            Assert.Equal(
+                "CANCELLED",
+                JsonDocument.Parse(failure).RootElement.GetProperty("state").GetString());
+        }
+
+        await using (var verification = environment.CreateContext())
+        {
+            Assert.Equal(
+                0,
+                await verification.BudgetMovements
+                    .AsNoTracking()
+                    .CountAsync(record => record.Type == (int)BudgetMovementType.Committed, cancellationToken));
+            Assert.Equal(
+                0,
+                await verification.PurchaseRequestLineTakeovers
+                    .AsNoTracking()
+                    .CountAsync(record => record.State == (int)TakeoverState.Active, cancellationToken));
+        }
+
+        // The authenticated surface rejects the anonymous caller and readiness never carries a
+        // commercial marker (NFR-07).
+        using (var unauthenticated = await anonymous.GetAsync(
+            $"/api/v1/direct-purchases/{authorizationId}", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, unauthenticated.StatusCode);
+        }
+
+        using (var health = await anonymous.GetAsync("/health/ready", cancellationToken))
+        {
+            var body = await health.Content.ReadAsStringAsync(cancellationToken);
+            Assert.DoesNotMatch("[0-9a-f]{64}", body);
+            Assert.DoesNotContain(lineId.ToString("D"), body, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    /// <summary>Multipart body of one supporting document upload (REQ-08).</summary>
+    private static MultipartFormDataContent DocumentForm(
+        Guid requestId,
+        Guid lineId,
+        int lineVersion,
+        byte[] bytes)
+    {
+        var form = new MultipartFormDataContent();
+        form.Add(new StringContent(requestId.ToString("D")), "requestId");
+        form.Add(new StringContent("1"), "requestVersion");
+        form.Add(new StringContent(Guid.NewGuid().ToString("D")), "fileId");
+        form.Add(new StringContent("1"), "fileVersion");
+        form.Add(new StringContent("INVOICE"), "businessType");
+        form.Add(
+            new StringContent($"[{{\"id\":\"{lineId:D}\",\"version\":{lineVersion}}}]"),
+            "coveredTargets");
+        var file = new ByteArrayContent(bytes);
+        file.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        form.Add(file, "file", "invoice.pdf");
+        return form;
+    }
+
+    [Fact]
     public async Task Limits_and_problem_details_are_fail_closed_over_http()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -464,6 +725,8 @@ public sealed class SourcingCrossModuleE2ETests
 
     private sealed record TaskRow(Guid TaskId, int Version);
 
+    private static string Digest(char value) => new(value, 64);
+
     private sealed class Environment : IAsyncDisposable
     {
         private MsSqlContainer container = null!;
@@ -475,6 +738,7 @@ public sealed class SourcingCrossModuleE2ETests
         public Guid BuyerId { get; private set; }
         public Guid RequesterId { get; private set; }
         public Guid ApproverId { get; private set; }
+        public Guid AuditorId { get; private set; }
         public Guid CostCenterId { get; private set; }
         public string SpendCategoryDigest { get; private set; } = string.Empty;
         public Guid SupplierAId { get; } = Guid.Parse("33333333-9999-9999-9999-999999999991");
@@ -572,7 +836,7 @@ public sealed class SourcingCrossModuleE2ETests
         private void SeedUsers(ProcureToPayDbContext context)
         {
             var now = DateTimeOffset.UtcNow;
-            foreach (var subject in new[] { BuyerSubject, ApproverSubject, RequesterSubject })
+            foreach (var subject in new[] { BuyerSubject, ApproverSubject, RequesterSubject, AuditorSubject })
             {
                 var id = Guid.NewGuid();
                 context.UserProfiles.Add(new UserProfileRecord
@@ -594,6 +858,10 @@ public sealed class SourcingCrossModuleE2ETests
                     case BuyerSubject:
                         BuyerId = id;
                         context.RoleAssignments.Add(Assignment(id, SystemRole.ProcurementBuyer, id));
+                        break;
+                    case AuditorSubject:
+                        AuditorId = id;
+                        context.RoleAssignments.Add(Assignment(id, SystemRole.Auditor, id));
                         break;
                     case ApproverSubject:
                         ApproverId = id;
@@ -856,6 +1124,210 @@ public sealed class SourcingCrossModuleE2ETests
                 line.GetProperty("lineVersion").GetInt32(),
                 line.GetProperty("contentDigest").GetString()!);
         }
+
+        /// <summary>
+        /// Completes the request case with a financial requirement and its decision, satisfies every
+        /// prerequisite, attests the line supplier and publishes the ALLOW_DIRECT_PURCHASE route, so
+        /// the Direct Purchase HTTP surface is exercised without the full sourcing journey (REQ-07).
+        /// </summary>
+        public async Task CompleteRequestForDirectPurchaseAsync(
+            Guid requestId,
+            Guid lineId,
+            int lineVersion,
+            CancellationToken cancellationToken)
+        {
+            await using var context = CreateContext();
+            var request = await context.PurchaseRequests.SingleAsync(
+                record => record.Id == requestId, cancellationToken);
+            request.Status = (int)PurchaseRequestStatus.Approved;
+            var line = await context.PurchaseRequestLineVersions.SingleAsync(
+                record => record.LineId == lineId && record.LineVersion == lineVersion, cancellationToken);
+            line.SupplierJson = $"{{\"id\":\"{SupplierAId:D}\",\"version\":1}}";
+            var caseRow = await context.ApprovalCases
+                .Where(record => record.SubjectType == "PURCHASE_REQUEST" && record.SubjectId == requestId)
+                .OrderByDescending(record => record.Version)
+                .FirstAsync(cancellationToken);
+            var prerequisites = await context.ApprovalPrerequisites
+                .Where(record => record.CaseId == caseRow.Id)
+                .ToArrayAsync(cancellationToken);
+            var materialDigest = MaterialDigest(prerequisites[0].TargetsJson, lineId, lineVersion);
+            foreach (var prerequisite in prerequisites)
+            {
+                prerequisite.Status = (int)PrerequisiteStatus.Satisfied;
+                prerequisite.ResolvedAt = DateTimeOffset.UtcNow;
+            }
+
+            var requirementId = Guid.NewGuid();
+            var decisionId = Guid.NewGuid();
+            context.ApprovalRequirements.Add(new ApprovalRequirementRecord
+            {
+                Id = requirementId,
+                CaseId = caseRow.Id,
+                OrganizationId = OrganizationId,
+                SourceRequirementKey = "FINANCE",
+                WorkflowRequirementKey = "FINANCE",
+                StageCode = "PRE_PROCUREMENT",
+                Role = (int)SystemRole.FinanceApprover,
+                AuthorityJson = ApprovalJsonPersistence.SerializeAuthority(
+                    AuthorityRequirement.Required(ApprovalAuthorityType.Financial, 1, 1_000_000m, "PEN")),
+                DecisionScopeJson = DecisionScopeDescriptor.Create(
+                    OrganizationId,
+                    [new DecisionScopeEntry(ScopeDimension.Organization, null, null)]).ToCanonicalJson(),
+                ExcludedUserIdsJson = "[]",
+                ActionsJson = "[\"APPROVE\",\"REJECT\"]",
+                TargetsJson = TargetJson(lineId, lineVersion, materialDigest),
+                DependenciesJson = "[]",
+                Status = (int)ApprovalRequirementStatus.Approved,
+                Version = 1
+            });
+            context.ApprovalDecisions.Add(new ApprovalDecisionRecord
+            {
+                Id = decisionId,
+                CaseId = caseRow.Id,
+                OrganizationId = OrganizationId,
+                RequirementId = requirementId,
+                Action = (int)ApprovalDecisionAction.Approve,
+                Origin = (int)ApprovalDecisionOrigin.Human,
+                ActorType = "USER",
+                ActorUserId = ApproverId,
+                Reason = "Financial authority approved the direct purchase route",
+                DecidedAt = DateTimeOffset.UtcNow,
+                DecisionKey = $"dp-finance-{Guid.NewGuid():N}",
+                Fingerprint = Digest('6'),
+                DecisionDigest = Digest('7'),
+                AuthorityEvidenceDigest = Digest('8'),
+                EligibilityEvidenceJson = "{}",
+                EvidenceId = Guid.NewGuid(),
+                EvidenceVersion = 1
+            });
+            context.ApprovalDecisionTargets.Add(new ApprovalDecisionTargetRecord
+            {
+                Id = Guid.NewGuid(),
+                DecisionId = decisionId,
+                CaseId = caseRow.Id,
+                OrganizationId = OrganizationId,
+                RequirementId = requirementId,
+                TargetType = "PURCHASE_REQUEST_LINE",
+                TargetId = lineId,
+                TargetVersion = lineVersion,
+                MaterialSnapshotDigest = materialDigest
+            });
+            caseRow.Status = (int)ApprovalCaseStatus.Completed;
+            await context.SaveChangesAsync(cancellationToken);
+            await PublishDirectPurchaseRouteAsync(context, requestId, lineId, cancellationToken);
+        }
+
+        /// <summary>Multipart-free body of one Direct Purchase authorization (REQ-07).</summary>
+        public static object DirectPurchaseRequest(
+            Environment environment,
+            Guid requestId,
+            Guid lineId,
+            int lineVersion,
+            string authorizationKey) => new
+        {
+            requestId,
+            expectedRequestVersion = 1,
+            authorizationKey,
+            coveredTargets = new[] { new { id = lineId, version = lineVersion } },
+            acceptanceResponsibilities = new[]
+            {
+                new
+                {
+                    lineId,
+                    lineVersion,
+                    kind = "GOODS_RECEIPT",
+                    userId = environment.RequesterId,
+                    userVersion = 1,
+                    reason = (string?)null
+                }
+            }
+        };
+
+        /// <summary>
+        /// Publishes the ALLOW_DIRECT_PURCHASE route through the real policy persistence and points
+        /// the submission attempt at it: the bundle is the only route source the domain reads.
+        /// </summary>
+        private async Task PublishDirectPurchaseRouteAsync(
+            ProcureToPayDbContext context,
+            Guid requestId,
+            Guid lineId,
+            CancellationToken cancellationToken)
+        {
+            var control = new PolicyGeneratedControl(
+                "DIRECT_PURCHASE_ROUTE",
+                PolicyEffectType.AllowDirectPurchase,
+                ImmutableHashSet.Create(PolicyScope.Line),
+                ImmutableHashSet.Create(lineId),
+                "PRE_PROCUREMENT",
+                null,
+                null,
+                ImmutableHashSet<string>.Empty,
+                ImmutableHashSet.Create("DP-ROUTE"),
+                "Direct Purchase route seed");
+            var scope = new PolicyScopeEvaluation(
+                PolicyScope.Line,
+                ImmutableHashSet.Create(lineId),
+                ["DP-ROUTE"],
+                [control],
+                PolicyResult.RequirementsGenerated);
+            var policySetVersionId = await context.PolicySetVersions
+                .Where(record => record.OrganizationId == OrganizationId)
+                .OrderByDescending(record => record.Sequence)
+                .Select(record => record.Id)
+                .FirstAsync(cancellationToken);
+            var bundle = new PolicyEvaluationBundle(
+                Guid.NewGuid(),
+                $"dp-route-{Guid.NewGuid():N}",
+                new PolicySubjectReference(requestId, 1),
+                DateTimeOffset.UtcNow,
+                Digest('9'),
+                Digest('a'),
+                [scope],
+                [control],
+                PolicyResult.RequirementsGenerated,
+                Digest('b'))
+            {
+                Operation = "REQUEST_EVALUATE",
+                FactsDigest = Digest('c'),
+                ManifestDigest = Digest('d')
+            };
+            await new PolicyPersistenceService(context).AppendEvaluationAsync(
+                bundle,
+                new PolicyEvaluationCaller(
+                    OrganizationId,
+                    InternalIssuer,
+                    PurchaseRequestClient,
+                    "REQUEST_EVALUATE",
+                    bundle.EvaluationKey,
+                    policySetVersionId,
+                    $"dp-route-{Guid.NewGuid():N}"),
+                cancellationToken);
+            var attempt = await context.PurchaseRequestSubmissionAttempts
+                .Where(record => record.RequestId == requestId && record.RequestVersion == 1)
+                .OrderByDescending(record => record.UpdatedAt)
+                .FirstAsync(cancellationToken);
+            attempt.PolicyEvaluationBundleId = bundle.Id;
+            await context.SaveChangesAsync(cancellationToken);
+        }
+
+        private static string MaterialDigest(string targetsJson, Guid lineId, int lineVersion)
+        {
+            using var document = JsonDocument.Parse(targetsJson);
+            foreach (var target in document.RootElement.EnumerateArray())
+            {
+                if (target.GetProperty("id").GetGuid() == lineId &&
+                    target.GetProperty("version").GetInt32() == lineVersion)
+                {
+                    return target.GetProperty("materialSnapshotDigest").GetString()!;
+                }
+            }
+
+            throw new InvalidOperationException("The seeded prerequisite does not cover the requested line.");
+        }
+
+        private static string TargetJson(Guid lineId, int lineVersion, string materialDigest) =>
+            $"[{{\"type\":\"PURCHASE_REQUEST_LINE\",\"id\":\"{lineId:D}\",\"version\":{lineVersion}," +
+            $"\"materialSnapshotDigest\":\"{materialDigest}\"}}]";
 
         public async Task RegisterQuotationAsync(
             HttpClient buyer,
@@ -1167,7 +1639,7 @@ public sealed class SourcingCrossModuleE2ETests
             objects[request.ObjectKey] = buffer.ToArray();
         }
 
-        public Uri GenerateTemporaryDownloadUrl(string objectKey) =>
+        public Uri GenerateTemporaryDownloadUrl(string objectKey, TimeSpan? lifetime = null) =>
             new($"https://sourcing.test/{Uri.EscapeDataString(objectKey)}");
 
         public Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) =>

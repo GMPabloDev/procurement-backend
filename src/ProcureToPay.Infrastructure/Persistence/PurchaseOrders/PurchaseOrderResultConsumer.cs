@@ -106,17 +106,90 @@ public sealed class PurchaseOrderResultConsumer(
     }
 
     /// <summary>
-    /// Amendment results are applied by the amendment service of REQ-05, which owns the successor
-    /// Purchase Order. Until that service exists the consumer records the event and never mutates an
-    /// order from an amendment case.
+    /// Projects one amendment approval result (REQ-05): only the current version of the lineage
+    /// advances, an approval binds the Procurement decision and every other terminal result cancels
+    /// the amendment or returns it to draft. The application itself (budget, successor order) stays
+    /// with the amendment service, which requires the approved version.
     /// </summary>
-    private Task ApplyToAmendmentAsync(ApprovalResultEvent eventValue, CancellationToken cancellationToken)
+    private async Task ApplyToAmendmentAsync(ApprovalResultEvent eventValue, CancellationToken cancellationToken)
     {
-        _ = cancellationToken;
-        logger.LogInformation(
-            "An approval result of amendment {AmendmentId} was recorded without a projection.",
-            eventValue.SubjectId);
-        return Task.CompletedTask;
+        var record = await dbContext.PurchaseOrderAmendments
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                candidate => candidate.Id == eventValue.SubjectId &&
+                             candidate.OrganizationId == eventValue.OrganizationId &&
+                             candidate.ApprovalCaseId == eventValue.CaseId,
+                cancellationToken);
+        if (record is null)
+        {
+            logger.LogInformation("An approval result of an unpresented amendment was ignored.");
+            return;
+        }
+
+        var root = await dbContext.PurchaseOrderAmendmentRoots
+            .AsNoTracking()
+            .SingleOrDefaultAsync(candidate => candidate.Id == eventValue.SubjectId, cancellationToken);
+        if (root is null || root.CurrentVersion != record.Version)
+        {
+            // A late event of a superseded version keeps its history and never reopens it (REQ-05).
+            return;
+        }
+
+        var current = PurchaseOrderSerialization.ReadAmendment(
+            record.DocumentJson, record.OrganizationId, record.ActorUserId, record.OccurredAt, record.ContentDigest);
+        if (current.State is AmendmentState.Applying or AmendmentState.Applied or AmendmentState.Cancelled)
+        {
+            return;
+        }
+
+        var successorState = eventValue.Result switch
+        {
+            Approved => AmendmentState.Approved,
+            ChangesRequested => AmendmentState.Draft,
+            _ => AmendmentState.Cancelled
+        };
+        var approvalRef = new PurchaseOrderContentRef(
+            eventValue.CaseId,
+            record.ApprovalCaseVersion ?? 1,
+            record.ApprovalDigest ?? eventValue.MaterialSnapshotDigest);
+        var successor = current.With(
+            successorState,
+            successorState == AmendmentState.Draft ? null : approvalRef,
+            current.ActorUserId,
+            eventValue.OccurredAt);
+        dbContext.PurchaseOrderAmendments.Add(
+            PurchaseOrderAmendmentWriter.Record(successor, $"approval-result:{eventValue.EventId:D}", eventValue.OccurredAt));
+        var applied = await dbContext.PurchaseOrderAmendmentRoots
+            .Where(candidate => candidate.Id == eventValue.SubjectId && candidate.CurrentVersion == record.Version)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(candidate => candidate.CurrentVersion, successor.Version),
+                cancellationToken);
+        if (applied == 0)
+        {
+            dbContext.ChangeTracker.Clear();
+            return;
+        }
+
+        var action = successorState switch
+        {
+            AmendmentState.Approved => PurchaseOrderCodes.ActionAmendmentApproved,
+            AmendmentState.Draft => PurchaseOrderCodes.ActionAmendmentChangesRequested,
+            _ => PurchaseOrderCodes.ActionAmendmentRejected
+        };
+        dbContext.PurchaseOrderAuditRecords.Add(new PurchaseOrderAuditRecord
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = eventValue.OrganizationId,
+            ActorUserId = current.ActorUserId,
+            Action = action,
+            TargetType = PurchaseOrderCodes.TargetAmendment,
+            TargetId = eventValue.SubjectId,
+            TargetVersion = successor.Version,
+            ChangedFieldsJson = "[\"state\",\"approval_ref\"]",
+            CorrelationReference = $"approval-result:{eventValue.EventId:D}",
+            OccurredAt = eventValue.OccurredAt
+        });
+        await dbContext.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary>

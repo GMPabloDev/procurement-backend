@@ -503,7 +503,8 @@ public sealed record PurchaseOrderVersion
         PurchaseOrderContentRef? amendmentRef,
         Guid actorUserId,
         DateTimeOffset occurredAt,
-        DateTimeOffset? issuedAt)
+        DateTimeOffset? issuedAt,
+        VendorTermsSnapshot? termsSnapshot = null)
     {
         var successors = lines.ToImmutableArray();
         return new PurchaseOrderVersion(
@@ -522,7 +523,7 @@ public sealed record PurchaseOrderVersion
             orderingEvidenceRef ?? OrderingEvidenceRef,
             approvalRef ?? ApprovalRef,
             amendmentRef ?? AmendmentRef,
-            TermsSnapshot,
+            termsSnapshot ?? TermsSnapshot,
             delivery,
             successors,
             budgetOperationRefs ?? BudgetOperationRefs,

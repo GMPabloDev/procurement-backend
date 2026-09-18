@@ -35,7 +35,7 @@ public sealed class InMemoryFileStorage : IFileStorage
         Objects[request.ObjectKey] = buffer.ToArray();
     }
 
-    public Uri GenerateTemporaryDownloadUrl(string objectKey) =>
+    public Uri GenerateTemporaryDownloadUrl(string objectKey, TimeSpan? lifetime = null) =>
         new($"https://agreements.test/{Uri.EscapeDataString(objectKey)}");
 
     /// <summary>Configurable probe so a suite can assert the readiness degradation.</summary>

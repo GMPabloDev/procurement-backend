@@ -144,31 +144,250 @@ public static class PurchaseOrderSerialization
         var lines = new List<PurchaseOrderLine>(array.Count);
         foreach (var node in array)
         {
-            var item = RequireObject(node, [
-                "acceptance_responsibilities", "additional_charges", "award_line_ref", "base_currency",
-                "base_gross_total", "discounts", "fx_snapshot_ref", "gross_total", "line_id", "quantity",
-                "request_line_ref", "source_currency", "subtotal", "taxes", "unit_code", "unit_price"
-            ]);
-            lines.Add(new PurchaseOrderLine(
-                Guid.Parse(item["line_id"]!.GetValue<string>()),
-                ReadContentRef(item["award_line_ref"]),
-                ReadContentRef(item["request_line_ref"]),
-                ParseDecimal(item["quantity"]!.GetValue<string>()),
-                item["unit_code"]!.GetValue<string>(),
-                ParseDecimal(item["unit_price"]!.GetValue<string>()),
-                item["source_currency"]!.GetValue<string>(),
-                ParseDecimal(item["gross_total"]!.GetValue<string>()),
-                item["base_currency"]!.GetValue<string>(),
-                ParseDecimal(item["base_gross_total"]!.GetValue<string>()),
-                ParseDecimal(item["subtotal"]!.GetValue<string>()),
-                ParseDecimal(item["taxes"]!.GetValue<string>()),
-                ParseDecimal(item["additional_charges"]!.GetValue<string>()),
-                ParseDecimal(item["discounts"]!.GetValue<string>()),
-                item["fx_snapshot_ref"] is null ? null : ReadContentRef(item["fx_snapshot_ref"]),
-                ReadResponsibilities(item["acceptance_responsibilities"])));
+            lines.Add(ReadLine(node));
         }
 
         return lines;
+    }
+
+    /// <summary>One <c>purchase-order-line/v1</c> document from its persisted node.</summary>
+    public static PurchaseOrderLine ReadLine(JsonNode? node)
+    {
+        var item = RequireObject(node, [
+            "acceptance_responsibilities", "additional_charges", "award_line_ref", "base_currency",
+            "base_gross_total", "discounts", "fx_snapshot_ref", "gross_total", "line_id", "quantity",
+            "request_line_ref", "source_currency", "subtotal", "taxes", "unit_code", "unit_price"
+        ]);
+        return new PurchaseOrderLine(
+            Guid.Parse(item["line_id"]!.GetValue<string>()),
+            ReadContentRef(item["award_line_ref"]),
+            ReadContentRef(item["request_line_ref"]),
+            ParseDecimal(item["quantity"]!.GetValue<string>()),
+            item["unit_code"]!.GetValue<string>(),
+            ParseDecimal(item["unit_price"]!.GetValue<string>()),
+            item["source_currency"]!.GetValue<string>(),
+            ParseDecimal(item["gross_total"]!.GetValue<string>()),
+            item["base_currency"]!.GetValue<string>(),
+            ParseDecimal(item["base_gross_total"]!.GetValue<string>()),
+            ParseDecimal(item["subtotal"]!.GetValue<string>()),
+            ParseDecimal(item["taxes"]!.GetValue<string>()),
+            ParseDecimal(item["additional_charges"]!.GetValue<string>()),
+            ParseDecimal(item["discounts"]!.GetValue<string>()),
+            item["fx_snapshot_ref"] is null ? null : ReadContentRef(item["fx_snapshot_ref"]),
+            ReadResponsibilities(item["acceptance_responsibilities"]));
+    }
+
+    /// <summary><c>file_ref</c> JSON of one stored supporting document (REQ-08).</summary>
+    public static string FileRef(SupportingDocumentFileRef fileRef) =>
+        ProcureToPay.Domain.Modules.Policy.PolicyCanonicalizer.SerializeCanonical(
+            PurchaseOrderCanonicalizer.FileRefPreimage(fileRef));
+
+    /// <summary>
+    /// Rebuilds one supporting document version (<c>procurement-supporting-document/v1</c>) from its
+    /// own canonical document plus the row identity the contract does not publish (REQ-08, NFR-01).
+    /// </summary>
+    public static ProcurementSupportingDocumentVersion ReadSupportingDocument(
+        string documentJson,
+        Guid documentId,
+        Guid actorUserId,
+        DateTimeOffset occurredAt,
+        DateTimeOffset? confirmedAt,
+        string? expectedDigest = null)
+    {
+        if (expectedDigest is not null &&
+            !string.Equals(
+                PurchaseOrderCanonicalizer.Hash(documentJson),
+                PurchaseOrderCodes.Digest(expectedDigest, "content digest"),
+                StringComparison.Ordinal))
+        {
+            throw new PurchaseOrderDependencyUnavailableException(
+                "The stored supporting document is not reproducible from its digest.");
+        }
+
+        var item = RequireObject(JsonNode.Parse(documentJson), [
+            "business_type", "canonicalization_version", "contract_version", "covered_targets", "file_ref",
+            "organization_id", "request_ref", "state", "version"
+        ]);
+        RequireCanonicalization(item);
+        if (!string.Equals(
+                item["contract_version"]!.GetValue<string>(),
+                ProcurementSupportingDocumentVersion.ContractVersion,
+                StringComparison.Ordinal))
+        {
+            throw new PurchaseOrderDependencyUnavailableException(
+                "The stored supporting document has an unsupported contract version.");
+        }
+
+        var file = RequireObject(item["file_ref"], [
+            "content_type", "file_id", "file_name", "length", "sha256", "version"
+        ]);
+        var version = item["version"]!.GetValue<int>();
+        return new ProcurementSupportingDocumentVersion(
+            documentId,
+            version,
+            version == 1 ? null : version - 1,
+            Guid.Parse(item["organization_id"]!.GetValue<string>()),
+            ReadContentRef(item["request_ref"]),
+            item["covered_targets"]!.AsArray().Select(ReadContentRef).ToArray(),
+            item["business_type"]!.GetValue<string>(),
+            new SupportingDocumentFileRef(
+                file["content_type"]!.GetValue<string>(),
+                Guid.Parse(file["file_id"]!.GetValue<string>()),
+                file["file_name"]!.GetValue<string>(),
+                file["length"]!.GetValue<long>(),
+                file["sha256"]!.GetValue<string>(),
+                file["version"]!.GetValue<int>()),
+            SupportingDocumentStateCodes.Parse(item["state"]!.GetValue<string>()),
+            actorUserId,
+            occurredAt,
+            confirmedAt);
+    }
+
+    /// <summary>
+    /// Rebuilds one published Direct Purchase authorization version
+    /// (<c>direct-purchase-authorization/v1</c>) from its own canonical document (REQ-07, NFR-01).
+    /// </summary>
+    public static DirectPurchaseAuthorization ReadDirectPurchase(
+        string documentJson,
+        string? expectedDigest = null)
+    {
+        if (expectedDigest is not null &&
+            !string.Equals(
+                PurchaseOrderCanonicalizer.Hash(documentJson),
+                PurchaseOrderCodes.Digest(expectedDigest, "content digest"),
+                StringComparison.Ordinal))
+        {
+            throw new PurchaseOrderDependencyUnavailableException(
+                "The stored Direct Purchase document is not reproducible from its digest.");
+        }
+
+        var item = RequireObject(JsonNode.Parse(documentJson), [
+            "acceptance_responsibilities", "authorization_id", "authorization_key", "authorized_at",
+            "authorized_by_user_id", "canonicalization_version", "contract_version", "covered_lines",
+            "document_evidence_refs", "expected_request_version", "fingerprint", "maximum_base_amount",
+            "maximum_source_amount", "ordering_evidence_ref", "organization_id", "policy_bundle_ref",
+            "request_approval_case_ref", "request_ref", "state", "supplier_ref", "terms_snapshot", "version"
+        ]);
+        RequireCanonicalization(item);
+        if (!string.Equals(
+                item["contract_version"]!.GetValue<string>(),
+                DirectPurchaseAuthorization.ContractVersion,
+                StringComparison.Ordinal))
+        {
+            throw new PurchaseOrderDependencyUnavailableException(
+                "The stored Direct Purchase document has an unsupported contract version.");
+        }
+
+        var terms = ReadTerms(item["terms_snapshot"]);
+        return new DirectPurchaseAuthorization(
+            Guid.Parse(item["authorization_id"]!.GetValue<string>()),
+            item["version"]!.GetValue<int>(),
+            item["version"]!.GetValue<int>() == 1 ? null : item["version"]!.GetValue<int>() - 1,
+            Guid.Parse(item["organization_id"]!.GetValue<string>()),
+            item["authorization_key"]!.GetValue<string>(),
+            item["fingerprint"]!.GetValue<string>(),
+            item["expected_request_version"]!.GetValue<int>(),
+            ReadContentRef(item["request_ref"]),
+            ReadContentRef(item["request_approval_case_ref"]),
+            ReadContentRef(item["ordering_evidence_ref"]),
+            ReadPolicyEvaluationRef(item["policy_bundle_ref"]),
+            ReadEntityRef(item["supplier_ref"]),
+            item["covered_lines"]!.AsArray().Select(ReadContentRef).ToArray(),
+            ParseDecimal(item["maximum_source_amount"]!.GetValue<string>()),
+            terms.SourceCurrency,
+            ParseDecimal(item["maximum_base_amount"]!.GetValue<string>()),
+            terms,
+            ReadResponsibilities(item["acceptance_responsibilities"]),
+            item["document_evidence_refs"]!.AsArray().Select(ReadContentRef).ToArray(),
+            DirectPurchaseStateCodes.Parse(item["state"]!.GetValue<string>()),
+            Guid.Parse(item["authorized_by_user_id"]!.GetValue<string>()),
+            ParseUtc(item["authorized_at"]!.GetValue<string>()));
+    }
+
+    /// <summary>
+    /// Rebuilds one published amendment version (<c>purchase-order-amendment/v1</c>) from its own
+    /// canonical document, rejecting any drift between the stored bytes and the stored digest
+    /// (REQ-05, NFR-01).
+    /// </summary>
+    public static PurchaseOrderAmendmentVersion ReadAmendment(
+        string documentJson,
+        Guid organizationId,
+        Guid actorUserId,
+        DateTimeOffset occurredAt,
+        string? expectedDigest = null)
+    {
+        if (expectedDigest is not null &&
+            !string.Equals(
+                PurchaseOrderCanonicalizer.Hash(documentJson),
+                PurchaseOrderCodes.Digest(expectedDigest, "content digest"),
+                StringComparison.Ordinal))
+        {
+            throw new PurchaseOrderDependencyUnavailableException(
+                "The stored amendment document is not reproducible from its digest.");
+        }
+
+        var item = RequireObject(JsonNode.Parse(documentJson), [
+            "amendment_id", "approval_ref", "base_po_ref", "canonicalization_version", "contract_version",
+            "evidence_refs", "expected_po_version", "line_deltas", "predecessor_version", "reason",
+            "replacement_delivery", "responsibility_changes", "state", "successor_award_ref", "version"
+        ]);
+        RequireCanonicalization(item);
+        if (!string.Equals(
+                item["contract_version"]!.GetValue<string>(),
+                PurchaseOrderAmendmentVersion.ContractVersion,
+                StringComparison.Ordinal))
+        {
+            throw new PurchaseOrderDependencyUnavailableException(
+                "The stored amendment document has an unsupported contract version.");
+        }
+
+        var deltas = new List<AmendmentLineDelta>();
+        foreach (var node in item["line_deltas"]!.AsArray())
+        {
+            var delta = RequireObject(node, ["change_kind", "line_ref", "previous_line", "replacement_line"]);
+            var kind = delta["change_kind"]!.GetValue<string>();
+            var previous = ReadLine(delta["previous_line"]);
+            var replacement = delta["replacement_line"] is null ? null : ReadLine(delta["replacement_line"]);
+            deltas.Add(kind switch
+            {
+                PurchaseOrderCodes.ChangeReduce => AmendmentLineDelta.Reduce(
+                    previous, replacement ?? throw new DomainValidationException("A reduction requires its line.")),
+                PurchaseOrderCodes.ChangeCancel => AmendmentLineDelta.Cancel(previous),
+                PurchaseOrderCodes.ChangeCommercial => AmendmentLineDelta.Commercial(
+                    previous, replacement ?? throw new DomainValidationException("A commercial change requires its line.")),
+                _ => throw new DomainValidationException("The stored amendment change kind is not recognized.")
+            });
+        }
+
+        var changes = new List<ResponsibilityChange>();
+        foreach (var node in item["responsibility_changes"]!.AsArray())
+        {
+            var change = RequireObject(node, [
+                "kind", "line_ref", "previous_assignment", "replacement_assignment"
+            ]);
+            changes.Add(new ResponsibilityChange(
+                change["kind"]!.GetValue<string>(),
+                ReadContentRef(change["line_ref"]),
+                ReadResponsibilities(new JsonArray(change["previous_assignment"]!.DeepClone()))[0],
+                ReadResponsibilities(new JsonArray(change["replacement_assignment"]!.DeepClone()))[0]));
+        }
+        return new PurchaseOrderAmendmentVersion(
+            Guid.Parse(item["amendment_id"]!.GetValue<string>()),
+            item["version"]!.GetValue<int>(),
+            item["predecessor_version"] is null ? null : item["predecessor_version"]!.GetValue<int>(),
+            ReadContentRef(item["base_po_ref"]),
+            item["expected_po_version"]!.GetValue<int>(),
+            AmendmentStateCodes.Parse(item["state"]!.GetValue<string>()),
+            deltas,
+            changes,
+            item["replacement_delivery"] is null ? null : ReadDelivery(item["replacement_delivery"]),
+            item["successor_award_ref"] is null ? null : ReadContentRef(item["successor_award_ref"]),
+            item["evidence_refs"]!.AsArray().Select(ReadContentRef).ToArray(),
+            item["approval_ref"] is null ? null : ReadContentRef(item["approval_ref"]),
+            organizationId,
+            item["reason"]!.GetValue<string>(),
+            actorUserId,
+            occurredAt);
     }
 
     public static string LineParameters(IEnumerable<LineParameter> parameters) => new JsonArray(
@@ -342,11 +561,47 @@ public static class PurchaseOrderSerialization
         {
             ["amount"] = PurchaseOrderCodes.Decimal(reservation.Amount),
             ["movement_id"] = reservation.MovementId.ToString("D"),
+            ["parent_source_digest"] = reservation.ParentSourceDigest,
+            ["parent_source_id"] = reservation.ParentSourceId.ToString("D"),
+            ["parent_source_type"] = reservation.ParentSourceType,
+            ["parent_source_version"] = reservation.ParentSourceVersion,
             ["position_key_digest"] = reservation.PositionKeyDigest,
             ["remaining"] = PurchaseOrderCodes.Decimal(reservation.Remaining),
             ["target_id"] = reservation.TargetId.ToString("D"),
             ["target_version"] = reservation.TargetVersion
         }).ToArray()).ToJsonString(Options);
+
+    /// <summary>
+    /// Rebuilds the durable resolution of one issue attempt (REQ-04). The recovery of a confirmed
+    /// effect reuses these parents instead of resolving the ledger again, which is what makes a
+    /// retry after the COMMIT idempotent.
+    /// </summary>
+    public static IReadOnlyList<PurchaseOrderReservation> ReadReservations(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json) || string.Equals(json, "[]", StringComparison.Ordinal))
+        {
+            return [];
+        }
+
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        var reservations = new List<PurchaseOrderReservation>();
+        foreach (var element in document.RootElement.EnumerateArray())
+        {
+            reservations.Add(new PurchaseOrderReservation(
+                element.GetProperty("target_id").GetGuid(),
+                element.GetProperty("target_version").GetInt32(),
+                element.GetProperty("movement_id").GetGuid(),
+                ParseDecimal(element.GetProperty("amount").GetString()!),
+                ParseDecimal(element.GetProperty("remaining").GetString()!),
+                element.GetProperty("position_key_digest").GetString()!,
+                element.GetProperty("parent_source_type").GetString()!,
+                element.GetProperty("parent_source_id").GetGuid(),
+                element.GetProperty("parent_source_version").GetInt32(),
+                element.GetProperty("parent_source_digest").GetString()!));
+        }
+
+        return reservations;
+    }
 
     public static string Targets(IEnumerable<OrderingEvidenceTarget> targets) =>
         new JsonArray((targets ?? []).Select(target => (JsonNode)new JsonObject

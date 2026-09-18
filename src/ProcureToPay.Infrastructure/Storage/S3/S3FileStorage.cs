@@ -25,7 +25,7 @@ internal sealed class S3FileStorage(IAmazonS3 s3Client, S3StorageOptions options
         await s3Client.PutObjectAsync(putRequest, cancellationToken);
     }
 
-    public Uri GenerateTemporaryDownloadUrl(string objectKey)
+    public Uri GenerateTemporaryDownloadUrl(string objectKey, TimeSpan? lifetime = null)
     {
         if (string.IsNullOrWhiteSpace(objectKey))
         {
@@ -38,12 +38,19 @@ internal sealed class S3FileStorage(IAmazonS3 s3Client, S3StorageOptions options
                 "Storage:S3:TemporaryUrlLifetimeMinutes must be between 1 and 60.");
         }
 
+        var minutes = lifetime?.TotalMinutes ?? options.TemporaryUrlLifetimeMinutes;
+        if (minutes is <= 0 or > 60)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(lifetime), "A temporary download URL lives between 1 and 60 minutes.");
+        }
+
         var request = new GetPreSignedUrlRequest
         {
             BucketName = GetBucketName(),
             Key = objectKey,
             Verb = HttpVerb.GET,
-            Expires = DateTime.UtcNow.AddMinutes(options.TemporaryUrlLifetimeMinutes)
+            Expires = DateTime.UtcNow.AddMinutes(minutes)
         };
 
         return new Uri(s3Client.GetPreSignedURL(request));

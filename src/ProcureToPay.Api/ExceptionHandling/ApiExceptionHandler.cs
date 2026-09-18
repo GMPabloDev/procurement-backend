@@ -7,6 +7,7 @@ using ProcureToPay.Domain.Modules.Budget;
 using ProcureToPay.Domain.Modules.PurchaseRequests;
 using ProcureToPay.Domain.Modules.Sourcing;
 using ProcureToPay.Domain.Modules.Suppliers;
+using ProcureToPay.Domain.Modules.PurchaseOrders;
 using ProcureToPay.Domain.SharedKernel;
 using ProcureToPay.Infrastructure.Persistence.Policy;
 using ProcureToPay.Infrastructure.Persistence.PurchaseRequests;
@@ -97,6 +98,28 @@ public sealed class ApiExceptionHandler(
                 Title = "Payload too large",
                 Type = "/problems/payload-too-large",
                 Detail = purchaseRequestTooLargeException.Message
+            },
+            // SPEC 11 REQ-11: the Purchase Orders limits, dependency and eligibility outcomes.
+            PurchaseOrderPayloadTooLargeException purchaseOrderTooLargeException => new ProblemDetails
+            {
+                Status = StatusCodes.Status413PayloadTooLarge,
+                Title = "Payload too large",
+                Type = "/problems/payload-too-large",
+                Detail = purchaseOrderTooLargeException.Message
+            },
+            PurchaseOrderDependencyUnavailableException purchaseOrderDependencyException => new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Purchase order dependency unavailable",
+                Type = "/problems/purchase-order-dependency-unavailable",
+                Detail = purchaseOrderDependencyException.Message
+            },
+            PurchaseOrderUnprocessableException purchaseOrderUnprocessableException => new ProblemDetails
+            {
+                Status = StatusCodes.Status422UnprocessableEntity,
+                Title = "Purchase order not eligible",
+                Type = "/problems/purchase-order-not-eligible",
+                Detail = purchaseOrderUnprocessableException.Message
             },
             // SPEC 08: the budget precheck of a REQUIRE_BUDGET_CHECK control is a business outcome,
             // not a dependency failure, and it keeps its audited evidence for a retry (REQ-06).

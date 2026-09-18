@@ -388,13 +388,51 @@ public sealed class PurchaseRequestOrderingEvidenceService(ProcureToPayDbContext
                 : null);
     }
 
+    /// <summary>
+    /// Scope code of one persisted decision scope. Both the canonical descriptor
+    /// (<c>{organization_id, schema_version, scopes:[{dimension,…}]}</c>) and a plain <c>scope</c>
+    /// property are read; an unreadable or foreign shape fails closed instead of crashing the request.
+    /// </summary>
     private static string ScopeOf(string json)
     {
-        using var document = System.Text.Json.JsonDocument.Parse(json);
-        var root = document.RootElement;
-        return root.TryGetProperty("scope", out var scope) && scope.ValueKind == System.Text.Json.JsonValueKind.String
-            ? scope.GetString()!
-            : "ORGANIZATION";
+        System.Text.Json.JsonDocument document;
+        try
+        {
+            document = System.Text.Json.JsonDocument.Parse(json);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            throw new PurchaseOrderDependencyUnavailableException(
+                "The stored decision scope of the request case is not readable.");
+        }
+
+        using (document)
+        {
+            var root = document.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object)
+            {
+                throw new PurchaseOrderDependencyUnavailableException(
+                    "The stored decision scope of the request case is not readable.");
+            }
+
+            if (root.TryGetProperty("scope", out var scope) &&
+                scope.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                return scope.GetString()!;
+            }
+
+            if (root.TryGetProperty("scopes", out var scopes) &&
+                scopes.ValueKind == System.Text.Json.JsonValueKind.Array &&
+                scopes.GetArrayLength() > 0 &&
+                scopes[0].ValueKind == System.Text.Json.JsonValueKind.Object &&
+                scopes[0].TryGetProperty("dimension", out var dimension) &&
+                dimension.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                return dimension.GetString()!;
+            }
+
+            return "ORGANIZATION";
+        }
     }
 
     /// <summary>Contract code of one system role; the CLR enum name never leaves the domain.</summary>

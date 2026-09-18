@@ -298,6 +298,126 @@ public static class PurchaseOrderCanonicalizer
     }
 
     /// <summary>
+    /// <c>procurement-supporting-document/v1</c> document: the <c>supporting_document_digest</c>
+    /// preimage of REQ-08. The file reference never publishes an object key or a URL.
+    /// </summary>
+    public static string SupportingDocumentDocument(ProcurementSupportingDocumentVersion document) =>
+        PolicyCanonicalizer.SerializeCanonical(SupportingDocumentPreimage(document));
+
+    /// <summary>The canonical preimage of one supporting document version.</summary>
+    public static SortedDictionary<string, object?> SupportingDocumentPreimage(
+        ProcurementSupportingDocumentVersion document)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        return new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["business_type"] = document.BusinessType,
+            ["canonicalization_version"] = PolicyCanonicalizer.Version,
+            ["contract_version"] = ProcurementSupportingDocumentVersion.ContractVersion,
+            ["covered_targets"] = Set(document.CoveredTargets.Select(target => (object?)ContentRef(target))),
+            ["file_ref"] = FileRefPreimage(document.FileRef),
+            ["organization_id"] = document.OrganizationId.ToString("D"),
+            ["request_ref"] = ContentRef(document.RequestRef),
+            ["state"] = SupportingDocumentStateCodes.Of(document.State),
+            ["version"] = document.Version
+        };
+    }
+
+    /// <summary><c>file_ref</c> preimage of one stored file: metadata only, never a location.</summary>
+    public static SortedDictionary<string, object?> FileRefPreimage(SupportingDocumentFileRef fileRef) =>
+        new(StringComparer.Ordinal)
+        {
+            ["content_type"] = fileRef.ContentType,
+            ["file_id"] = fileRef.FileId.ToString("D"),
+            ["file_name"] = fileRef.FileName,
+            ["length"] = fileRef.Length,
+            ["sha256"] = fileRef.Sha256,
+            ["version"] = fileRef.Version
+        };
+
+    /// <summary>
+    /// <c>supporting-document-evidence/v1</c> document: the
+    /// <c>supporting_document_evidence_digest</c> preimage of REQ-08.
+    /// </summary>
+    public static string SupportingDocumentEvidenceDocument(SupportingDocumentEvidence evidence) =>
+        PolicyCanonicalizer.SerializeCanonical(SupportingDocumentEvidencePreimage(evidence));
+
+    /// <summary>The canonical preimage of one supporting document evidence.</summary>
+    public static SortedDictionary<string, object?> SupportingDocumentEvidencePreimage(
+        SupportingDocumentEvidence evidence)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+        var counts = new SortedDictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var (target, count) in evidence.CountsByTarget())
+        {
+            counts[target] = count;
+        }
+
+        return new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["attempt_id"] = evidence.AttemptId.ToString("D"),
+            ["canonicalization_version"] = PolicyCanonicalizer.Version,
+            ["checked_at"] = PurchaseOrderCodes.FormatUtc(evidence.CheckedAt),
+            ["contract_version"] = SupportingDocumentEvidence.ContractVersion,
+            ["counts_by_target"] = counts,
+            ["document_refs"] = Set(evidence.DocumentRefs.Select(reference =>
+                (object?)new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["document_ref"] = ContentRef(reference.DocumentRef),
+                    ["length"] = reference.Length,
+                    ["sha256"] = reference.Sha256,
+                    ["target"] = ContentRef(reference.TargetRef)
+                })),
+            ["organization_id"] = evidence.OrganizationId.ToString("D"),
+            ["parameters_digest"] = evidence.ParametersDigest,
+            ["prerequisite_id"] = evidence.PrerequisiteId.ToString("D"),
+            ["result"] = evidence.Result,
+            ["signal_key"] = evidence.SignalKey,
+            ["targets"] = Set(evidence.Targets.Select(target => (object?)ContentRef(target)))
+        };
+    }
+
+    /// <summary>
+    /// <c>direct-purchase-authorization/v1</c> document: the <c>direct_purchase_authorization_digest</c>
+    /// preimage of REQ-07.
+    /// </summary>
+    public static string DirectPurchaseDocument(DirectPurchaseAuthorization authorization) =>
+        PolicyCanonicalizer.SerializeCanonical(DirectPurchasePreimage(authorization));
+
+    /// <summary>The canonical preimage of one Direct Purchase authorization version.</summary>
+    public static SortedDictionary<string, object?> DirectPurchasePreimage(DirectPurchaseAuthorization authorization)
+    {
+        ArgumentNullException.ThrowIfNull(authorization);
+        return new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["acceptance_responsibilities"] = Set(authorization.AcceptanceResponsibilities
+                .Select(responsibility => (object?)ResponsibilityPreimage(responsibility))),
+            ["authorization_id"] = authorization.AuthorizationId.ToString("D"),
+            ["authorization_key"] = authorization.AuthorizationKey,
+            ["authorized_at"] = PurchaseOrderCodes.FormatUtc(authorization.AuthorizedAt),
+            ["authorized_by_user_id"] = authorization.AuthorizedByUserId.ToString("D"),
+            ["canonicalization_version"] = PolicyCanonicalizer.Version,
+            ["contract_version"] = DirectPurchaseAuthorization.ContractVersion,
+            ["covered_lines"] = Set(authorization.CoveredLines.Select(line => (object?)ContentRef(line))),
+            ["document_evidence_refs"] = Set(authorization.DocumentEvidenceRefs
+                .Select(reference => (object?)ContentRef(reference))),
+            ["expected_request_version"] = authorization.ExpectedRequestVersion,
+            ["fingerprint"] = authorization.Fingerprint,
+            ["maximum_base_amount"] = PurchaseOrderCodes.Decimal(authorization.MaximumBaseAmount),
+            ["maximum_source_amount"] = PurchaseOrderCodes.Decimal(authorization.MaximumSourceAmount),
+            ["ordering_evidence_ref"] = ContentRef(authorization.OrderingEvidenceRef),
+            ["organization_id"] = authorization.OrganizationId.ToString("D"),
+            ["policy_bundle_ref"] = SourcingProposalVersion.EvaluationRefDocument(authorization.PolicyBundleRef),
+            ["request_approval_case_ref"] = ContentRef(authorization.RequestApprovalCaseRef),
+            ["request_ref"] = ContentRef(authorization.RequestRef),
+            ["state"] = DirectPurchaseStateCodes.Of(authorization.State),
+            ["supplier_ref"] = EntityRef(authorization.SupplierRef),
+            ["terms_snapshot"] = VendorTermsPreimage(authorization.TermsSnapshot),
+            ["version"] = authorization.Version
+        };
+    }
+
+    /// <summary>
     /// <c>amendment-line-delta/v1</c> document. The delta reuses the complete
     /// <c>purchase-order-line/v1</c> of both sides, so a golden fixture reproduces its bytes.
     /// </summary>

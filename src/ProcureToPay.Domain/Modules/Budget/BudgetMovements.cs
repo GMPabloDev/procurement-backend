@@ -87,7 +87,9 @@ public enum BudgetReleaseTrigger
 {
     ApprovalResult = 1,
     ApprovalSuperseded = 2,
-    PurchaseRequestCancelled = 3
+    PurchaseRequestCancelled = 3,
+    /// <summary>SPEC 11 REQ-07: the cancellation of one Direct Purchase authorization releases its hold.</summary>
+    DirectPurchaseCancelled = 4
 }
 
 /// <summary>The four contractual buckets of one position (REQ-02).</summary>

@@ -367,8 +367,19 @@ public static class DependencyInjection
             ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseRequestOrderingEvidenceService>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderBudgetProducer>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderIssuanceService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderAmendmentService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.DirectPurchaseService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.SupportingDocumentService>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.SupportingDocumentOwnerProcessor>();
+        services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseRequestOrderingQuery>();
         services.AddScoped<ProcureToPay.Application.Abstractions.IApprovalSubmissionAdapter>(provider =>
             new ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderApprovalAdapter(
+                provider.GetRequiredService<ProcureToPayDbContext>(),
+                provider.GetRequiredService<
+                    ProcureToPay.Infrastructure.Persistence.PurchaseOrders
+                        .PurchaseRequestOrderingEvidenceService>()));
+        services.AddScoped<ProcureToPay.Application.Abstractions.IApprovalSubmissionAdapter>(provider =>
+            new ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderAmendmentApprovalAdapter(
                 provider.GetRequiredService<ProcureToPayDbContext>(),
                 provider.GetRequiredService<
                     ProcureToPay.Infrastructure.Persistence.PurchaseOrders

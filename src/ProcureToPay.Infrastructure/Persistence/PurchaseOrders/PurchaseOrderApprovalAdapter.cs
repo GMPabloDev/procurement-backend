@@ -63,16 +63,29 @@ public sealed class PurchaseOrderApprovalAdapter(
                 "The purchase order approval adapter does not serve the requested operation.");
         }
 
-        var version = amendment
+        var amendmentRecord = amendment
             ? await AmendmentVersionAsync(request, cancellationToken)
-            : await OrderVersionAsync(request, cancellationToken);
-        var lines = PurchaseOrderSerialization
-            .ReadLines(version.LinesJson)
-            .OrderBy(line => line.RequestLineRef.CanonicalIdentity, StringComparer.Ordinal)
-            .ToArray();
+            : null;
+        var version = amendmentRecord is null
+            ? await OrderVersionAsync(request, cancellationToken)
+            : await BaseOrderVersionAsync(amendmentRecord, cancellationToken);
+        var lines = amendmentRecord is null
+            ? PurchaseOrderSerialization
+                .ReadLines(version.LinesJson)
+                .OrderBy(line => line.RequestLineRef.CanonicalIdentity, StringComparer.Ordinal)
+                .ToArray()
+            : AmendmentLines(amendmentRecord, version);
+        var coveredLines = amendmentRecord is null
+            ? lines
+            : lines
+                .Concat(PurchaseOrderSerialization.ReadLines(version.LinesJson))
+                .GroupBy(line => line.RequestLineRef.CanonicalIdentity, StringComparer.Ordinal)
+                .Select(group => group.First())
+                .OrderBy(line => line.RequestLineRef.CanonicalIdentity, StringComparer.Ordinal)
+                .ToArray();
         var requestRef = new PurchaseOrderContentRef(
             version.RequestId, version.RequestVersion, version.RequestContentDigest);
-        var coveredTargets = lines
+        var coveredTargets = coveredLines
             .Select(line => new OrderingEvidenceTargetRef(
                 line.RequestLineRef.Id,
                 line.RequestLineRef.Version))
@@ -88,7 +101,8 @@ public sealed class PurchaseOrderApprovalAdapter(
                 PurchaseOrderCodes.DomainWorkloadClientId),
             cancellationToken);
         RequireApprovedFinancials(evidence, coveredTargets);
-        var snapshotDigest = SnapshotDigest(version, evidence, lines, amendment);
+        var snapshotDigest = SnapshotDigest(
+            version, evidence, lines, amendment, amendmentRecord?.ContentDigest, amendmentRecord?.DocumentJson);
         // REQ-03: the material snapshot digest of every target comes from the completed request case,
         // never from the order itself, so the case approves exactly the resolved projection.
         var targets = evidence.CoveredTargets
@@ -112,7 +126,7 @@ public sealed class PurchaseOrderApprovalAdapter(
             AuthorityRequirement.Required(
                 ApprovalAuthorityType.Procurement,
                 Math.Max(financialRank, 1),
-                version.BaseAmount,
+                lines.Sum(line => line.BaseGrossTotal),
                 version.BaseCurrency),
             DecisionScopeDescriptor.Create(
                 request.OrganizationId,
@@ -200,19 +214,21 @@ public sealed class PurchaseOrderApprovalAdapter(
         PurchaseOrderVersionRecord version,
         PurchaseRequestOrderingEvidence evidence,
         IReadOnlyList<PurchaseOrderLine> lines,
-        bool amendment)
+        bool amendment,
+        string? amendmentDigest,
+        string? amendmentDocument)
     {
         var terms = PurchaseOrderSerialization.ReadTerms(version.TermsJson);
         var preimage = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["amendment_digest"] = amendment ? version.ContentDigest : null,
+            ["amendment_digest"] = amendment ? amendmentDigest : null,
             ["award_ref"] = PurchaseOrderCanonicalizer.ContentRef(new PurchaseOrderContentRef(
                 version.AwardId, version.AwardVersion, version.AwardContentDigest)),
             ["canonicalization_version"] = PolicyCanonicalizer.Version,
             ["contract_version"] = SnapshotContractVersion,
             ["line_deltas"] = amendment
                 ? PurchaseOrderCanonicalizer.Set(PurchaseOrderSerialization
-                    .ReadAmendmentDeltaRefs(version.DocumentJson)
+                    .ReadAmendmentDeltaRefs(amendmentDocument!)
                     .Select(delta => (object?)new SortedDictionary<string, object?>(StringComparer.Ordinal)
                     {
                         ["change_kind"] = delta.ChangeKind,
@@ -262,7 +278,7 @@ public sealed class PurchaseOrderApprovalAdapter(
         return version;
     }
 
-    private async Task<PurchaseOrderVersionRecord> AmendmentVersionAsync(
+    private async Task<PurchaseOrderAmendmentRecord> AmendmentVersionAsync(
         ApprovalSubmissionRequest request,
         CancellationToken cancellationToken)
     {
@@ -280,10 +296,51 @@ public sealed class PurchaseOrderApprovalAdapter(
                 "Only a presented amendment can be submitted to the approval workflow.");
         }
 
-        return await dbContext.PurchaseOrderVersions
+        return amendment;
+    }
+
+    private async Task<PurchaseOrderVersionRecord> BaseOrderVersionAsync(
+        PurchaseOrderAmendmentRecord amendment,
+        CancellationToken cancellationToken) =>
+        await dbContext.PurchaseOrderVersions
             .AsNoTracking()
             .SingleAsync(
                 record => record.PoId == amendment.PoId && record.Version == amendment.BasePoVersion,
                 cancellationToken);
+
+    /// <summary>
+    /// REQ-05: an amendment is approved for the exact line set it will apply, so the requirement
+    /// covers the replacement documents of the deltas and keeps every untouched line.
+    /// </summary>
+    private static PurchaseOrderLine[] AmendmentLines(
+        PurchaseOrderAmendmentRecord amendment,
+        PurchaseOrderVersionRecord baseVersion)
+    {
+        var deltas = PurchaseOrderSerialization
+            .ReadAmendment(
+                amendment.DocumentJson,
+                amendment.OrganizationId,
+                amendment.ActorUserId,
+                amendment.OccurredAt,
+                amendment.ContentDigest)
+            .LineDeltas
+            .ToDictionary(delta => delta.LineRef.CanonicalIdentity, StringComparer.Ordinal);
+        var lines = new List<PurchaseOrderLine>();
+        foreach (var line in PurchaseOrderSerialization.ReadLines(baseVersion.LinesJson))
+        {
+            if (deltas.TryGetValue(line.CanonicalIdentity, out var delta))
+            {
+                if (delta.ReplacementLine is not null)
+                {
+                    lines.Add(delta.ReplacementLine);
+                }
+
+                continue;
+            }
+
+            lines.Add(line);
+        }
+
+        return lines.OrderBy(line => line.RequestLineRef.CanonicalIdentity, StringComparer.Ordinal).ToArray();
     }
 }
