@@ -335,6 +335,7 @@ public static class BudgetFingerprints
         BudgetReleaseTrigger.ApprovalResult => "APPROVAL_RESULT",
         BudgetReleaseTrigger.ApprovalSuperseded => "APPROVAL_SUPERSEDED",
         BudgetReleaseTrigger.PurchaseRequestCancelled => "PURCHASE_REQUEST_CANCELLED",
+        BudgetReleaseTrigger.DirectPurchaseCancelled => "DIRECT_PURCHASE_CANCELLED",
         _ => throw new DomainValidationException("The budget release trigger is not recognized.")
     };
 

@@ -4,7 +4,7 @@ public interface IFileStorage
 {
     Task UploadAsync(FileUploadRequest request, CancellationToken cancellationToken = default);
 
-    Uri GenerateTemporaryDownloadUrl(string objectKey);
+    Uri GenerateTemporaryDownloadUrl(string objectKey, TimeSpan? lifetime = null);
 
     /// <summary>
     /// Read-only probe that the configured object storage is actually reachable. Readiness uses it so

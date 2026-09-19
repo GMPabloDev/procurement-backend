@@ -628,7 +628,7 @@ public sealed class SupplierE2ETests
         public Task UploadAsync(FileUploadRequest request, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
-        public Uri GenerateTemporaryDownloadUrl(string objectKey) => new($"https://agreements.test/{objectKey}");
+        public Uri GenerateTemporaryDownloadUrl(string objectKey, TimeSpan? lifetime = null) => new($"https://agreements.test/{objectKey}");
 
         public Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(available);

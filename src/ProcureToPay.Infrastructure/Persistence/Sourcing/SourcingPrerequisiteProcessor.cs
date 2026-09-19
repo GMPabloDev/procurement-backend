@@ -830,11 +830,20 @@ public sealed class SourcingPrerequisiteProcessor(
                                      record.Version == caseRecord.SubjectVersion)
                     .Select(record => (Guid?)record.ProcessId)
                     .SingleOrDefaultAsync(cancellationToken)
-                : await dbContext.SourcingTakeovers
+                // SPEC 11 REQ-10: the per-line takeover table is authoritative for new operations;
+                // the request-wide legacy row is only a fallback for historical work.
+                : await dbContext.PurchaseRequestLineTakeovers
                     .AsNoTracking()
-                    .Where(record => record.RequestId == caseRecord.SubjectId && record.ReleasedAt == null)
-                    .Select(record => (Guid?)record.ProcessId)
-                    .FirstOrDefaultAsync(cancellationToken);
+                    .Where(record => record.RequestId == caseRecord.SubjectId &&
+                                     record.ConsumerType == "SOURCING" &&
+                                     record.State == 1)
+                    .Select(record => (Guid?)record.ConsumerId)
+                    .FirstOrDefaultAsync(cancellationToken)
+                  ?? await dbContext.SourcingTakeovers
+                      .AsNoTracking()
+                      .Where(record => record.RequestId == caseRecord.SubjectId && record.ReleasedAt == null)
+                      .Select(record => (Guid?)record.ProcessId)
+                      .FirstOrDefaultAsync(cancellationToken);
         }
 
         if (processId is null)

@@ -135,7 +135,8 @@ builder.Services
     // SPEC 09 REQ-12: supplier owner, catalog, key provider, adapters, processor and storage.
     .AddCheck<SupplierHealthCheck>("supplier", tags: ["ready"])
     // SPEC 10 REQ-13/REQ-14: owner registrations, typed provider, approval adapter and storage.
-    .AddCheck<SourcingHealthCheck>("sourcing", tags: ["ready"]);
+    .AddCheck<SourcingHealthCheck>("sourcing", tags: ["ready"])
+    .AddCheck<SupportingDocumentHealthCheck>("supporting-documents", tags: ["ready"]);
 
 var telemetryServiceName = builder.Configuration["OpenTelemetry:ServiceName"]
     ?? builder.Environment.ApplicationName;
@@ -170,6 +171,10 @@ builder.Services.AddInfrastructure(builder.Configuration);
 if (builder.Configuration.GetValue("Approval:Worker:Enabled", !builder.Environment.IsEnvironment("Testing")))
 {
     builder.Services.AddHostedService<ApprovalWorkflowWorker>();
+    // SPEC 11 REQ-08: the supporting document owner worker is separate from Sourcing.
+    builder.Services.AddHostedService<SupportingDocumentOwnerWorker>();
+    // SPEC 11 REQ-10/REQ-12: the takeover preflight reopens or closes the command gate.
+    builder.Services.AddHostedService<PurchaseOrderPreflightWorker>();
 }
 
 var app = builder.Build();
@@ -191,11 +196,45 @@ app.UseAuthentication();
 app.UseMiddleware<CurrentUserProvisioningMiddleware>();
 
 app.UseAuthorization();
+// SPEC 11 REQ-11: state-changing commands of the module are refused while its preflight is unmet.
+app.UseMiddleware<PurchaseOrderCommandGateMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi().WithDocumentPerVersion();
     app.MapScalarApiReference();
+}
+
+// SPEC 11 REQ-10/REQ-12: commands are only enabled when every historical request-wide takeover is
+// represented by its per-line rows; an unexpandable fence stops the host instead of serving commands.
+// A database that cannot be read does not authorize anything either (every command fails closed with
+// 503), so the preflight only refuses to start on a *readable* inconsistent state.
+using (var preflightScope = app.Services.CreateScope())
+{
+    try
+    {
+        await preflightScope.ServiceProvider
+            .GetRequiredService<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderContractPreflight>()
+            .EnsureTakeoverExpansionAsync();
+    }
+    catch (Exception exception) when (exception is
+                                          ProcureToPay.Domain.Modules.PurchaseOrders
+                                              .PurchaseOrderDependencyUnavailableException or
+                                          Microsoft.Data.SqlClient.SqlException or
+                                          Microsoft.EntityFrameworkCore.DbUpdateException or
+                                          InvalidOperationException)
+    {
+        // The expected fail-closed outcomes (an inconsistent legacy fence or an unreadable database)
+        // let the host start with the command gate closed: reads stay available, commands answer the
+        // contractual 503 and the preflight worker retries until it can reopen them (REQ-10/REQ-12).
+        preflightScope.ServiceProvider
+            .GetRequiredService<ILoggerFactory>()
+            .CreateLogger("PurchaseOrderContractPreflight")
+            .LogWarning(
+                exception,
+                "The purchase order takeover preflight is not satisfied; commands stay unavailable "
+                + "until it succeeds.");
+    }
 }
 
 app.MapHealthChecks("/health");

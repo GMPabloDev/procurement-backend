@@ -4,9 +4,11 @@ using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using ProcureToPay.Domain.Modules.Approval;
 using ProcureToPay.Domain.Modules.Policy;
+using ProcureToPay.Domain.Modules.PurchaseOrders;
 using ProcureToPay.Domain.Modules.Sourcing;
 using ProcureToPay.Domain.Modules.Suppliers;
 using ProcureToPay.Domain.SharedKernel;
+using ProcureToPay.Infrastructure.Persistence.PurchaseOrders;
 
 namespace ProcureToPay.Infrastructure.Persistence.Sourcing;
 
@@ -61,8 +63,13 @@ public interface IAwardConsumptionVerifier
 /// compare-and-swap under the takeover fence: the award, the process version, the per-line uniqueness
 /// pointer and the outbox event are committed together or not at all.
 /// </summary>
-public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwardConsumptionVerifier
+public sealed class SourcingAwardService(
+    ProcureToPayDbContext dbContext,
+    PurchaseRequestLineTakeoverService? takeovers = null) : IAwardConsumptionVerifier
 {
+    private readonly PurchaseRequestLineTakeoverService takeovers = takeovers ??
+        new PurchaseRequestLineTakeoverService(dbContext);
+
     private const string PublishCommand = "PUBLISH_AWARD";
 
     public string VerifierId => SourcingCodes.AwardConsumptionVerifierId;
@@ -123,7 +130,8 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             .AsNoTracking()
             .AnyAsync(
                 record => record.ProcessId == process.Id && record.ReleasedAt == null,
-                cancellationToken);
+                cancellationToken) ||
+            await takeovers.HasActiveAsync(process.OrganizationId, process.RequestId, cancellationToken);
         if (!takeover)
         {
             throw new DomainConflictException("The award requires a live sourcing takeover.");
@@ -457,7 +465,9 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
             throw new DomainConflictException("The award digest does not match the published version.");
         }
 
-        // The request must still belong to the takeover and the published line set, exactly.
+        // The request must still belong to the takeover and the published line set, exactly. SPEC 11
+        // REQ-10: the per-line table is authoritative for new operations, and a line already owned by
+        // a Purchase Order stays bound to the request it was awarded from.
         var takeover = await dbContext.SourcingTakeovers
             .AsNoTracking()
             .AnyAsync(
@@ -466,6 +476,20 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
                           record.RequestVersion == request.RequestVersion &&
                           record.ReleasedAt == null,
                 cancellationToken);
+        if (!takeover)
+        {
+            var active = await dbContext.PurchaseRequestLineTakeovers
+                .AsNoTracking()
+                .Where(candidate => candidate.OrganizationId == row.OrganizationId &&
+                                    candidate.RequestId == request.RequestId &&
+                                    candidate.RequestVersion == request.RequestVersion &&
+                                    candidate.State == (int)TakeoverState.Active)
+                .Select(candidate => new { candidate.LineId, candidate.LineVersion })
+                .ToArrayAsync(cancellationToken);
+            takeover = request.CoveredLines.All(covered => active.Any(candidate =>
+                candidate.LineId == covered.Id && candidate.LineVersion == covered.Version));
+        }
+
         if (!takeover)
         {
             throw new DomainConflictException("The request is no longer bound to the awarded takeover.");
@@ -538,10 +562,23 @@ public sealed class SourcingAwardService(ProcureToPayDbContext dbContext) : IAwa
                 1, snapshot.Id, domain.Digest, domain.Digest, domain.Digest, domain.Digest, domain.Digest));
         }
 
-        AddAudit(
-            request.OrganizationId, SourcingCodes.ActionAwardConsumed, row.ActorUserId,
-            $"award:{row.AwardId:D}:consumed", request.WorkloadClientId, DateTimeOffset.UtcNow);
-        await dbContext.SaveChangesAsync(cancellationToken);
+        // SPEC 11 REQ-01: consuming the same award again after a pre-issue cancellation is the same
+        // audited fact, so the consumption audit is idempotent by its effect key.
+        var effectKey = request.WorkloadClientId;
+        var alreadyAudited = await dbContext.SourcingAuditRecords
+            .AsNoTracking()
+            .AnyAsync(
+                audit => audit.OrganizationId == request.OrganizationId &&
+                         audit.Action == SourcingCodes.ActionAwardConsumed &&
+                         audit.EffectKey == effectKey,
+                cancellationToken);
+        if (!alreadyAudited)
+        {
+            AddAudit(
+                request.OrganizationId, SourcingCodes.ActionAwardConsumed, row.ActorUserId,
+                effectKey, request.WorkloadClientId, DateTimeOffset.UtcNow);
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
         return new AwardConsumptionResponse(
             new SourcingContentRef(row.AwardId, row.Version, row.ContentDigest),
             new SourcingContentRef(row.ProposalId, row.ProposalVersion, content.ProposalDigest),

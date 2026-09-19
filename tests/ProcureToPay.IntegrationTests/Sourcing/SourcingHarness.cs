@@ -98,7 +98,13 @@ public sealed class SourcingHarness : IAsyncDisposable
         })
         .Build();
 
-    public SourcingProcessService CreateProcessService(ProcureToPayDbContext context) => new(context);
+    /// <summary>
+    /// SPEC 11 REQ-10: the process service records the takeover per line, so the harness builds it
+    /// with the real per-line takeover service instead of the legacy request-wide row.
+    /// </summary>
+    public SourcingProcessService CreateProcessService(ProcureToPayDbContext context) =>
+        new(context, null, new ProcureToPay.Infrastructure.Persistence.PurchaseOrders
+            .PurchaseRequestLineTakeoverService(context));
 
     public SourcingQuotationService CreateQuotationService(ProcureToPayDbContext context) =>
         new(context, new ServiceCollection().AddSingleton<IFileStorage>(Storage).BuildServiceProvider(),
@@ -110,7 +116,9 @@ public sealed class SourcingHarness : IAsyncDisposable
 
     public SourcingProposalService CreateProposalService(ProcureToPayDbContext context) => new(context);
 
-    public SourcingAwardService CreateAwardService(ProcureToPayDbContext context) => new(context);
+    public SourcingAwardService CreateAwardService(ProcureToPayDbContext context) =>
+        new(context, new ProcureToPay.Infrastructure.Persistence.PurchaseOrders
+            .PurchaseRequestLineTakeoverService(context));
 
     /// <summary>
     /// Catalogue route over the SPEC 09 boundary: the approved supplier fact owner is a boundary
@@ -1061,7 +1069,7 @@ public sealed class InMemorySourcingStorage : IFileStorage
         Objects[request.ObjectKey] = buffer.ToArray();
     }
 
-    public Uri GenerateTemporaryDownloadUrl(string objectKey) =>
+    public Uri GenerateTemporaryDownloadUrl(string objectKey, TimeSpan? lifetime = null) =>
         new($"https://quotes.test/{Uri.EscapeDataString(objectKey)}");
 
     public Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) =>
