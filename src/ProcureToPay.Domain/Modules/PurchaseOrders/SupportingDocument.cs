@@ -44,9 +44,13 @@ public sealed record SupportingDocumentFileRef
     /// <summary>Identity of the exact uploaded bytes: the same bytes count once per target (REQ-08).</summary>
     public string ByteIdentity => $"{Sha256}:{Length}";
 
-    /// <summary>Deterministic object key of the stored bytes; it never reaches a published document.</summary>
-    public static string ObjectKey(Guid organizationId, Guid fileId, int version) =>
-        $"purchase-orders/{organizationId:D}/supporting-documents/{fileId:D}/{version}";
+    /// <summary>
+    /// Object key of the stored bytes. It is derived from the server-owned document identity, never
+    /// from a caller value, so a second request can never address (and overwrite) the bytes of an
+    /// already confirmed document (REQ-08, NFR-01).
+    /// </summary>
+    public static string ObjectKey(Guid organizationId, Guid documentId, int version) =>
+        $"purchase-orders/{organizationId:D}/supporting-documents/{documentId:D}/{version}";
 }
 
 /// <summary>

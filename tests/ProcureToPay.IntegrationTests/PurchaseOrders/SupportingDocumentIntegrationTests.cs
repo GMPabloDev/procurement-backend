@@ -20,6 +20,39 @@ namespace ProcureToPay.IntegrationTests.PurchaseOrders;
 public sealed class SupportingDocumentIntegrationTests
 {
     [Fact]
+    public async Task A_confirmed_document_keeps_its_bytes_under_a_server_owned_key()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await PurchaseOrderHarness.StartAsync(cancellationToken);
+        await using var context = harness.CreateContext();
+        await SeedAsync(harness, context, ["INVOICE"], minimumCount: 1, cancellationToken);
+        var documents = new SupportingDocumentService(context, harness.Sourcing.Storage);
+        var fileId = Guid.NewGuid();
+
+        var first = await StageAsync(
+            documents, harness, fileId, "invoice.pdf", "INVOICE", [1, 2, 3], cancellationToken);
+        var confirmed = await documents.ConfirmAsync(
+            new ConfirmSupportingDocumentCommand(
+                harness.OrganizationId, first.DocumentId, first.Version, harness.RequesterId),
+            cancellationToken);
+        var objectKeys = harness.Sourcing.Storage.Objects.Keys.ToArray();
+        Assert.Single(objectKeys);
+        var firstKey = objectKeys[0];
+        var confirmedBytes = harness.Sourcing.Storage.Objects[firstKey].ToArray();
+
+        // REQ-08/NFR-01: the same caller file reference stages another document, but the storage
+        // identity is the server-owned document, so the confirmed bytes stay untouched.
+        var second = await StageAsync(
+            documents, harness, fileId, "invoice.pdf", "INVOICE", [9, 9, 9], cancellationToken);
+        Assert.NotEqual(confirmed.DocumentId, second.DocumentId);
+        Assert.Equal(2, harness.Sourcing.Storage.Objects.Count);
+        Assert.Equal(confirmedBytes, harness.Sourcing.Storage.Objects[firstKey]);
+        Assert.Equal(3, harness.Sourcing.Storage.Objects[firstKey].Length);
+        Assert.Equal(new byte[] { 9, 9, 9 }, harness.Sourcing.Storage.Objects
+            .Single(entry => !string.Equals(entry.Key, firstKey, StringComparison.Ordinal)).Value);
+    }
+
+    [Fact]
     public async Task Unique_bytes_of_the_admitted_union_satisfy_the_prerequisite()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -275,12 +308,22 @@ public sealed class SupportingDocumentIntegrationTests
         string businessType,
         byte[] bytes,
         CancellationToken cancellationToken) =>
+        await StageAsync(documents, harness, Guid.NewGuid(), fileName, businessType, bytes, cancellationToken);
+
+    private static async Task<ProcurementSupportingDocumentVersion> StageAsync(
+        SupportingDocumentService documents,
+        PurchaseOrderHarness harness,
+        Guid fileId,
+        string fileName,
+        string businessType,
+        byte[] bytes,
+        CancellationToken cancellationToken) =>
         await documents.StageAsync(
             new StageSupportingDocumentCommand(
                 harness.OrganizationId,
                 harness.RequestId,
                 1,
-                Guid.NewGuid(),
+                fileId,
                 1,
                 "application/pdf",
                 fileName,

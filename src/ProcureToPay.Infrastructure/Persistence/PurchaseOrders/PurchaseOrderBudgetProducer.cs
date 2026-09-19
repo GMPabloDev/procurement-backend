@@ -472,9 +472,11 @@ public sealed class PurchaseOrderBudgetProducer(
     }
 
     /// <summary>
-    /// Releases the reduction of one amendment (REQ-05): the still-open committed remainder returns
-    /// first to <c>RESERVED</c> and then to <c>AVAILABLE</c> by reversing both the commitment and the
-    /// reservation that backed it. A commitment already advanced by a later transition fails closed.
+    /// Releases the reduction of one amendment (REQ-05): the still-open committed remainder of the
+    /// whole Purchase Order lineage — the issue plus every increase amendment — returns first to
+    /// <c>RESERVED</c> and then to <c>AVAILABLE</c>. Allocations are consumed oldest-first, so a
+    /// reduction larger than the original commitment is still backed by real open commitments, and a
+    /// commitment already advanced by a later transition fails closed.
     /// </summary>
     public async Task<PurchaseOrderBudgetOutcome> ReleaseAmendmentReductionAsync(
         Guid organizationId,
@@ -492,81 +494,6 @@ public sealed class PurchaseOrderBudgetProducer(
         if (reductionEntries.Length == 0)
         {
             throw new DomainConflictException("The amendment does not reduce a committed amount.");
-        }
-
-        var issueAttempt = await dbContext.PurchaseOrderBudgetAttempts
-            .AsNoTracking()
-            .SingleOrDefaultAsync(
-                record => record.PoId == poId &&
-                          record.Operation == (int)PurchaseOrderBudgetAttemptOperation.Commit &&
-                          record.AmendmentId == null &&
-                          record.State == (int)PurchaseOrderBudgetAttemptState.Completed,
-                cancellationToken)
-            ?? throw new PurchaseOrderDependencyUnavailableException(
-                "The order has no confirmed commitment to reduce.");
-        if (!Guid.TryParse(issueAttempt.OperationId, out var issueOperationId))
-        {
-            throw new PurchaseOrderDependencyUnavailableException("The commitment of the order is not readable.");
-        }
-
-        var commitments = await dbContext.BudgetMovements
-            .AsNoTracking()
-            .Where(movement => movement.OperationId == issueOperationId &&
-                               movement.Type == (int)BudgetMovementType.Committed)
-            .ToArrayAsync(cancellationToken);
-        var reverses = await dbContext.BudgetMovements
-            .AsNoTracking()
-            .Where(movement => movement.Type == (int)BudgetMovementType.Reverse &&
-                               movement.ParentMovementId != null)
-            .Select(movement => new { Parent = movement.ParentMovementId!.Value, movement.Amount })
-            .ToArrayAsync(cancellationToken);
-        var steps = new List<(Guid TargetId, int TargetVersion, decimal Amount, Guid CommittedId, Guid ReservedId,
-            BudgetTransitionSource ParentSource)>();
-        // SPEC 08: a REVERSE must come from the producer and the source of its parent operation, so
-        // the source of the issue commitment is read from the ledger instead of assumed.
-        var committedOperation = await dbContext.BudgetOperations
-            .AsNoTracking()
-            .SingleAsync(operation => operation.Id == commitments[0].OperationId, cancellationToken);
-        var committedSource = new BudgetTransitionSource(
-            committedOperation.SourceType,
-            committedOperation.SourceId,
-            committedOperation.SourceVersion,
-            committedOperation.SourceDigest);
-        foreach (var entry in reductionEntries)
-        {
-            var commitment = commitments.SingleOrDefault(movement =>
-                movement.TargetId == entry.TargetId && movement.TargetVersion == entry.TargetVersion)
-                ?? throw new PurchaseOrderDependencyUnavailableException(
-                    "The commitment of a reduced target is not visible.");
-            var remaining = commitment.Amount - reverses
-                .Where(reverse => reverse.Parent == commitment.Id)
-                .Sum(reverse => reverse.Amount);
-            if (remaining < entry.Amount)
-            {
-                throw new DomainConflictException(
-                    "The committed amount of the order was already advanced by a later transition.");
-            }
-
-            if (commitment.ParentMovementId is not Guid reservedId)
-            {
-                throw new PurchaseOrderDependencyUnavailableException(
-                    "The commitment of a reduced target has no reservation to release.");
-            }
-
-            var parentOperationId = await dbContext.BudgetMovements
-                .AsNoTracking()
-                .Where(movement => movement.Id == reservedId)
-                .Select(movement => movement.OperationId)
-                .SingleAsync(cancellationToken);
-            var parentOperation = await dbContext.BudgetOperations
-                .AsNoTracking()
-                .SingleAsync(operation => operation.Id == parentOperationId, cancellationToken);
-            steps.Add((entry.TargetId, entry.TargetVersion, entry.Amount, commitment.Id, reservedId,
-                new BudgetTransitionSource(
-                    parentOperation.SourceType,
-                    parentOperation.SourceId,
-                    parentOperation.SourceVersion,
-                    parentOperation.SourceDigest)));
         }
 
         var attempt = await FindOrCreateAttemptAsync(
@@ -588,85 +515,235 @@ public sealed class PurchaseOrderBudgetProducer(
                 Replayed: true);
         }
 
+        // Every COMMIT of the lineage, oldest first, with the open remainder of each commitment and
+        // the exact source of its operation and of the reservation that backed it.
+        var commits = await dbContext.PurchaseOrderBudgetAttempts
+            .AsNoTracking()
+            .Where(record => record.PoId == poId &&
+                             record.OrganizationId == organizationId &&
+                             record.Operation == (int)PurchaseOrderBudgetAttemptOperation.Commit &&
+                             record.State == (int)PurchaseOrderBudgetAttemptState.Completed &&
+                             record.OperationId != null)
+            .OrderBy(record => record.CreatedAt)
+            .ThenBy(record => record.Id)
+            .ToArrayAsync(cancellationToken);
+        if (commits.Length == 0)
+        {
+            throw new PurchaseOrderDependencyUnavailableException(
+                "The order has no confirmed commitment to reduce.");
+        }
+
+        var reverses = await dbContext.BudgetMovements
+            .AsNoTracking()
+            .Where(movement => movement.Type == (int)BudgetMovementType.Reverse &&
+                               movement.ParentMovementId != null)
+            .Select(movement => new { Parent = movement.ParentMovementId!.Value, movement.Amount })
+            .ToArrayAsync(cancellationToken);
+        var commitments = new List<OpenCommitment>();
+        foreach (var commit in commits)
+        {
+            var operationId = Guid.Parse(commit.OperationId!);
+            var operation = await dbContext.BudgetOperations
+                .AsNoTracking()
+                .SingleAsync(record => record.Id == operationId, cancellationToken);
+            var source = new BudgetTransitionSource(
+                operation.SourceType, operation.SourceId, operation.SourceVersion, operation.SourceDigest);
+            var movements = await dbContext.BudgetMovements
+                .AsNoTracking()
+                .Where(movement => movement.OperationId == operationId &&
+                                   movement.Type == (int)BudgetMovementType.Committed)
+                .OrderBy(movement => movement.OccurredAt)
+                .ThenBy(movement => movement.Id)
+                .ToArrayAsync(cancellationToken);
+            foreach (var movement in movements)
+            {
+                var remaining = movement.Amount - reverses
+                    .Where(reverse => reverse.Parent == movement.Id)
+                    .Sum(reverse => reverse.Amount);
+                if (remaining <= 0m)
+                {
+                    continue;
+                }
+
+                if (movement.ParentMovementId is not Guid reservedId)
+                {
+                    throw new PurchaseOrderDependencyUnavailableException(
+                        "A commitment of the order has no reservation to release.");
+                }
+
+                commitments.Add(new OpenCommitment(
+                    movement.TargetId ?? Guid.Empty,
+                    movement.TargetVersion ?? 0,
+                    remaining,
+                    movement.Id,
+                    reservedId,
+                    movement.TargetMaterialSnapshotDigest ?? string.Empty,
+                    source));
+            }
+        }
+
+        if (commitments.Count == 0)
+        {
+            throw new DomainConflictException(
+                "The committed amount of the order was already advanced by a later transition.");
+        }
+
+        // Allocate every reduction across the open commitments, oldest-first and deterministically.
+        var allocations = new List<(OpenCommitment Commitment, decimal Amount)>();
+        foreach (var entry in reductionEntries)
+        {
+            var remaining = entry.Amount;
+            foreach (var commitment in commitments.Where(candidate =>
+                         candidate.TargetId == entry.TargetId &&
+                         candidate.TargetVersion == entry.TargetVersion))
+            {
+                if (remaining <= 0m)
+                {
+                    break;
+                }
+
+                var taken = Math.Min(remaining, commitment.Remaining);
+                if (taken <= 0m)
+                {
+                    continue;
+                }
+
+                allocations.Add((commitment, taken));
+                remaining -= taken;
+            }
+
+            if (remaining > 0m)
+            {
+                throw new DomainConflictException(
+                    "The committed amount of the order was already advanced by a later transition.");
+            }
+        }
+
+        if (allocations.Count == 0)
+        {
+            throw new DomainConflictException(
+                "The committed amount of the order was already advanced by a later transition.");
+        }
+
         attempt.State = (int)PurchaseOrderBudgetAttemptState.Releasing;
         attempt.Attempts += 1;
         attempt.UpdatedAt = occurredAt;
         await dbContext.SaveChangesAsync(cancellationToken);
-        var refs = attempt.MovementRefsJson is null
-            ? new List<PurchaseOrderBudgetOperationRef>()
-            : PurchaseOrderSerialization.ReadBudgetOperationRefs(attempt.MovementRefsJson).ToList();
-        if (attempt.OperationId is null)
+        var refs = new List<PurchaseOrderBudgetOperationRef>();
+
+        // Step 1: the commitment returns to RESERVED, one operation per source of the parent COMMIT.
+        var committedGroups = allocations
+            .GroupBy(allocation => allocation.Commitment.CommittedSource)
+            .Select(group => (Source: group.Key, Allocations: group.ToArray()))
+            .OrderBy(group => group.Source.Type, StringComparer.Ordinal)
+            .ThenBy(group => group.Source.Id)
+            .ThenBy(group => group.Source.Version)
+            .ToArray();
+        for (var index = 0; index < committedGroups.Length; index++)
         {
-            var committedRelease = await transitions.ApplyAsync(
+            var group = committedGroups[index];
+            var key = committedGroups.Length == 1
+                ? attempt.OperationKey
+                : $"{attempt.OperationKey}:{index}";
+            var release = await transitions.ApplyAsync(
                 organizationId,
                 workload,
                 "REVERSE",
-                attempt.OperationKey,
+                key,
                 "PURCHASE_ORDER_AMENDMENT_REDUCED",
-                committedSource,
-                steps.Select(step => new BudgetTransitionCommandMovement(
-                    step.Amount,
-                    step.CommittedId,
-                    BudgetCodes.ParentMovementVersion,
-                    new BudgetTarget(
-                        step.TargetId,
-                        step.TargetVersion,
-                        MaterialDigestOf(commitments, step.CommittedId),
-                        PurchaseOrderCodes.ApprovalTargetType)))
+                group.Source,
+                group.Allocations
+                    .Select(allocation => new BudgetTransitionCommandMovement(
+                        allocation.Amount,
+                        allocation.Commitment.CommittedId,
+                        BudgetCodes.ParentMovementVersion,
+                        TargetOf(allocation.Commitment)))
                     .ToArray(),
                 correlationReference,
                 cancellationToken);
-            attempt.OperationId = committedRelease.OperationId.ToString("D");
+            attempt.OperationId ??= release.OperationId.ToString("D");
             refs.Add(new PurchaseOrderBudgetOperationRef(
-                "REVERSE", committedRelease.OperationId, attempt.OperationKey, poId, poVersion, poDigest));
-            attempt.MovementRefsJson = PurchaseOrderSerialization.BudgetOperationRefs(refs);
-            await dbContext.SaveChangesAsync(cancellationToken);
+                "REVERSE", release.OperationId, key, poId, poVersion, poDigest));
         }
 
-        if (attempt.ReleaseOperationId is null)
+        // Step 2: the freed reservation returns to AVAILABLE, one operation per reservation source.
+        var reservedGroups = new List<(BudgetTransitionSource Source, List<BudgetTransitionCommandMovement> Movements)>();
+        foreach (var allocation in allocations)
         {
-            var sources = steps.Select(step => step.ParentSource).Distinct().ToArray();
-            if (sources.Length != 1)
+            var parentOperationId = await dbContext.BudgetMovements
+                .AsNoTracking()
+                .Where(movement => movement.Id == allocation.Commitment.ReservedId)
+                .Select(movement => movement.OperationId)
+                .SingleAsync(cancellationToken);
+            var parentOperation = await dbContext.BudgetOperations
+                .AsNoTracking()
+                .SingleAsync(operation => operation.Id == parentOperationId, cancellationToken);
+            var source = new BudgetTransitionSource(
+                parentOperation.SourceType,
+                parentOperation.SourceId,
+                parentOperation.SourceVersion,
+                parentOperation.SourceDigest);
+            var group = reservedGroups.FirstOrDefault(candidate => candidate.Source == source);
+            if (group.Movements is null)
             {
-                throw new PurchaseOrderDependencyUnavailableException(
-                    "The reduced reservations come from different parent operations.");
+                group = (source, []);
+                reservedGroups.Add(group);
             }
 
-            var releaseKey = $"po-amendment-reserved-release:{amendmentId:D}:{poVersion}";
-            attempt.ReleaseKey = releaseKey;
-            await dbContext.SaveChangesAsync(cancellationToken);
-            var reservedRelease = await transitions.ApplyAsync(
+            group.Movements.Add(new BudgetTransitionCommandMovement(
+                allocation.Amount,
+                allocation.Commitment.ReservedId,
+                BudgetCodes.ParentMovementVersion,
+                TargetOf(allocation.Commitment)));
+        }
+
+        var orderedReserved = reservedGroups
+            .OrderBy(group => group.Source.Type, StringComparer.Ordinal)
+            .ThenBy(group => group.Source.Id)
+            .ThenBy(group => group.Source.Version)
+            .ToArray();
+        for (var index = 0; index < orderedReserved.Length; index++)
+        {
+            var group = orderedReserved[index];
+            var key = orderedReserved.Length == 1
+                ? $"po-amendment-reserved-release:{amendmentId:D}:{poVersion}"
+                : $"po-amendment-reserved-release:{amendmentId:D}:{poVersion}:{index}";
+            var release = await transitions.ApplyAsync(
                 organizationId,
                 workload,
                 "REVERSE",
-                releaseKey,
+                key,
                 "PURCHASE_ORDER_AMENDMENT_RESERVATION_RELEASED",
-                sources[0],
-                steps.Select(step => new BudgetTransitionCommandMovement(
-                    step.Amount,
-                    step.ReservedId,
-                    BudgetCodes.ParentMovementVersion,
-                    new BudgetTarget(
-                        step.TargetId,
-                        step.TargetVersion,
-                        MaterialDigestOf(commitments, step.CommittedId),
-                        PurchaseOrderCodes.ApprovalTargetType)))
-                    .ToArray(),
+                group.Source,
+                group.Movements.ToArray(),
                 correlationReference,
                 cancellationToken);
-            attempt.ReleaseOperationId = reservedRelease.OperationId.ToString("D");
+            attempt.ReleaseKey ??= key;
+            attempt.ReleaseOperationId ??= release.OperationId.ToString("D");
             refs.Add(new PurchaseOrderBudgetOperationRef(
-                "REVERSE", reservedRelease.OperationId, releaseKey, poId, poVersion, poDigest));
-            attempt.MovementRefsJson = PurchaseOrderSerialization.BudgetOperationRefs(refs);
+                "REVERSE", release.OperationId, key, poId, poVersion, poDigest));
         }
 
         attempt.State = (int)PurchaseOrderBudgetAttemptState.Completed;
+        attempt.MovementRefsJson = PurchaseOrderSerialization.BudgetOperationRefs(refs);
         attempt.CompletedAt = occurredAt;
         attempt.UpdatedAt = occurredAt;
         await dbContext.SaveChangesAsync(cancellationToken);
         return new PurchaseOrderBudgetOutcome(
-            Guid.TryParse(attempt.OperationId, out var operation) ? operation : Guid.Empty, refs, Replayed: false);
+            Guid.TryParse(attempt.OperationId, out var reducedOperation) ? reducedOperation : Guid.Empty,
+            refs,
+            Replayed: false);
     }
+
+    /// <summary>One open commitment of the lineage with the reservation that backed it (REQ-05).</summary>
+    private sealed record OpenCommitment(
+        Guid TargetId,
+        int TargetVersion,
+        decimal Remaining,
+        Guid CommittedId,
+        Guid ReservedId,
+        string MaterialSnapshotDigest,
+        BudgetTransitionSource CommittedSource);
 
     private static BudgetTarget TargetOf(
         IReadOnlyList<OrderingEvidenceTarget> targets,
@@ -676,6 +753,13 @@ public sealed class PurchaseOrderBudgetProducer(
             reservation.TargetVersion,
             targets.Single(target => target.TargetId == reservation.TargetId &&
                                      target.TargetVersion == reservation.TargetVersion).MaterialSnapshotDigest,
+            PurchaseOrderCodes.ApprovalTargetType);
+
+    private static BudgetTarget TargetOf(OpenCommitment commitment) =>
+        new(
+            commitment.TargetId,
+            commitment.TargetVersion,
+            commitment.MaterialSnapshotDigest,
             PurchaseOrderCodes.ApprovalTargetType);
 
     private static string MaterialDigestOf(

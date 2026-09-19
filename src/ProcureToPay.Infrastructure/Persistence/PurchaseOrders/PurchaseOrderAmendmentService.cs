@@ -171,32 +171,33 @@ public sealed class PurchaseOrderAmendmentService(
 
             dbContext.PurchaseOrderAmendments.Add(
                 PurchaseOrderAmendmentWriter.Record(descriptor, command.AmendmentKey, occurred));
+            // REQ-12/NFR-03: the version, its pointer, the idempotency record and the audit commit
+            // together, so a crash can never leave a live amendment without its replay record.
+            dbContext.PurchaseOrderCommands.Add(new PurchaseOrderCommandRecord
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = command.OrganizationId,
+                CommandKey = command.AmendmentKey,
+                CommandType = CreateCommandType,
+                Fingerprint = fingerprint,
+                ResultRef = $"{amendmentId:D}:{version}",
+                ActorUserId = command.ActorUserId,
+                OccurredAt = occurred
+            });
+            AddAudit(
+                command.OrganizationId,
+                command.ActorUserId,
+                PurchaseOrderCodes.ActionAmendmentCreated,
+                PurchaseOrderCodes.TargetAmendment,
+                amendmentId,
+                version,
+                ["line_deltas", "responsibility_changes", "replacement_delivery"],
+                command.AmendmentKey,
+                occurred);
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
 
-        dbContext.PurchaseOrderCommands.Add(new PurchaseOrderCommandRecord
-        {
-            Id = Guid.NewGuid(),
-            OrganizationId = command.OrganizationId,
-            CommandKey = command.AmendmentKey,
-            CommandType = CreateCommandType,
-            Fingerprint = fingerprint,
-            ResultRef = $"{amendmentId:D}:{version}",
-            ActorUserId = command.ActorUserId,
-            OccurredAt = occurred
-        });
-        AddAudit(
-            command.OrganizationId,
-            command.ActorUserId,
-            PurchaseOrderCodes.ActionAmendmentCreated,
-            PurchaseOrderCodes.TargetAmendment,
-            amendmentId,
-            version,
-            ["line_deltas", "responsibility_changes", "replacement_delivery"],
-            command.AmendmentKey,
-            occurred);
-        await dbContext.SaveChangesAsync(cancellationToken);
         _ = order;
         return descriptor;
     }

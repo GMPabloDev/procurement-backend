@@ -201,6 +201,32 @@ if (app.Environment.IsDevelopment())
     app.MapScalarApiReference();
 }
 
+// SPEC 11 REQ-10/REQ-12: commands are only enabled when every historical request-wide takeover is
+// represented by its per-line rows; an unexpandable fence stops the host instead of serving commands.
+// A database that cannot be read does not authorize anything either (every command fails closed with
+// 503), so the preflight only refuses to start on a *readable* inconsistent state.
+using (var preflightScope = app.Services.CreateScope())
+{
+    try
+    {
+        await preflightScope.ServiceProvider
+            .GetRequiredService<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderContractPreflight>()
+            .EnsureTakeoverExpansionAsync();
+    }
+    catch (Exception exception) when (exception is Microsoft.Data.SqlClient.SqlException or
+                                          Microsoft.EntityFrameworkCore.DbUpdateException or
+                                          InvalidOperationException)
+    {
+        preflightScope.ServiceProvider
+            .GetRequiredService<ILoggerFactory>()
+            .CreateLogger("PurchaseOrderContractPreflight")
+            .LogWarning(
+                exception,
+                "The purchase order takeover preflight could not read the database; commands stay "
+                + "unavailable until it succeeds.");
+    }
+}
+
 app.MapHealthChecks("/health");
 app.MapHealthChecks("/health/bootstrap", new HealthCheckOptions
 {

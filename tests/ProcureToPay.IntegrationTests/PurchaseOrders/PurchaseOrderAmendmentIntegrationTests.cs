@@ -311,38 +311,7 @@ public sealed class PurchaseOrderAmendmentIntegrationTests
             cancellationToken);
         Assert.Equal(AmendmentState.Applied, reduced.State);
 
-        var awardRoot = await context.SourcingAwards
-            .AsNoTracking()
-            .SingleAsync(record => record.Id == award.AwardId, cancellationToken);
-        var successorProposal = await harness.Sourcing.CreateProposalService(context).BuildAsync(
-            new BuildProposalCommand(
-                harness.OrganizationId, awardRoot.RfqId, harness.SupplierId, $"proposal-{Guid.NewGuid():N}"),
-            harness.BuyerId,
-            "corr-proposal-successor",
-            DateTimeOffset.UtcNow,
-            cancellationToken);
-        await SourcingScenario.SeedApprovalAsync(
-            harness.Sourcing, context, successorProposal, cancellationToken);
-        var processVersion = await context.SourcingProcesses
-            .AsNoTracking()
-            .Where(record => record.Id == awardRoot.ProcessId)
-            .Select(record => record.Version)
-            .SingleAsync(cancellationToken);
-        var successor = await harness.CreateAwardService(context).PublishAsync(
-            new PublishAwardCommand(
-                harness.OrganizationId,
-                successorProposal.ProposalId,
-                successorProposal.Version,
-                processVersion,
-                award.Version,
-                $"award-{Guid.NewGuid():N}",
-                "Increase the awarded amount"),
-            harness.BuyerId,
-            "corr-award-successor",
-            DateTimeOffset.UtcNow,
-            cancellationToken);
-        Assert.Equal(award.AwardId, successor.AwardId);
-        Assert.Equal(award.Version + 1, successor.Version);
+        var successor = await PublishSuccessorAwardAsync(harness, context, award, cancellationToken);
         await SeedAdditionalReservationAsync(harness, context, positionId, Reduced, cancellationToken);
 
         var currentVersion = await context.PurchaseOrders
@@ -361,7 +330,7 @@ public sealed class PurchaseOrderAmendmentIntegrationTests
                     line with { })
             ],
             cancellationToken,
-            new PurchaseOrderContentRef(successor.AwardId, successor.Version, successor.ContentDigest));
+            successor);
         Assert.Equal(AmendmentState.Applied, increased.State);
 
         await using var verification = harness.CreateContext();
@@ -631,6 +600,167 @@ public sealed class PurchaseOrderAmendmentIntegrationTests
                 candidate => candidate.PoId == poId && candidate.Version == currentVersion,
                 cancellationToken);
         return PurchaseOrderSerialization.ReadDocument(record.DocumentJson, record.ContentDigest);
+    }
+
+    [Fact]
+    public async Task A_reduction_consumes_the_open_commitment_of_the_whole_lineage()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await PurchaseOrderHarness.StartAsync(cancellationToken);
+        await using var context = harness.CreateContext();
+        var award = await harness.PublishAwardAsync(context, cancellationToken);
+        var (poId, issued, positionId) = await IssueOrderAsync(harness, context, award, cancellationToken);
+        var line = issued.Lines.Single(candidate => candidate.RequestLineRef.Id == harness.LineId);
+
+        // 20 -> 10 (reduction), then 10 -> 20 with a successor award (increase): two open commitments.
+        await ApplyWithApprovalAsync(
+            harness,
+            context,
+            poId,
+            issued.PurchaseOrderVersionNumber,
+            [AmendmentLineDelta.Reduce(line, WithQuantity(line, 1m))],
+            cancellationToken);
+        var successor = await PublishSuccessorAwardAsync(harness, context, award, cancellationToken);
+        await SeedAdditionalReservationAsync(harness, context, positionId, Reduced, cancellationToken);
+        var afterIncrease = await context.PurchaseOrders
+            .AsNoTracking()
+            .Where(record => record.Id == poId)
+            .Select(record => record.CurrentVersion)
+            .SingleAsync(cancellationToken);
+        var increased = await ApplyWithApprovalAsync(
+            harness,
+            context,
+            poId,
+            afterIncrease,
+            [
+                AmendmentLineDelta.Commercial(WithQuantity(line, 1m), line)
+            ],
+            cancellationToken,
+            successor);
+        Assert.Equal(Ordered, (await CurrentOrderAsync(context, poId, cancellationToken)).SourceAmount);
+
+        // REQ-05: reducing below the original commitment must consume the increase commitment too.
+        var reduced = await ApplyWithApprovalAsync(
+            harness,
+            context,
+            poId,
+            increased.Version == 0 ? afterIncrease : (await context.PurchaseOrders
+                .AsNoTracking()
+                .Where(record => record.Id == poId)
+                .Select(record => record.CurrentVersion)
+                .SingleAsync(cancellationToken)),
+            [AmendmentLineDelta.Reduce(line, WithQuantity(line, 0.5m))],
+            cancellationToken);
+        Assert.Equal(AmendmentState.Applied, reduced.State);
+
+        await using var verification = harness.CreateContext();
+        var finalOrder = await CurrentOrderAsync(verification, poId, cancellationToken);
+        Assert.Equal(5m, finalOrder.SourceAmount);
+        var balance = await verification.BudgetBalances
+            .AsNoTracking()
+            .SingleAsync(record => record.PositionId == positionId, cancellationToken);
+        Assert.Equal(5m, balance.Committed);
+        Assert.Equal(0m, balance.Reserved);
+    }
+
+    [Fact]
+    public async Task The_creation_atomically_records_its_version_pointer_and_replay_key()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await PurchaseOrderHarness.StartAsync(cancellationToken);
+        await using var context = harness.CreateContext();
+        var award = await harness.PublishAwardAsync(context, cancellationToken);
+        var (poId, issued, _) = await IssueOrderAsync(harness, context, award, cancellationToken);
+        var key = $"amend-{Guid.NewGuid():N}";
+
+        var create = new CreatePurchaseOrderAmendmentCommand(
+            harness.OrganizationId,
+            poId,
+            issued.PurchaseOrderVersionNumber,
+            key,
+            null,
+            [],
+            [],
+            new DeliveryCommitment(DateOnly.FromDateTime(DateTime.UtcNow).AddDays(45), "Cusco DC"),
+            "Move the delivery",
+            harness.BuyerId,
+            "corr-amend");
+        var amendment = await harness.CreateAmendmentService(context).CreateAsync(
+            create, DateTimeOffset.UtcNow, cancellationToken);
+
+        // REQ-12: the version, its pointer, the idempotency record and the audit commit together.
+        await using (var fresh = harness.CreateContext())
+        {
+            var command = await fresh.PurchaseOrderCommands
+                .AsNoTracking()
+                .SingleAsync(record => record.CommandKey == key, cancellationToken);
+            Assert.Equal(PurchaseOrderAmendmentService.CreateCommandType, command.CommandType);
+            Assert.Equal($"{amendment.AmendmentId:D}:{amendment.Version}", command.ResultRef);
+            var root = await fresh.PurchaseOrderAmendmentRoots
+                .AsNoTracking()
+                .SingleAsync(record => record.Id == amendment.AmendmentId, cancellationToken);
+            Assert.Equal(amendment.Version, root.CurrentVersion);
+            Assert.Equal(
+                1,
+                await fresh.PurchaseOrderAuditRecords
+                    .AsNoTracking()
+                    .CountAsync(
+                        record => record.Action == PurchaseOrderCodes.ActionAmendmentCreated &&
+                                  record.TargetId == amendment.AmendmentId,
+                        cancellationToken));
+        }
+
+        // The same preimage replays the recorded version; another one under the same key conflicts.
+        var replay = await harness.CreateAmendmentService(context).CreateAsync(
+            create, DateTimeOffset.UtcNow, cancellationToken);
+        Assert.Equal(amendment.Digest, replay.Digest);
+        await Assert.ThrowsAsync<DomainConflictException>(() => harness.CreateAmendmentService(context)
+            .CreateAsync(
+                create with { Reason = "Another preimage" },
+                DateTimeOffset.UtcNow,
+                cancellationToken));
+    }
+
+    /// <summary>Publishes the successor award of the process and returns its reference (REQ-05).</summary>
+    private static async Task<PurchaseOrderContentRef> PublishSuccessorAwardAsync(
+        PurchaseOrderHarness harness,
+        ProcureToPayDbContext context,
+        SourcingAwardView award,
+        CancellationToken cancellationToken)
+    {
+        var awardRoot = await context.SourcingAwards
+            .AsNoTracking()
+            .SingleAsync(record => record.Id == award.AwardId, cancellationToken);
+        var successorProposal = await harness.Sourcing.CreateProposalService(context).BuildAsync(
+            new BuildProposalCommand(
+                harness.OrganizationId, awardRoot.RfqId, harness.SupplierId, $"proposal-{Guid.NewGuid():N}"),
+            harness.BuyerId,
+            "corr-proposal-successor",
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        await SourcingScenario.SeedApprovalAsync(
+            harness.Sourcing, context, successorProposal, cancellationToken);
+        var processVersion = await context.SourcingProcesses
+            .AsNoTracking()
+            .Where(record => record.Id == awardRoot.ProcessId)
+            .Select(record => record.Version)
+            .SingleAsync(cancellationToken);
+        var successor = await harness.CreateAwardService(context).PublishAsync(
+            new PublishAwardCommand(
+                harness.OrganizationId,
+                successorProposal.ProposalId,
+                successorProposal.Version,
+                processVersion,
+                award.Version,
+                $"award-{Guid.NewGuid():N}",
+                "Increase the awarded amount"),
+            harness.BuyerId,
+            "corr-award-successor",
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        Assert.Equal(award.AwardId, successor.AwardId);
+        Assert.Equal(award.Version + 1, successor.Version);
+        return new PurchaseOrderContentRef(successor.AwardId, successor.Version, successor.ContentDigest);
     }
 
     private static PurchaseOrderLine WithQuantity(PurchaseOrderLine line, decimal quantity)
