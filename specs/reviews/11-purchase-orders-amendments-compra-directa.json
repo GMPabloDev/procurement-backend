@@ -18,8 +18,8 @@
   "verdict": "BLOCK",
   "mode": "full",
   "baseline_digest": "3df90fea3a48e59ec84b57a248c6d29cd5c7eae2a10b865ea44f7d69aa3f5cf9",
-  "review_count": 5,
-  "reviewer": "Revisión contractual: sdd-contract-reviewer (openai-codex/gpt-5.6-luna, effort high), rondas 1-3 full/delta/acotada → PASS con R1-R13 resueltos. Revisión de implementación: sdd-implementation-reviewer (openai-codex/gpt-5.6-sol, effort high), ronda 1 full sobre 7224199..9e11fd3 → BLOCK (R14-R17); ronda 2 delta sobre 9e11fd3..47c6dec → R15 resuelto, R14/R16/R17 abiertos. Las correcciones de esos tres hallazgos están aplicadas y con regresión sobre el árbol posterior, pendientes de una ronda 3 autorizada por el usuario.",
+  "review_count": 6,
+  "reviewer": "Revisión contractual: sdd-contract-reviewer (openai-codex/gpt-5.6-luna, effort high), rondas 1-3 → PASS con R1-R13 resueltos. Revisión de implementación: sdd-implementation-reviewer (openai-codex/gpt-5.6-sol, effort high): ronda 1 full 7224199..9e11fd3 → BLOCK (R14-R17); ronda 2 delta 9e11fd3..47c6dec → R15 resuelto, R14/R16/R17 abiertos; ronda 3 delta 47c6dec..8fae432 (autorizada) → R14 y R16 resueltos, R17 abierto por el arranque con fence inconsistente. Corrección de R17 aplicada y probada a nivel host; pendiente de una ronda 4 autorizada que confirme el delta.",
   "reviewed_at": "2026-09-19",
   "coverage": {
     "behavior": "REQ-01..REQ-12 y CA-01..CA-10 revisados: PO draft/approval/issue, amendments, Direct Purchase, documents y estados observables quedaron coherentes tras resolver R1-R13. Implementación: se contrastaron estados/errores de PO, amendments, Direct Purchase y documentos contra los commands reales; R14-R17 acotaron inmutabilidad de bytes, atomicidad de creación, reducción de lineage y gate de preflight.",
@@ -123,9 +123,9 @@
     {
       "id": "R14",
       "severity": "blocker",
-      "status": "open",
+      "status": "resolved",
       "evidence": "La clave de storage derivaba del fileId del caller y la descarga usaba la version confirmada (v2) mientras el stage escribia en v1: una URL de documento confirmado apuntaba a un objeto inexistente y un segundo stage con el mismo file ref podia sobrescribir bytes ya confirmados.",
-      "resolution": "Aplicado y con regresion (`A_confirmed_document_keeps_its_bytes_under_a_server_owned_key`, que resuelve la URL real): la clave deriva del documento server-side en su version raiz y es la misma en stage y descarga. Pendiente de confirmacion en ronda 3."
+      "resolution": "Aplicado y con regresion (`A_confirmed_document_keeps_its_bytes_under_a_server_owned_key`, que resuelve la URL real): la clave deriva del documento server-side en su version raiz y es la misma en stage y descarga. Confirmado en la ronda 3 (delta 47c6dec..8fae432)."
     },
     {
       "id": "R15",
@@ -137,16 +137,16 @@
     {
       "id": "R16",
       "severity": "blocker",
-      "status": "open",
+      "status": "resolved",
       "evidence": "La reduccion resolvia remanentes del ledger en cada intento y solo persistia refs/estado al final: un crash entre grupos reasignaba el importe completo y podia revertir de mas o chocar de key/preimagen.",
-      "resolution": "Aplicado y con fault injection (`A_reduction_consumes_the_open_commitment_of_the_whole_lineage`): el plan (allocations + sources + keys deterministas) se persiste en ParentsJson antes del primer efecto, cada grupo checkpointa sus refs y el retry reejecuta el plan registrado sin postear movimientos nuevos. Pendiente de confirmacion en ronda 3."
+      "resolution": "Aplicado y con fault injection (`A_reduction_consumes_the_open_commitment_of_the_whole_lineage`): el plan (allocations + sources + keys deterministas) se persiste en ParentsJson antes del primer efecto, cada grupo checkpointa sus refs y el retry reejecuta el plan registrado sin postear movimientos nuevos. Confirmado en la ronda 3 (delta 47c6dec..8fae432)."
     },
     {
       "id": "R17",
       "severity": "blocker",
       "status": "open",
       "evidence": "Ante una base ilegible solo se registraba un warning y no habia estado ni reintento que mantuviera los commands en 503: la base podia recuperarse con expansion inconsistente sin repetir preflight.",
-      "resolution": "Aplicado y con prueba host/API: `PurchaseOrderCommandGate` (singleton) se cierra en cualquier fallo de preflight, `PurchaseOrderPreflightWorker` reintenta, `PurchaseOrderCommandGateMiddleware` responde 503 /problems/purchase-order-dependency-unavailable a los commands y las lecturas siguen disponibles; regresiones de gate y de reapertura tras preflight exitoso. Pendiente de confirmacion en ronda 3."
+      "resolution": "Aplicado y con prueba de host real: el fail-closed esperado del preflight (fence inconsistente o base ilegible) ya no aborta el arranque, deja el `PurchaseOrderCommandGate` cerrado, el `PurchaseOrderPreflightWorker` reintenta y el middleware responde 503 a los commands manteniendo las lecturas; la prueba E2E `An_incomplete_legacy_fence_keeps_the_commands_closed_until_the_preflight_recovers` arranca el host con un takeover legacy no expandible, observa 503 contractual, repara el fence y ve reapertura sin reinicio. Pendiente de confirmacion en ronda 4."
     }
   ]
 }

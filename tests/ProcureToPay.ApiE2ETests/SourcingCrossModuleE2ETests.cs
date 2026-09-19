@@ -565,6 +565,168 @@ public sealed class SourcingCrossModuleE2ETests
     }
 
     [Fact]
+    public async Task An_incomplete_legacy_fence_keeps_the_commands_closed_until_the_preflight_recovers()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var processId = Guid.NewGuid();
+        var fenceRequestId = Guid.NewGuid();
+        var fenceLineId = Guid.NewGuid();
+        // A historical request-wide takeover whose request version and process line set are missing:
+        // the migration could not expand it, so the deployment must not authorize any command.
+        await using var environment = await Environment.StartAsync(
+            cancellationToken,
+            seedBeforeHost: context =>
+            {
+                context.SourcingTakeovers.Add(new SourcingTakeoverRecord
+                {
+                    Id = Guid.NewGuid(),
+                    OrganizationId = context.Organizations.Single().Id,
+                    RequestId = fenceRequestId,
+                    RequestVersion = 1,
+                    ProcessId = processId,
+                    ProcessVersion = 1,
+                    ActorUserId = context.UserProfiles.Single(profile => profile.Subject == BuyerSubject).Id,
+                    RegisteredAt = DateTimeOffset.UtcNow.AddMinutes(-5)
+                });
+                context.SaveChanges();
+            });
+        using var buyer = environment.Client(BuyerSubject);
+
+        // The host starts (reads stay available) but every command answers the contractual 503.
+        using (var read = await buyer.GetAsync($"/api/v1/purchase-orders/{Guid.NewGuid():D}", cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.NotFound, read.StatusCode);
+        }
+
+        using (var closed = await buyer.PostAsJsonAsync(
+            "/api/v1/purchase-orders",
+            new
+            {
+                awardId = Guid.NewGuid(),
+                awardVersion = 1,
+                awardContentDigest = new string('a', 64),
+                coveredLines = Array.Empty<object>(),
+                claimKey = $"claim-fence-{Guid.NewGuid():N}",
+                poId = (Guid?)null
+            },
+            cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, closed.StatusCode);
+            Assert.Equal(
+                "/problems/purchase-order-dependency-unavailable",
+                await Environment.ProblemTypeAsync(closed, cancellationToken));
+        }
+
+        // The fence is repaired (request version, process line set and its per-line rows), the worker
+        // retries and the command gate reopens without restarting the host.
+        await using (var repair = environment.CreateContext())
+        {
+            repair.PurchaseRequests.Add(new Infrastructure.Persistence.PurchaseRequests.PurchaseRequestRecord
+            {
+                Id = fenceRequestId,
+                OrganizationId = environment.OrganizationId,
+                RequesterId = environment.RequesterId,
+                LegalEntityId = environment.LegalEntityId,
+                LegalEntityVersion = 1,
+                CurrentVersion = 1,
+                Status = 4,
+                CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
+                UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-5)
+            });
+            repair.PurchaseRequestVersions.Add(
+                new Infrastructure.Persistence.PurchaseRequests.PurchaseRequestVersionRecord
+                {
+                    RequestId = fenceRequestId,
+                    Version = 1,
+                    OrganizationId = environment.OrganizationId,
+                    RequesterId = environment.RequesterId,
+                    LegalEntityId = environment.LegalEntityId,
+                    LegalEntityVersion = 1,
+                    BusinessJustification = "Legacy fence fixture",
+                    ContentDigest = new string('9', 64),
+                    ActorUserId = environment.RequesterId,
+                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-5)
+                });
+            repair.PurchaseRequestVersionLines.Add(
+                new Infrastructure.Persistence.PurchaseRequests.PurchaseRequestVersionLineRecord
+                {
+                    RequestId = fenceRequestId,
+                    RequestVersion = 1,
+                    LineId = fenceLineId,
+                    LineVersion = 1,
+                    ContentDigest = new string('b', 64)
+                });
+            repair.SourcingProcesses.Add(new SourcingProcessRecord
+            {
+                Id = processId,
+                OrganizationId = environment.OrganizationId,
+                RequestId = fenceRequestId,
+                RequestVersion = 1,
+                State = 1,
+                Version = 1,
+                ActorUserId = environment.BuyerId,
+                CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
+                UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-5)
+            });
+            repair.SourcingProcessLines.Add(new SourcingProcessLineRecord
+            {
+                ProcessId = processId,
+                LineId = fenceLineId,
+                LineVersion = 1,
+                LineContentDigest = new string('b', 64),
+                RequestedQuantity = 1m,
+                UnitCode = "EA"
+            });
+            await repair.SaveChangesAsync(cancellationToken);
+            repair.PurchaseRequestLineTakeovers.Add(new PurchaseRequestLineTakeoverRecord
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = environment.OrganizationId,
+                RequestId = fenceRequestId,
+                RequestVersion = 1,
+                RequestContentDigest = new string('9', 64),
+                LineId = fenceLineId,
+                LineVersion = 1,
+                LineContentDigest = new string('b', 64),
+                Owner = (int)PurchaseRequestLineOwner.Sourcing,
+                State = (int)TakeoverState.Active,
+                Version = 1,
+                ConsumerId = processId,
+                ConsumerVersion = 1,
+                ConsumerDigest = new string('2', 64),
+                ConsumerType = PurchaseOrderContractPreflight.SourcingConsumerType,
+                ActorUserId = environment.BuyerId,
+                OccurredAt = DateTimeOffset.UtcNow
+            });
+            await repair.SaveChangesAsync(cancellationToken);
+        }
+
+        var reopened = false;
+        for (var attempt = 0; attempt < 30 && !reopened; attempt++)
+        {
+            using var probe = await buyer.PostAsJsonAsync(
+                "/api/v1/purchase-orders",
+                new
+                {
+                    awardId = Guid.NewGuid(),
+                    awardVersion = 1,
+                    awardContentDigest = new string('a', 64),
+                    coveredLines = Array.Empty<object>(),
+                    claimKey = $"claim-reopen-{Guid.NewGuid():N}",
+                    poId = (Guid?)null
+                },
+                cancellationToken);
+            reopened = probe.StatusCode != HttpStatusCode.ServiceUnavailable;
+            if (!reopened)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
+            }
+        }
+
+        Assert.True(reopened, "The command gate never reopened after the fence was repaired.");
+    }
+
+    [Fact]
     public async Task Limits_and_problem_details_are_fail_closed_over_http()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -771,7 +933,8 @@ public sealed class SourcingCrossModuleE2ETests
 
         public static async Task<Environment> StartAsync(
             CancellationToken cancellationToken,
-            ILoggerProvider? telemetry = null)
+            ILoggerProvider? telemetry = null,
+            Action<ProcureToPayDbContext>? seedBeforeHost = null)
         {
             var environment = new Environment
             {
@@ -808,6 +971,7 @@ public sealed class SourcingCrossModuleE2ETests
             environment.SpendCategoryDigest = category.Digest;
             await environment.PublishPolicyAsync(context, cancellationToken);
             environment.RegisterOwnerProcessors();
+            seedBeforeHost?.Invoke(context);
             environment.factory = new TestApiFactory(environment.ConnectionString, telemetry);
             return environment;
         }
@@ -1710,6 +1874,8 @@ public sealed class SourcingCrossModuleE2ETests
             // The real background sweep runs in this E2E host so both sourcing owners signal their
             // evidence and the approval outbox projects the PR result without an administrative call.
             builder.UseSetting("Approval:Worker:Enabled", "true");
+            // The takeover preflight sweep runs fast so a host test can observe the gate reopening.
+            builder.UseSetting("PurchaseOrders:PreflightIntervalSeconds", "1");
             builder.UseSetting("AWS:Region", "us-east-1");
             builder.UseSetting("Storage:S3:BucketName", "procure-to-pay-api-tests");
             // The supplier banking key provider is resolved by the real approval sweep; a test key

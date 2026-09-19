@@ -217,17 +217,23 @@ using (var preflightScope = app.Services.CreateScope())
             .GetRequiredService<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderContractPreflight>()
             .EnsureTakeoverExpansionAsync();
     }
-    catch (Exception exception) when (exception is Microsoft.Data.SqlClient.SqlException or
+    catch (Exception exception) when (exception is
+                                          ProcureToPay.Domain.Modules.PurchaseOrders
+                                              .PurchaseOrderDependencyUnavailableException or
+                                          Microsoft.Data.SqlClient.SqlException or
                                           Microsoft.EntityFrameworkCore.DbUpdateException or
                                           InvalidOperationException)
     {
+        // The expected fail-closed outcomes (an inconsistent legacy fence or an unreadable database)
+        // let the host start with the command gate closed: reads stay available, commands answer the
+        // contractual 503 and the preflight worker retries until it can reopen them (REQ-10/REQ-12).
         preflightScope.ServiceProvider
             .GetRequiredService<ILoggerFactory>()
             .CreateLogger("PurchaseOrderContractPreflight")
             .LogWarning(
                 exception,
-                "The purchase order takeover preflight could not read the database; commands stay "
-                + "unavailable until it succeeds.");
+                "The purchase order takeover preflight is not satisfied; commands stay unavailable "
+                + "until it succeeds.");
     }
 }
 
