@@ -173,6 +173,8 @@ if (builder.Configuration.GetValue("Approval:Worker:Enabled", !builder.Environme
     builder.Services.AddHostedService<ApprovalWorkflowWorker>();
     // SPEC 11 REQ-08: the supporting document owner worker is separate from Sourcing.
     builder.Services.AddHostedService<SupportingDocumentOwnerWorker>();
+    // SPEC 11 REQ-10/REQ-12: the takeover preflight reopens or closes the command gate.
+    builder.Services.AddHostedService<PurchaseOrderPreflightWorker>();
 }
 
 var app = builder.Build();
@@ -194,6 +196,8 @@ app.UseAuthentication();
 app.UseMiddleware<CurrentUserProvisioningMiddleware>();
 
 app.UseAuthorization();
+// SPEC 11 REQ-11: state-changing commands of the module are refused while its preflight is unmet.
+app.UseMiddleware<PurchaseOrderCommandGateMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {

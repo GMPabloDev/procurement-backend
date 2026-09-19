@@ -9,11 +9,29 @@ namespace ProcureToPay.Infrastructure.Persistence.PurchaseOrders;
 /// rows: an unexpandable takeover, a missing request version or an incomplete line set means the
 /// migration could not preserve the fence, so the host fails closed instead of serving commands.
 /// </summary>
-public sealed class PurchaseOrderContractPreflight(ProcureToPayDbContext dbContext)
+public sealed class PurchaseOrderContractPreflight(
+    ProcureToPayDbContext dbContext,
+    PurchaseOrderCommandGate gate)
 {
     public const string SourcingConsumerType = "SOURCING";
 
     public async Task EnsureTakeoverExpansionAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await VerifyAsync(cancellationToken);
+            gate.Open();
+        }
+        catch
+        {
+            // REQ-10/REQ-12: an unreadable database and an inconsistent fence both keep the commands
+            // unavailable; a later successful preflight is what reopens them.
+            gate.Close();
+            throw;
+        }
+    }
+
+    private async Task VerifyAsync(CancellationToken cancellationToken)
     {
         var legacy = await dbContext.SourcingTakeovers
             .AsNoTracking()

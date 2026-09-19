@@ -164,7 +164,7 @@ public sealed class SupportingDocumentService(
             new FileUploadRequest
             {
                 ObjectKey = SupportingDocumentFileRef.ObjectKey(
-                    command.OrganizationId, document.DocumentId, document.Version),
+                    command.OrganizationId, document.DocumentId),
                 FileName = fileRef.FileName,
                 ContentType = fileRef.ContentType,
                 Content = new MemoryStream(bytes, writable: false),
@@ -285,7 +285,7 @@ public sealed class SupportingDocumentService(
             occurred);
         await dbContext.SaveChangesAsync(cancellationToken);
         return storage.GenerateTemporaryDownloadUrl(
-            SupportingDocumentFileRef.ObjectKey(organizationId, document.DocumentId, version),
+            SupportingDocumentFileRef.ObjectKey(organizationId, document.DocumentId),
             MaximumDownloadLifetime);
     }
 

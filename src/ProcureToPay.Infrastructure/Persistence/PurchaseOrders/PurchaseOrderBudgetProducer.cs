@@ -515,6 +515,16 @@ public sealed class PurchaseOrderBudgetProducer(
                 Replayed: true);
         }
 
+        // REQ-05/REQ-12: the plan is durable and immutable. A retry re-executes exactly the recorded
+        // reversals instead of re-allocating remainders that a crashed run already reduced.
+        var recordedPlan = PurchaseOrderSerialization.ReadReductionPlan(attempt.ParentsJson);
+        if (recordedPlan.Count > 0)
+        {
+            return await ExecuteReductionPlanAsync(
+                organizationId, poId, poVersion, poDigest, amendmentId, attempt, recordedPlan,
+                correlationReference, occurredAt, cancellationToken);
+        }
+
         // Every COMMIT of the lineage, oldest first, with the open remainder of each commitment and
         // the exact source of its operation and of the reservation that backed it.
         var commits = await dbContext.PurchaseOrderBudgetAttempts
@@ -571,6 +581,14 @@ public sealed class PurchaseOrderBudgetProducer(
                         "A commitment of the order has no reservation to release.");
                 }
 
+                var reservedOperationId = await dbContext.BudgetMovements
+                    .AsNoTracking()
+                    .Where(candidate => candidate.Id == reservedId)
+                    .Select(candidate => candidate.OperationId)
+                    .SingleAsync(cancellationToken);
+                var reservedOperation = await dbContext.BudgetOperations
+                    .AsNoTracking()
+                    .SingleAsync(candidate => candidate.Id == reservedOperationId, cancellationToken);
                 commitments.Add(new OpenCommitment(
                     movement.TargetId ?? Guid.Empty,
                     movement.TargetVersion ?? 0,
@@ -578,7 +596,12 @@ public sealed class PurchaseOrderBudgetProducer(
                     movement.Id,
                     reservedId,
                     movement.TargetMaterialSnapshotDigest ?? string.Empty,
-                    source));
+                    source,
+                    new BudgetTransitionSource(
+                        reservedOperation.SourceType,
+                        reservedOperation.SourceId,
+                        reservedOperation.SourceVersion,
+                        reservedOperation.SourceDigest)));
             }
         }
 
@@ -625,16 +648,68 @@ public sealed class PurchaseOrderBudgetProducer(
                 "The committed amount of the order was already advanced by a later transition.");
         }
 
+        var plan = allocations
+            .Select(allocation => new PurchaseOrderSerialization.ReductionAllocation(
+                allocation.Amount,
+                allocation.Commitment.CommittedId,
+                allocation.Commitment.ReservedId,
+                allocation.Commitment.TargetId,
+                allocation.Commitment.TargetVersion,
+                allocation.Commitment.MaterialSnapshotDigest,
+                allocation.Commitment.CommittedSource.Type,
+                allocation.Commitment.CommittedSource.Id,
+                allocation.Commitment.CommittedSource.Version,
+                allocation.Commitment.CommittedSource.Digest,
+                allocation.Commitment.ReservedSource.Type,
+                allocation.Commitment.ReservedSource.Id,
+                allocation.Commitment.ReservedSource.Version,
+                allocation.Commitment.ReservedSource.Digest))
+            .ToArray();
         attempt.State = (int)PurchaseOrderBudgetAttemptState.Releasing;
         attempt.Attempts += 1;
+        attempt.ParentsJson = PurchaseOrderSerialization.ReductionPlan(plan);
         attempt.UpdatedAt = occurredAt;
         await dbContext.SaveChangesAsync(cancellationToken);
-        var refs = new List<PurchaseOrderBudgetOperationRef>();
+        return await ExecuteReductionPlanAsync(
+            organizationId, poId, poVersion, poDigest, amendmentId, attempt, plan,
+            correlationReference, occurredAt, cancellationToken);
+    }
 
-        // Step 1: the commitment returns to RESERVED, one operation per source of the parent COMMIT.
-        var committedGroups = allocations
-            .GroupBy(allocation => allocation.Commitment.CommittedSource)
-            .Select(group => (Source: group.Key, Allocations: group.ToArray()))
+    /// <summary>
+    /// Executes the recorded reduction plan exactly once per group (REQ-05, REQ-12). Every group is a
+    /// deterministic operation key, and the executed references are checkpointed after each group, so
+    /// a crash between groups replays the same operations instead of posting a second reversal.
+    /// </summary>
+    private async Task<PurchaseOrderBudgetOutcome> ExecuteReductionPlanAsync(
+        Guid organizationId,
+        Guid poId,
+        int poVersion,
+        string poDigest,
+        Guid amendmentId,
+        PurchaseOrderBudgetAttemptRecord attempt,
+        IReadOnlyList<PurchaseOrderSerialization.ReductionAllocation> plan,
+        string correlationReference,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken)
+    {
+        var refs = attempt.MovementRefsJson is null
+            ? new List<PurchaseOrderBudgetOperationRef>()
+            : PurchaseOrderSerialization.ReadBudgetOperationRefs(attempt.MovementRefsJson).ToList();
+        var committedGroups = plan
+            .GroupBy(allocation => (
+                allocation.CommittedSourceType,
+                allocation.CommittedSourceId,
+                allocation.CommittedSourceVersion,
+                allocation.CommittedSourceDigest))
+            .Select(group => new
+            {
+                Source = new BudgetTransitionSource(
+                    group.Key.CommittedSourceType,
+                    group.Key.CommittedSourceId,
+                    group.Key.CommittedSourceVersion,
+                    group.Key.CommittedSourceDigest),
+                Allocations = group.ToArray()
+            })
             .OrderBy(group => group.Source.Type, StringComparer.Ordinal)
             .ThenBy(group => group.Source.Id)
             .ThenBy(group => group.Source.Version)
@@ -655,57 +730,50 @@ public sealed class PurchaseOrderBudgetProducer(
                 group.Allocations
                     .Select(allocation => new BudgetTransitionCommandMovement(
                         allocation.Amount,
-                        allocation.Commitment.CommittedId,
+                        allocation.CommittedId,
                         BudgetCodes.ParentMovementVersion,
-                        TargetOf(allocation.Commitment)))
+                        new BudgetTarget(
+                            allocation.TargetId,
+                            allocation.TargetVersion,
+                            allocation.MaterialDigest,
+                            PurchaseOrderCodes.ApprovalTargetType)))
                     .ToArray(),
                 correlationReference,
                 cancellationToken);
             attempt.OperationId ??= release.OperationId.ToString("D");
-            refs.Add(new PurchaseOrderBudgetOperationRef(
-                "REVERSE", release.OperationId, key, poId, poVersion, poDigest));
-        }
-
-        // Step 2: the freed reservation returns to AVAILABLE, one operation per reservation source.
-        var reservedGroups = new List<(BudgetTransitionSource Source, List<BudgetTransitionCommandMovement> Movements)>();
-        foreach (var allocation in allocations)
-        {
-            var parentOperationId = await dbContext.BudgetMovements
-                .AsNoTracking()
-                .Where(movement => movement.Id == allocation.Commitment.ReservedId)
-                .Select(movement => movement.OperationId)
-                .SingleAsync(cancellationToken);
-            var parentOperation = await dbContext.BudgetOperations
-                .AsNoTracking()
-                .SingleAsync(operation => operation.Id == parentOperationId, cancellationToken);
-            var source = new BudgetTransitionSource(
-                parentOperation.SourceType,
-                parentOperation.SourceId,
-                parentOperation.SourceVersion,
-                parentOperation.SourceDigest);
-            var group = reservedGroups.FirstOrDefault(candidate => candidate.Source == source);
-            if (group.Movements is null)
+            if (refs.All(reference => !string.Equals(reference.OperationKey, key, StringComparison.Ordinal)))
             {
-                group = (source, []);
-                reservedGroups.Add(group);
+                refs.Add(new PurchaseOrderBudgetOperationRef(
+                    "REVERSE", release.OperationId, key, poId, poVersion, poDigest));
             }
 
-            group.Movements.Add(new BudgetTransitionCommandMovement(
-                allocation.Amount,
-                allocation.Commitment.ReservedId,
-                BudgetCodes.ParentMovementVersion,
-                TargetOf(allocation.Commitment)));
+            attempt.MovementRefsJson = PurchaseOrderSerialization.BudgetOperationRefs(refs);
+            await dbContext.SaveChangesAsync(cancellationToken);
         }
 
-        var orderedReserved = reservedGroups
+        var reservedGroups = plan
+            .GroupBy(allocation => (
+                allocation.ReservedSourceType,
+                allocation.ReservedSourceId,
+                allocation.ReservedSourceVersion,
+                allocation.ReservedSourceDigest))
+            .Select(group => new
+            {
+                Source = new BudgetTransitionSource(
+                    group.Key.ReservedSourceType,
+                    group.Key.ReservedSourceId,
+                    group.Key.ReservedSourceVersion,
+                    group.Key.ReservedSourceDigest),
+                Allocations = group.ToArray()
+            })
             .OrderBy(group => group.Source.Type, StringComparer.Ordinal)
             .ThenBy(group => group.Source.Id)
             .ThenBy(group => group.Source.Version)
             .ToArray();
-        for (var index = 0; index < orderedReserved.Length; index++)
+        for (var index = 0; index < reservedGroups.Length; index++)
         {
-            var group = orderedReserved[index];
-            var key = orderedReserved.Length == 1
+            var group = reservedGroups[index];
+            var key = reservedGroups.Length == 1
                 ? $"po-amendment-reserved-release:{amendmentId:D}:{poVersion}"
                 : $"po-amendment-reserved-release:{amendmentId:D}:{poVersion}:{index}";
             var release = await transitions.ApplyAsync(
@@ -715,13 +783,29 @@ public sealed class PurchaseOrderBudgetProducer(
                 key,
                 "PURCHASE_ORDER_AMENDMENT_RESERVATION_RELEASED",
                 group.Source,
-                group.Movements.ToArray(),
+                group.Allocations
+                    .Select(allocation => new BudgetTransitionCommandMovement(
+                        allocation.Amount,
+                        allocation.ReservedId,
+                        BudgetCodes.ParentMovementVersion,
+                        new BudgetTarget(
+                            allocation.TargetId,
+                            allocation.TargetVersion,
+                            allocation.MaterialDigest,
+                            PurchaseOrderCodes.ApprovalTargetType)))
+                    .ToArray(),
                 correlationReference,
                 cancellationToken);
             attempt.ReleaseKey ??= key;
             attempt.ReleaseOperationId ??= release.OperationId.ToString("D");
-            refs.Add(new PurchaseOrderBudgetOperationRef(
-                "REVERSE", release.OperationId, key, poId, poVersion, poDigest));
+            if (refs.All(reference => !string.Equals(reference.OperationKey, key, StringComparison.Ordinal)))
+            {
+                refs.Add(new PurchaseOrderBudgetOperationRef(
+                    "REVERSE", release.OperationId, key, poId, poVersion, poDigest));
+            }
+
+            attempt.MovementRefsJson = PurchaseOrderSerialization.BudgetOperationRefs(refs);
+            await dbContext.SaveChangesAsync(cancellationToken);
         }
 
         attempt.State = (int)PurchaseOrderBudgetAttemptState.Completed;
@@ -743,7 +827,8 @@ public sealed class PurchaseOrderBudgetProducer(
         Guid CommittedId,
         Guid ReservedId,
         string MaterialSnapshotDigest,
-        BudgetTransitionSource CommittedSource);
+        BudgetTransitionSource CommittedSource,
+        BudgetTransitionSource ReservedSource);
 
     private static BudgetTarget TargetOf(
         IReadOnlyList<OrderingEvidenceTarget> targets,

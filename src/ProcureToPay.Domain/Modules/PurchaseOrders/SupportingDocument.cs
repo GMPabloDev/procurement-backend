@@ -45,12 +45,13 @@ public sealed record SupportingDocumentFileRef
     public string ByteIdentity => $"{Sha256}:{Length}";
 
     /// <summary>
-    /// Object key of the stored bytes. It is derived from the server-owned document identity, never
-    /// from a caller value, so a second request can never address (and overwrite) the bytes of an
-    /// already confirmed document (REQ-08, NFR-01).
+    /// Object key of the stored bytes. It is derived from the server-owned document identity and the
+    /// version that actually wrote them (the root), never from a caller value: a second request can
+    /// never address (nor overwrite) the bytes of an already confirmed document, and every later
+    /// version of the same document downloads exactly the bytes the root sealed (REQ-08, NFR-01).
     /// </summary>
-    public static string ObjectKey(Guid organizationId, Guid documentId, int version) =>
-        $"purchase-orders/{organizationId:D}/supporting-documents/{documentId:D}/{version}";
+    public static string ObjectKey(Guid organizationId, Guid documentId) =>
+        $"purchase-orders/{organizationId:D}/supporting-documents/{documentId:D}/1";
 }
 
 /// <summary>

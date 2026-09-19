@@ -20,10 +20,12 @@ public sealed class PurchaseOrderContractPreflightIntegrationTests
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var harness = await PurchaseOrderHarness.StartAsync(cancellationToken);
         await using var context = harness.CreateContext();
-        var preflight = new PurchaseOrderContractPreflight(context);
+        var gate = new PurchaseOrderCommandGate();
+        var preflight = new PurchaseOrderContractPreflight(context, gate);
 
         // No legacy takeover at all: the module is safe to enable.
         await preflight.EnsureTakeoverExpansionAsync(cancellationToken);
+        Assert.True(gate.IsOpen);
 
         // A takeover whose process carries no line set cannot be expanded.
         var orphanProcessId = Guid.NewGuid();
@@ -32,6 +34,8 @@ public sealed class PurchaseOrderContractPreflightIntegrationTests
         var missingLines = await Assert.ThrowsAsync<PurchaseOrderDependencyUnavailableException>(
             () => preflight.EnsureTakeoverExpansionAsync(cancellationToken));
         Assert.Contains("TAKEOVER_PROCESS_LINES_MISSING", missingLines.Message, StringComparison.Ordinal);
+        // REQ-12: the failure closes the command gate until a later preflight succeeds.
+        Assert.False(gate.IsOpen);
     }
 
     [Fact]
@@ -40,6 +44,7 @@ public sealed class PurchaseOrderContractPreflightIntegrationTests
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var harness = await PurchaseOrderHarness.StartAsync(cancellationToken);
         await using var context = harness.CreateContext();
+        var gate = new PurchaseOrderCommandGate();
         var processId = Guid.NewGuid();
         context.SourcingTakeovers.Add(LegacyTakeover(harness, processId, released: false));
         context.SourcingProcesses.Add(new SourcingProcessRecord
@@ -64,7 +69,7 @@ public sealed class PurchaseOrderContractPreflightIntegrationTests
             UnitCode = "EA"
         });
         await context.SaveChangesAsync(cancellationToken);
-        var preflight = new PurchaseOrderContractPreflight(context);
+        var preflight = new PurchaseOrderContractPreflight(context, gate);
 
         // The line set exists but the per-line row was never written: the fence is incomplete.
         var notExpanded = await Assert.ThrowsAsync<PurchaseOrderDependencyUnavailableException>(
@@ -94,6 +99,35 @@ public sealed class PurchaseOrderContractPreflightIntegrationTests
         });
         await context.SaveChangesAsync(cancellationToken);
         await preflight.EnsureTakeoverExpansionAsync(cancellationToken);
+        Assert.True(gate.IsOpen);
+    }
+
+    [Fact]
+    public async Task An_unreadable_database_keeps_the_gate_closed_until_a_successful_preflight()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var harness = await PurchaseOrderHarness.StartAsync(cancellationToken);
+        var gate = new PurchaseOrderCommandGate();
+
+        // The database cannot be read: commands stay unavailable instead of being authorized blindly.
+        await using (var unreachable = new ProcureToPayDbContext(
+                         new DbContextOptionsBuilder<ProcureToPayDbContext>()
+                             .UseSqlServer("Server=localhost;Database=unreachable;TrustServerCertificate=False")
+                             .Options))
+        {
+            await Assert.ThrowsAnyAsync<Exception>(() => new PurchaseOrderContractPreflight(unreachable, gate)
+                .EnsureTakeoverExpansionAsync(cancellationToken));
+            Assert.False(gate.IsOpen);
+        }
+
+        // A later preflight over the real database reopens them.
+        await using (var context = harness.CreateContext())
+        {
+            await new PurchaseOrderContractPreflight(context, gate)
+                .EnsureTakeoverExpansionAsync(cancellationToken);
+        }
+
+        Assert.True(gate.IsOpen);
     }
 
     private static SourcingTakeoverRecord LegacyTakeover(

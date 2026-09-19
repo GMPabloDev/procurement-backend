@@ -373,6 +373,7 @@ public static class DependencyInjection
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.SupportingDocumentOwnerProcessor>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseRequestOrderingQuery>();
         services.AddScoped<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderContractPreflight>();
+        services.AddSingleton<ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderCommandGate>();
         services.AddScoped<ProcureToPay.Application.Abstractions.IApprovalSubmissionAdapter>(provider =>
             new ProcureToPay.Infrastructure.Persistence.PurchaseOrders.PurchaseOrderApprovalAdapter(
                 provider.GetRequiredService<ProcureToPayDbContext>(),

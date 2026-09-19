@@ -30,6 +30,7 @@ using ProcureToPay.Infrastructure.Persistence;
 using ProcureToPay.Infrastructure.Persistence.Approval;
 using ProcureToPay.Infrastructure.Persistence.Organization;
 using ProcureToPay.Infrastructure.Persistence.Policy;
+using ProcureToPay.Infrastructure.Persistence.PurchaseOrders;
 using ProcureToPay.Infrastructure.Persistence.ReferenceCatalogs;
 using ProcureToPay.Infrastructure.Persistence.Sourcing;
 using ProcureToPay.Infrastructure.Persistence.Suppliers;
@@ -336,6 +337,29 @@ public sealed class SourcingCrossModuleE2ETests
                     HttpStatusCode.ServiceUnavailable,
                 await unknownAward.Content.ReadAsStringAsync(cancellationToken));
         }
+
+        // REQ-11/REQ-10: while the deployment preflight is unmet, state-changing commands answer the
+        // contractual 503 and reads stay available; a satisfied preflight opens them again.
+        var gate = environment.CommandGate();
+        gate.Close();
+        using (var gated = await requester.PostAsJsonAsync(
+            "/api/v1/direct-purchases",
+            Environment.DirectPurchaseRequest(environment, requestId, lineId, lineVersion, $"dp-gate-{Guid.NewGuid():N}"),
+            cancellationToken))
+        {
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, gated.StatusCode);
+            Assert.Equal(
+                "/problems/purchase-order-dependency-unavailable",
+                await Environment.ProblemTypeAsync(gated, cancellationToken));
+        }
+
+        using (var readWhileClosed = await requester.GetAsync(
+            $"/api/v1/direct-purchases/{Guid.NewGuid():D}", cancellationToken))
+        {
+            Assert.NotEqual(HttpStatusCode.ServiceUnavailable, readWhileClosed.StatusCode);
+        }
+
+        gate.Open();
 
         // REQ-11: a user that is neither the requester of the lines nor a buyer cannot authorize.
         using (var denied = await admin.PostAsJsonAsync(
@@ -806,6 +830,10 @@ public sealed class SourcingCrossModuleE2ETests
                 "Bearer", TestApiFactory.CreateUserToken(subject));
             return client;
         }
+
+        /// <summary>The singleton command gate of the running host (REQ-11).</summary>
+        public PurchaseOrderCommandGate CommandGate() =>
+            factory.Services.GetRequiredService<PurchaseOrderCommandGate>();
 
         public HttpClient AnonymousClient() => factory.CreateClient(new WebApplicationFactoryClientOptions
         {

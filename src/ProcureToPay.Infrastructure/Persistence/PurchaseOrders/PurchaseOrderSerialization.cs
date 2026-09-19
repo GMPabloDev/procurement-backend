@@ -572,6 +572,83 @@ public static class PurchaseOrderSerialization
         }).ToArray()).ToJsonString(Options);
 
     /// <summary>
+    /// One planned reversal of an amendment reduction (REQ-05): the committed movement to release,
+    /// its reservation and the exact source of both operations. The plan is persisted before any
+    /// effect, so a retry re-executes it verbatim instead of re-allocating reduced remainders.
+    /// </summary>
+    public sealed record ReductionAllocation(
+        decimal Amount,
+        Guid CommittedId,
+        Guid ReservedId,
+        Guid TargetId,
+        int TargetVersion,
+        string MaterialDigest,
+        string CommittedSourceType,
+        Guid CommittedSourceId,
+        int CommittedSourceVersion,
+        string CommittedSourceDigest,
+        string ReservedSourceType,
+        Guid ReservedSourceId,
+        int ReservedSourceVersion,
+        string ReservedSourceDigest);
+
+    public static string ReductionPlan(IEnumerable<ReductionAllocation> allocations) =>
+        new JsonArray((allocations ?? []).Select(allocation => (JsonNode)new JsonObject
+        {
+            ["amount"] = PurchaseOrderCodes.Decimal(allocation.Amount),
+            ["committed_id"] = allocation.CommittedId.ToString("D"),
+            ["committed_source_digest"] = allocation.CommittedSourceDigest,
+            ["committed_source_id"] = allocation.CommittedSourceId.ToString("D"),
+            ["committed_source_type"] = allocation.CommittedSourceType,
+            ["committed_source_version"] = allocation.CommittedSourceVersion,
+            ["material_digest"] = allocation.MaterialDigest,
+            ["reserved_id"] = allocation.ReservedId.ToString("D"),
+            ["reserved_source_digest"] = allocation.ReservedSourceDigest,
+            ["reserved_source_id"] = allocation.ReservedSourceId.ToString("D"),
+            ["reserved_source_type"] = allocation.ReservedSourceType,
+            ["reserved_source_version"] = allocation.ReservedSourceVersion,
+            ["target_id"] = allocation.TargetId.ToString("D"),
+            ["target_version"] = allocation.TargetVersion
+        }).ToArray()).ToJsonString(Options);
+
+    public static IReadOnlyList<ReductionAllocation> ReadReductionPlan(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json) || string.Equals(json, "[]", StringComparison.Ordinal))
+        {
+            return [];
+        }
+
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        var allocations = new List<ReductionAllocation>();
+        foreach (var element in document.RootElement.EnumerateArray())
+        {
+            if (!element.TryGetProperty("committed_source_type", out _))
+            {
+                // A durable attempt of another operation shape is not a reduction plan.
+                return [];
+            }
+
+            allocations.Add(new ReductionAllocation(
+                ParseDecimal(element.GetProperty("amount").GetString()!),
+                element.GetProperty("committed_id").GetGuid(),
+                element.GetProperty("reserved_id").GetGuid(),
+                element.GetProperty("target_id").GetGuid(),
+                element.GetProperty("target_version").GetInt32(),
+                element.GetProperty("material_digest").GetString()!,
+                element.GetProperty("committed_source_type").GetString()!,
+                element.GetProperty("committed_source_id").GetGuid(),
+                element.GetProperty("committed_source_version").GetInt32(),
+                element.GetProperty("committed_source_digest").GetString()!,
+                element.GetProperty("reserved_source_type").GetString()!,
+                element.GetProperty("reserved_source_id").GetGuid(),
+                element.GetProperty("reserved_source_version").GetInt32(),
+                element.GetProperty("reserved_source_digest").GetString()!));
+        }
+
+        return allocations;
+    }
+
+    /// <summary>
     /// Rebuilds the durable resolution of one issue attempt (REQ-04). The recovery of a confirmed
     /// effect reuses these parents instead of resolving the ledger again, which is what makes a
     /// retry after the COMMIT idempotent.

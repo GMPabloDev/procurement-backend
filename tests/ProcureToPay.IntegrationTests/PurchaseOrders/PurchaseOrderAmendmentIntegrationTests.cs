@@ -661,6 +661,54 @@ public sealed class PurchaseOrderAmendmentIntegrationTests
             .SingleAsync(record => record.PositionId == positionId, cancellationToken);
         Assert.Equal(5m, balance.Committed);
         Assert.Equal(0m, balance.Reserved);
+
+        // REQ-12/NFR-05 (fault injection between the two reversal phases): the plan is durable, so an
+        // interrupted reduction re-executes exactly its recorded operations instead of re-allocating
+        // the already reduced remainder.
+        var reductionAttempt = await verification.PurchaseOrderBudgetAttempts
+            .AsNoTracking()
+            .Where(record => record.PoId == poId &&
+                             record.Operation == (int)PurchaseOrderBudgetAttemptOperation.Reverse)
+            .OrderByDescending(record => record.CreatedAt)
+            .FirstAsync(cancellationToken);
+        Assert.NotNull(reductionAttempt.ParentsJson);
+        await verification.Database.ExecuteSqlRawAsync(
+            "UPDATE [PurchaseOrders].[PurchaseOrderBudgetAttempts] SET [State] = 3, " +
+            "[MovementRefsJson] = NULL, [CompletedAt] = NULL WHERE [Id] = {0}",
+            [reductionAttempt.Id],
+            cancellationToken);
+        var movementsBefore = await verification.BudgetMovements
+            .AsNoTracking()
+            .CountAsync(cancellationToken);
+        var versionRecord = await verification.PurchaseOrderVersions
+            .AsNoTracking()
+            .SingleAsync(
+                record => record.PoId == poId && record.Version == reductionAttempt.PoVersion,
+                cancellationToken);
+        var replayed = await harness.CreateBudgetProducer(verification).ReleaseAmendmentReductionAsync(
+            harness.OrganizationId,
+            poId,
+            reductionAttempt.PoVersion,
+            versionRecord.ContentDigest,
+            reductionAttempt.AmendmentId!.Value,
+            [(harness.LineId, 1, 15m)],
+            "corr-recover",
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        var recoveredAttempt = await verification.PurchaseOrderBudgetAttempts
+            .AsNoTracking()
+            .SingleAsync(record => record.Id == reductionAttempt.Id, cancellationToken);
+        Assert.Equal((int)PurchaseOrderBudgetAttemptState.Completed, recoveredAttempt.State);
+        Assert.Equal(
+            movementsBefore,
+            await verification.BudgetMovements.AsNoTracking().CountAsync(cancellationToken));
+        Assert.Equal(
+            5m,
+            (await verification.BudgetBalances
+                .AsNoTracking()
+                .SingleAsync(record => record.PositionId == positionId, cancellationToken)).Committed);
+        Assert.Equal(reductionAttempt.ParentsJson, recoveredAttempt.ParentsJson);
+        Assert.NotNull(replayed.OperationRefs);
     }
 
     [Fact]

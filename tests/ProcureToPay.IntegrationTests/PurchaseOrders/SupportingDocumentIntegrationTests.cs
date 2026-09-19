@@ -40,6 +40,15 @@ public sealed class SupportingDocumentIntegrationTests
         var firstKey = objectKeys[0];
         var confirmedBytes = harness.Sourcing.Storage.Objects[firstKey].ToArray();
 
+        // REQ-11: the temporary URL of the confirmed document resolves exactly the bytes the root
+        // sealed, even though confirmation appended a successor version.
+        var url = await documents.GenerateDownloadUrlAsync(
+            harness.OrganizationId, confirmed.DocumentId, confirmed.Version, harness.RequesterId,
+            cancellationToken);
+        var target = Uri.UnescapeDataString(url.AbsolutePath.TrimStart('/'));
+        Assert.Equal(firstKey, target);
+        Assert.Equal(confirmedBytes, harness.Sourcing.Storage.Objects[target]);
+
         // REQ-08/NFR-01: the same caller file reference stages another document, but the storage
         // identity is the server-owned document, so the confirmed bytes stay untouched.
         var second = await StageAsync(
