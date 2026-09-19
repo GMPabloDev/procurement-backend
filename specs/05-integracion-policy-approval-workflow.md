@@ -3,11 +3,11 @@
 > **Formato:** sdd/v3
 > **Estado:** Implementada
 > **Ejecución:** Integrada
-> **Vigencia:** Sustituida parcialmente por SPEC 06, SPEC 07, SPEC 08, SPEC 09
+> **Vigencia:** Sustituida parcialmente por SPEC 06, SPEC 07, SPEC 08, SPEC 09, SPEC 11
 > **Revisión:** 1
 > **Digest contractual:** 001c559d72845b0f77919df50bad5e7b74eeecb5e6dc8921d52bba932cb20f70
 > **Fecha:** 2026-09-11
-> **Actualizada:** 2026-09-13
+> **Actualizada:** 2026-09-19
 > **Aprobada el:** 2026-09-13
 > **Aprobada por:** osiosad mediante specctl approve
 > **Objetivo:** Convertir controles persistidos de SPEC 02 en approvals y prerrequisitos de SPEC 03 y permitir que Policy verifique un quotation waiver únicamente contra una decisión autorizada, vigente y ligada a la evaluación exacta.

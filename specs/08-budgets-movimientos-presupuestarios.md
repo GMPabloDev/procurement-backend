@@ -3,11 +3,11 @@
 > **Formato:** sdd/v3
 > **Estado:** Implementada
 > **Ejecución:** Integrada
-> **Vigencia:** Sustituida parcialmente por SPEC 09
+> **Vigencia:** Sustituida parcialmente por SPEC 09, SPEC 11
 > **Revisión:** 1
 > **Digest contractual:** f381a0a03d09ebf344504cc47a64ac6ebcbe20078d143b57af4226012c883326
 > **Fecha:** 2026-09-14
-> **Actualizada:** 2026-09-14
+> **Actualizada:** 2026-09-19
 > **Aprobada el:** 2026-09-14
 > **Aprobada por:** osiosad mediante specctl approve
 > **Objetivo:** Administrar asignaciones y saldos por Cost Center + Fiscal Year + Spend Category, registrar movimientos reproducibles y reservar presupuesto de forma atómica mediante el owner real de `REQUIRE_BUDGET_CHECK` antes de habilitar Approval.

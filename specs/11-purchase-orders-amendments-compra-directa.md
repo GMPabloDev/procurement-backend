@@ -1,9 +1,9 @@
 # SPEC 11 — Purchase Orders, amendments y compra directa
 
 > **Formato:** sdd/v3
-> **Estado:** Aprobada
-> **Ejecución:** Lista para integrar
-> **Vigencia:** Pendiente
+> **Estado:** Implementada
+> **Ejecución:** Integrada
+> **Vigencia:** Vigente
 > **Revisión:** 1
 > **Digest contractual:** 3df90fea3a48e59ec84b57a248c6d29cd5c7eae2a10b865ea44f7d69aa3f5cf9
 > **Fecha:** 2026-09-17

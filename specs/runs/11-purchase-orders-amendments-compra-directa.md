@@ -1,7 +1,7 @@
 # RUN SPEC 11 — Purchase Orders, amendments y compra directa
 
 > **Formato:** sdd-run/v2
-> **Estado del run:** Lista para integrar
+> **Estado del run:** Integrado
 > **Spec:** specs/11-purchase-orders-amendments-compra-directa.md
 > **Revisión contractual:** 1
 > **Commit de la spec:** 722419986d17ea46031cce4ce17d2c9a19df42a4
@@ -15,7 +15,7 @@
 > **Iniciado:** 2026-09-18 09:40 -0500
 > **Actualizado:** 2026-09-19 12:45 -0500
 > **HEAD verificado:** 059f9ef50a855533d73495bb14ff30cf2e66e9ea
-> **Commit de integración:** Pendiente
+> **Commit de integración:** dae4f03cc2a80d05f30b57ed63ebfb1a92bdfcc5
 
 ## Commit del código probado
 
@@ -170,3 +170,12 @@
 > **Modelo efectivo:** sdd-implementation-reviewer (openai-codex/gpt-5.6-sol, effort high)
 > **Método:** Ronda 1 full de 7224199..9e11fd3 (BLOCK R14-R17); ronda 2 diferencial 9e11fd3..47c6dec (R15 resuelto); ronda 3 diferencial 47c6dec..8fae432 autorizada (R14/R16 resueltos); ronda 4 diferencial 8fae432..059f9ef autorizada y acotada a R17 (PASS). Las rondas 3 y 4 las autorizó el usuario al agotar el paquete sus dos llamadas automáticas. Constancia: `specs/reviews/11-purchase-orders-amendments-compra-directa.json`.
 > **Fecha:** 2026-09-19
+
+## Cierre
+
+- **Commit de integración:** `dae4f03cc2a80d05f30b57ed63ebfb1a92bdfcc5` — merge de `spec-11-purchase-orders-amendments-compra-directa` sobre `main` (primer padre = `7224199`, la base registrada; la base no avanzó con trabajo ajeno entre el preflight y el merge).
+- **Estrategia:** merge con historia conservada (sin squash ni rebase), por lo que `HEAD verificado` `059f9ef` es ancestro directo de `dae4f03`.
+- **Equivalencia del árbol integrado:** `git diff 059f9ef..dae4f03 -- . ':!specs'` → vacío (el código integrado es byte a byte el árbol revisado); el único delta son los metadatos administrativos de `5fa441c` (spec, run y constancia).
+- **Evidencia:** `specctl preflight 11` coherente (0 errores) sobre `5fa441c`; constancia `PASS` vigente con R1-R17 resueltos; suites del árbol verificado: unitarias 336/336, integración PurchaseOrders 39/39, Sourcing 51/51, Budget 16/16, PurchaseRequest 16/16, Supplier 20/20, API/E2E 35/35, build 0 errores.
+- **Validaciones de cierre:** `specctl doctor` y `specctl git-check 11` ejecutados desde la base integrada (ver evidencia en la respuesta del cierre).
+- **Sucesores:** SPEC 05, 06, 08 y 10 quedan `Sustituida parcialmente por SPEC 11` conservando su historia y contrato.
