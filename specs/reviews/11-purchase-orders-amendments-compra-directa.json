@@ -15,11 +15,11 @@
     "09-supplier-master-catalogo-proveedores-homologados.md": "338d7c40ad2d45979e5b053006f3a2f2283f0e9bfc0faa5bd1f0e144754f7faa",
     "10-sourcing-rfq-cotizaciones-award.md": "6172c3d26718271b05ad262636f6410fc0d8a5d70a2a4e868ba136a111a070f3"
   },
-  "verdict": "BLOCK",
+  "verdict": "PASS",
   "mode": "full",
   "baseline_digest": "3df90fea3a48e59ec84b57a248c6d29cd5c7eae2a10b865ea44f7d69aa3f5cf9",
-  "review_count": 6,
-  "reviewer": "Revisión contractual: sdd-contract-reviewer (openai-codex/gpt-5.6-luna, effort high), rondas 1-3 → PASS con R1-R13 resueltos. Revisión de implementación: sdd-implementation-reviewer (openai-codex/gpt-5.6-sol, effort high): ronda 1 full 7224199..9e11fd3 → BLOCK (R14-R17); ronda 2 delta 9e11fd3..47c6dec → R15 resuelto, R14/R16/R17 abiertos; ronda 3 delta 47c6dec..8fae432 (autorizada) → R14 y R16 resueltos, R17 abierto por el arranque con fence inconsistente. Corrección de R17 aplicada y probada a nivel host; pendiente de una ronda 4 autorizada que confirme el delta.",
+  "review_count": 7,
+  "reviewer": "Revisión contractual: sdd-contract-reviewer (openai-codex/gpt-5.6-luna, effort high), rondas 1-3 → PASS con R1-R13 resueltos. Revisión de implementación: sdd-implementation-reviewer (openai-codex/gpt-5.6-sol, effort high), ronda 1 full 7224199..9e11fd3 → BLOCK (R14-R17); ronda 2 delta 9e11fd3..47c6dec → R15 resuelto; ronda 3 delta 47c6dec..8fae432 (autorizada) → R14 y R16 resueltos; ronda 4 delta 8fae432..059f9ef (autorizada, acotada a R17) → PASS con R17 resuelto sobre el árbol 059f9ef.",
   "reviewed_at": "2026-09-19",
   "coverage": {
     "behavior": "REQ-01..REQ-12 y CA-01..CA-10 revisados: PO draft/approval/issue, amendments, Direct Purchase, documents y estados observables quedaron coherentes tras resolver R1-R13. Implementación: se contrastaron estados/errores de PO, amendments, Direct Purchase y documentos contra los commands reales; R14-R17 acotaron inmutabilidad de bytes, atomicidad de creación, reducción de lineage y gate de preflight.",
@@ -144,9 +144,9 @@
     {
       "id": "R17",
       "severity": "blocker",
-      "status": "open",
+      "status": "resolved",
       "evidence": "Ante una base ilegible solo se registraba un warning y no habia estado ni reintento que mantuviera los commands en 503: la base podia recuperarse con expansion inconsistente sin repetir preflight.",
-      "resolution": "Aplicado y con prueba de host real: el fail-closed esperado del preflight (fence inconsistente o base ilegible) ya no aborta el arranque, deja el `PurchaseOrderCommandGate` cerrado, el `PurchaseOrderPreflightWorker` reintenta y el middleware responde 503 a los commands manteniendo las lecturas; la prueba E2E `An_incomplete_legacy_fence_keeps_the_commands_closed_until_the_preflight_recovers` arranca el host con un takeover legacy no expandible, observa 503 contractual, repara el fence y ve reapertura sin reinicio. Pendiente de confirmacion en ronda 4."
+      "resolution": "Aplicado y con prueba de host real: el fail-closed esperado del preflight (fence inconsistente o base ilegible) ya no aborta el arranque, deja el `PurchaseOrderCommandGate` cerrado, el `PurchaseOrderPreflightWorker` reintenta y el middleware responde 503 a los commands manteniendo las lecturas; la prueba E2E `An_incomplete_legacy_fence_keeps_the_commands_closed_until_the_preflight_recovers` arranca el host con un takeover legacy no expandible, observa 503 contractual, repara el fence y ve reapertura sin reinicio. Confirmado en la ronda 4 (delta 8fae432..059f9ef): PASS."
     }
   ]
 }

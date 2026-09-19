@@ -2,12 +2,12 @@
 
 > **Formato:** sdd/v3
 > **Estado:** Aprobada
-> **Ejecución:** En implementación
+> **Ejecución:** Lista para integrar
 > **Vigencia:** Pendiente
 > **Revisión:** 1
 > **Digest contractual:** 3df90fea3a48e59ec84b57a248c6d29cd5c7eae2a10b865ea44f7d69aa3f5cf9
 > **Fecha:** 2026-09-17
-> **Actualizada:** 2026-09-18
+> **Actualizada:** 2026-09-19
 > **Aprobada el:** 2026-09-18
 > **Aprobada por:** osiosad mediante specctl approve
 > **Objetivo:** Emitir y modificar Purchase Orders o autorizar compras directas desde fuentes aprobadas, con responsabilidad de aceptación, evidencia, takeover y movimientos presupuestarios verificables sin reescribir la Purchase Request.
